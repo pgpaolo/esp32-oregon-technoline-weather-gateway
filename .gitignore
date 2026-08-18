@@ -1,0 +1,8 @@
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+*.user
+*.suo
+.vs/
