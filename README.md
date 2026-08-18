@@ -99,7 +99,7 @@ The OLED can be placed in **power-save mode** from the Web UI. While disabled, d
 ### 1. Clone
 
 ```bash
-git clone <your-repository-url>
+git clone https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway.git
 cd esp32-oregon-technoline-weather-gateway
 ```
 
