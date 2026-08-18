@@ -1,0 +1,34 @@
+ESP32 Oregon Scientific + Technoline 433 MHz Weather Gateway
+
+Third-party protocol/code acknowledgements
+==========================================
+
+1. rtl_433
+----------
+Project: rtl_433
+Repository: https://github.com/merbanan/rtl_433
+Relevant component: src/devices/lacrossews.c
+
+The WS-2310 / WS-3600 packet layout and OOK/PWM timing references used by this
+project were informed by rtl_433. rtl_433's La Crosse decoder is licensed under
+the GNU General Public License, version 2 or (at your option) any later version.
+
+2. PracticalArduino WeatherStationReceiver
+-------------------------------------------
+Project: WeatherStationReceiver
+Repository: https://github.com/practicalarduino/WeatherStationReceiver
+Original authors/copyright notices include:
+  Copyright 2009 Marc Alexander
+  Copyright 2009 Jonathan Oxer
+
+The pulse/state-machine approach used as a reference for WS-2300-25S / WS-2355
+reception is GPL-licensed by the upstream project under GNU GPL version 3 or
+(at your option) any later version.
+
+This repository is therefore distributed under GNU GPL version 3 or later.
+
+Libraries
+=========
+
+Runtime/build dependencies are declared in platformio.ini. They remain subject
+to their own upstream licenses and copyright notices.

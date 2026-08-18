@@ -1,0 +1,216 @@
+#include "network_manager.h"
+#include <WiFi.h>
+#include <Preferences.h>
+#include "config.h"
+
+namespace {
+uint32_t lastAttemptMs = 0;
+bool wasConnected = false;
+uint8_t bestBssid[6] = {0};
+int32_t bestChannel = 0;
+bool haveBestAp = false;
+Preferences netPrefs;
+NetworkRuntimeConfig netCfg;
+
+String ipText(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
+    return String(a) + "." + String(b) + "." + String(c) + "." + String(d);
+}
+
+NetworkRuntimeConfig defaults() {
+    NetworkRuntimeConfig c;
+    c.useStatic = WIFI_USE_STATIC_IP != 0;
+    c.ip = ipText(WIFI_IP_A, WIFI_IP_B, WIFI_IP_C, WIFI_IP_D);
+    c.gateway = ipText(WIFI_GW_A, WIFI_GW_B, WIFI_GW_C, WIFI_GW_D);
+    c.subnet = ipText(WIFI_MASK_A, WIFI_MASK_B, WIFI_MASK_C, WIFI_MASK_D);
+    c.dns = ipText(WIFI_DNS_A, WIFI_DNS_B, WIFI_DNS_C, WIFI_DNS_D);
+    return c;
+}
+
+bool validIp(const String &s) {
+    IPAddress ip;
+    return ip.fromString(s);
+}
+
+void normalize(NetworkRuntimeConfig &c) {
+    c.ip.trim(); c.gateway.trim(); c.subnet.trim(); c.dns.trim();
+}
+
+bool validConfig(NetworkRuntimeConfig c) {
+    normalize(c);
+    if (!c.useStatic) return true;
+    return validIp(c.ip) && validIp(c.gateway) && validIp(c.subnet) && validIp(c.dns);
+}
+
+void loadConfig() {
+    const NetworkRuntimeConfig d = defaults();
+    netPrefs.begin("netcfg", true);
+    netCfg.useStatic = netPrefs.getBool("static", d.useStatic);
+    netCfg.ip = netPrefs.getString("ip", d.ip);
+    netCfg.gateway = netPrefs.getString("gw", d.gateway);
+    netCfg.subnet = netPrefs.getString("mask", d.subnet);
+    netCfg.dns = netPrefs.getString("dns", d.dns);
+    netPrefs.end();
+    normalize(netCfg);
+    if (!validConfig(netCfg)) {
+        Serial.println(F("[WiFi] configurazione NVS non valida: uso valori firmware"));
+        netCfg = d;
+    }
+}
+
+bool putStringIfChanged(Preferences &p, const char *key, const String &oldValue, const String &newValue) {
+    if (oldValue == newValue) return false;
+    p.putString(key, newValue);
+    return true;
+}
+
+const char *statusName(wl_status_t s) {
+    switch (s) {
+        case WL_IDLE_STATUS: return "IDLE";
+        case WL_NO_SSID_AVAIL: return "NO_SSID";
+        case WL_SCAN_COMPLETED: return "SCAN_DONE";
+        case WL_CONNECTED: return "CONNECTED";
+        case WL_CONNECT_FAILED: return "CONNECT_FAILED";
+        case WL_CONNECTION_LOST: return "CONNECTION_LOST";
+        case WL_DISCONNECTED: return "DISCONNECTED";
+        default: return "UNKNOWN";
+    }
+}
+
+void configureIp() {
+    if (!netCfg.useStatic) {
+        Serial.println(F("[WiFi] rete in DHCP"));
+        return;
+    }
+    IPAddress ip, gw, mask, dns;
+    if (!ip.fromString(netCfg.ip) || !gw.fromString(netCfg.gateway) ||
+        !mask.fromString(netCfg.subnet) || !dns.fromString(netCfg.dns)) {
+        Serial.println(F("[WiFi] ERRORE configurazione IP: fallback DHCP"));
+        return;
+    }
+    if (!WiFi.config(ip, gw, mask, dns)) {
+        Serial.println(F("[WiFi] ERRORE applicazione IP statico"));
+    }
+}
+
+void scanTargetOnce() {
+    Serial.println(F("[WiFi] scansione 2.4 GHz iniziale..."));
+    const int n = WiFi.scanNetworks(false, true);
+    if (n < 0) {
+        Serial.printf("[WiFi] scansione fallita: %d\n", n);
+        return;
+    }
+
+    int best = -1;
+    int32_t bestRssi = -1000;
+    for (int i = 0; i < n; ++i) {
+        const String ssid = WiFi.SSID(i);
+        Serial.printf("[WiFi-SCAN] ch=%d rssi=%d ssid='%s'\n",
+                      WiFi.channel(i), WiFi.RSSI(i), ssid.c_str());
+        if (ssid == WIFI_SSID && WiFi.RSSI(i) > bestRssi) {
+            best = i;
+            bestRssi = WiFi.RSSI(i);
+        }
+    }
+
+    if (best >= 0) {
+        const uint8_t *b = WiFi.BSSID(best);
+        if (b) memcpy(bestBssid, b, sizeof(bestBssid));
+        bestChannel = WiFi.channel(best);
+        haveBestAp = true;
+        Serial.printf("[WiFi] target trovato: ch=%d RSSI=%d BSSID=%s\n",
+                      bestChannel, bestRssi, WiFi.BSSIDstr(best).c_str());
+    } else {
+        Serial.printf("[WiFi] ATTENZIONE: SSID '%s' non visto sulla banda 2.4 GHz\n", WIFI_SSID);
+    }
+    WiFi.scanDelete();
+}
+
+void beginSta() {
+    configureIp();
+    if (haveBestAp) WiFi.begin(WIFI_SSID, WIFI_PASSWORD, bestChannel, bestBssid, true);
+    else WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+}
+} // namespace
+
+void initNetwork() {
+    loadConfig();
+    WiFi.mode(WIFI_STA);
+    // Non affidiamo credenziali/configurazione al layer WiFi: evita scritture
+    // automatiche nella flash. Le sole impostazioni persistenti sono in NVS e
+    // vengono scritte esclusivamente quando l'utente preme Salva.
+    WiFi.persistent(false);
+    WiFi.setAutoReconnect(true);
+    WiFi.setSleep(false);
+    WiFi.disconnect(false, false);
+    delay(50);
+
+    Serial.print(F("[WiFi] modo=")); Serial.print(netCfg.useStatic ? F("STATICO") : F("DHCP"));
+    if (netCfg.useStatic) {
+        Serial.print(F(" IP=")); Serial.print(netCfg.ip);
+        Serial.print(F(" GW=")); Serial.print(netCfg.gateway);
+        Serial.print(F(" MASK=")); Serial.print(netCfg.subnet);
+        Serial.print(F(" DNS=")); Serial.print(netCfg.dns);
+    }
+    Serial.println();
+    Serial.print(F("[WiFi] SSID='")); Serial.print(WIFI_SSID); Serial.println('\'');
+
+    scanTargetOnce();
+    beginSta();
+    lastAttemptMs = millis();
+}
+
+void serviceWiFi() {
+    const wl_status_t status = WiFi.status();
+    const bool connected = status == WL_CONNECTED;
+    if (connected) {
+        if (!wasConnected) {
+            Serial.print(F("[WiFi] CONNESSO IP=")); Serial.print(WiFi.localIP());
+            Serial.print(F(" RSSI=")); Serial.print(WiFi.RSSI());
+            Serial.print(F(" ch=")); Serial.println(WiFi.channel());
+        }
+        wasConnected = true;
+        return;
+    }
+    if (wasConnected) {
+        Serial.println(F("[WiFi] connessione persa"));
+        wasConnected = false;
+    }
+    const uint32_t now = millis();
+    if (static_cast<uint32_t>(now - lastAttemptMs) >= WIFI_RETRY_MS) {
+        lastAttemptMs = now;
+        Serial.print(F("[WiFi] retry status="));
+        Serial.print(static_cast<int>(status));
+        Serial.print(F(" (")); Serial.print(statusName(status)); Serial.println(')');
+        if (!WiFi.reconnect()) beginSta();
+    }
+}
+
+bool wifiConnected() { return WiFi.status() == WL_CONNECTED; }
+int32_t wifiRssi() { return wifiConnected() ? WiFi.RSSI() : -127; }
+String wifiIpAddress() { return wifiConnected() ? WiFi.localIP().toString() : String("-"); }
+
+NetworkRuntimeConfig getNetworkConfig() { return netCfg; }
+
+bool saveNetworkConfig(const NetworkRuntimeConfig &cfg, bool &changed) {
+    NetworkRuntimeConfig next = cfg;
+    normalize(next);
+    if (!validConfig(next)) return false;
+    changed = next.useStatic != netCfg.useStatic || next.ip != netCfg.ip ||
+              next.gateway != netCfg.gateway || next.subnet != netCfg.subnet || next.dns != netCfg.dns;
+    if (!changed) return true; // zero scritture NVS se non cambia nulla
+
+    netPrefs.begin("netcfg", false);
+    if (next.useStatic != netCfg.useStatic) netPrefs.putBool("static", next.useStatic);
+    putStringIfChanged(netPrefs, "ip", netCfg.ip, next.ip);
+    putStringIfChanged(netPrefs, "gw", netCfg.gateway, next.gateway);
+    putStringIfChanged(netPrefs, "mask", netCfg.subnet, next.subnet);
+    putStringIfChanged(netPrefs, "dns", netCfg.dns, next.dns);
+    netPrefs.end();
+    netCfg = next;
+    return true;
+}
+
+bool resetNetworkConfigToDefaults(bool &changed) {
+    const NetworkRuntimeConfig d = defaults();
+    return saveNetworkConfig(d, changed);
+}
