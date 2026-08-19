@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include <U8g2lib.h>
 #include <Preferences.h>
+#include <string.h>
 #include "board_config.h"
 #include "config.h"
 #include "network_manager.h"
@@ -18,6 +19,7 @@ uint8_t page = 0;
 bool displayOn = true;
 bool displayPrefsReady = false;
 Preferences displayPrefs;
+DisplayRuntimeConfig displayCfg{};
 
 #if OLED_BUTTON_ENABLE
 bool buttonRawPressed = false;
@@ -25,6 +27,40 @@ bool buttonStablePressed = false;
 uint32_t buttonLastChangeMs = 0;
 uint32_t buttonPressedAtMs = 0;
 #endif
+
+DisplayRuntimeConfig defaults() {
+    return DisplayRuntimeConfig{};
+}
+
+void normalize(DisplayRuntimeConfig &c) {
+    c.pageMask &= DISPLAY_PAGE_ALL;
+    if (!c.pageMask) c.pageMask = DISPLAY_PAGE_ALL;
+    c.environmentFields &= DISPLAY_ENV_ALL;
+    c.windRainFields &= DISPLAY_WIND_ALL;
+    c.technolineFields &= DISPLAY_TECH_ALL;
+    c.pressureFields &= DISPLAY_PRESS_ALL;
+    c.statusFields &= DISPLAY_STATUS_ALL;
+    if (c.pageIntervalSec < 2U) c.pageIntervalSec = 2U;
+    if (c.pageIntervalSec > 60U) c.pageIntervalSec = 60U;
+    if (c.contrast < 8U) c.contrast = 8U;
+}
+
+bool pageEnabled(uint8_t p) {
+    return p < 5U && (displayCfg.pageMask & static_cast<uint8_t>(1U << p)) != 0U;
+}
+
+uint8_t firstEnabledPage() {
+    for (uint8_t p = 0; p < 5U; ++p) if (pageEnabled(p)) return p;
+    return 0U;
+}
+
+uint8_t nextEnabledPage(uint8_t current) {
+    for (uint8_t step = 1; step <= 5U; ++step) {
+        const uint8_t p = static_cast<uint8_t>((current + step) % 5U);
+        if (pageEnabled(p)) return p;
+    }
+    return firstEnabledPage();
+}
 
 void header(const char *title, bool wifiOk, bool mqttOk) {
     oled.setFont(u8g2_font_6x10_tf);
@@ -34,136 +70,182 @@ void header(const char *title, bool wifiOk, bool mqttOk) {
     oled.drawHLine(0, 12, 128);
 }
 
+void drawLine(const char *text, uint8_t &y, uint8_t step = 10U) {
+    if (y > 63U) return;
+    oled.drawStr(0, y, text);
+    y = static_cast<uint8_t>(y + step);
+}
+
 void renderEnvironment(const StationState &s, bool wifiOk, bool mqttOk) {
     header("ESTERNO", wifiOk, mqttOk);
-    char line[42];
-    oled.setFont(u8g2_font_6x10_tf);
+    char line[48];
+    oled.setFont(u8g2_font_5x8_tf);
+    uint8_t y = 23;
     const uint32_t now = millis();
 
-    if (s.thermoValid && sensorFresh(s.thermoUpdatedMs, now))
-        snprintf(line, sizeof(line), "T %.1fC  H %.0f%%", s.temperatureC, s.humidityPct);
-    else snprintf(line, sizeof(line), "T --.-C  H --%%");
-    oled.drawStr(0, 25, line);
-
-    if (s.dewPointValid) snprintf(line, sizeof(line), "Dew %.1fC", s.dewPointC);
-    else snprintf(line, sizeof(line), "Dew --.-C");
-    oled.drawStr(0, 38, line);
-
-    if (s.heatIndexValid) snprintf(line, sizeof(line), "Heat %.1fC  UV %d", s.heatIndexC, s.uvValid ? s.uvIndex : -1);
-    else if (s.uvValid) snprintf(line, sizeof(line), "Heat N/A  UV %d", s.uvIndex);
-    else snprintf(line, sizeof(line), "Heat N/A  UV --");
-    oled.drawStr(0, 51, line);
-
-    snprintf(line, sizeof(line), "BAT T:%s U:%s", sensorBatteryName(s.thermoSensor), sensorBatteryName(s.uvSensor));
-    oled.drawStr(0, 63, line);
+    if (displayCfg.environmentFields & DISPLAY_ENV_TEMP_HUM) {
+        if (s.thermoValid && sensorFresh(s.thermoUpdatedMs, now))
+            snprintf(line, sizeof(line), "T %.1fC  H %.0f%%", s.temperatureC, s.humidityPct);
+        else snprintf(line, sizeof(line), "T --.-C  H --%%");
+        drawLine(line, y);
+    }
+    if (displayCfg.environmentFields & DISPLAY_ENV_DEW) {
+        if (s.dewPointValid) snprintf(line, sizeof(line), "Dew %.1fC", s.dewPointC);
+        else snprintf(line, sizeof(line), "Dew --.-C");
+        drawLine(line, y);
+    }
+    if (displayCfg.environmentFields & DISPLAY_ENV_HEAT_UV) {
+        if (s.heatIndexValid) snprintf(line, sizeof(line), "Heat %.1fC  UV %d", s.heatIndexC, s.uvValid ? s.uvIndex : -1);
+        else if (s.uvValid) snprintf(line, sizeof(line), "Heat N/A  UV %d", s.uvIndex);
+        else snprintf(line, sizeof(line), "Heat N/A  UV --");
+        drawLine(line, y);
+    }
+    if (displayCfg.environmentFields & DISPLAY_ENV_BATTERY) {
+        snprintf(line, sizeof(line), "BAT T:%s U:%s", sensorBatteryName(s.thermoSensor), sensorBatteryName(s.uvSensor));
+        drawLine(line, y);
+    }
+    if (y == 23) drawLine("Nessun campo selezionato", y);
 }
 
 void renderWindRain(const StationState &s, bool wifiOk, bool mqttOk) {
     header("VENTO / PIOGGIA", wifiOk, mqttOk);
-    char line[44];
-    oled.setFont(u8g2_font_6x10_tf);
+    char line[48];
+    oled.setFont(u8g2_font_5x8_tf);
+    uint8_t y = 23;
     const uint32_t now = millis();
+    const bool windFresh = s.windValid && sensorFresh(s.windUpdatedMs, now);
 
-    if (s.windValid && sensorFresh(s.windUpdatedMs, now)) {
-        snprintf(line, sizeof(line), "V %.1f G %.1f km/h", s.windAverageKmh, s.windGustKmh);
-        oled.drawStr(0, 25, line);
-        snprintf(line, sizeof(line), "%s %.0f deg", windDirectionName(s.windDirectionIndex), s.windDirectionDeg);
-        oled.drawStr(0, 38, line);
-    } else {
-        oled.drawStr(0, 25, "Vento --  WGR800");
-        oled.drawStr(0, 38, "Attesa frame A1...");
+    if (displayCfg.windRainFields & DISPLAY_WIND_SPEED_GUST) {
+        if (windFresh) snprintf(line, sizeof(line), "V %.1f  G %.1f km/h", s.windAverageKmh, s.windGustKmh);
+        else snprintf(line, sizeof(line), "V --  G -- km/h");
+        drawLine(line, y);
     }
-
-    if (s.rainValid && sensorFresh(s.rainUpdatedMs, now))
-        snprintf(line, sizeof(line), "R %.2f  I %.2f", s.rainTotalMm, s.rainRateMmH);
-    else snprintf(line, sizeof(line), "Pioggia --");
-    oled.drawStr(0, 51, line);
-
-    snprintf(line, sizeof(line), "BAT W:%s R:%s", sensorBatteryName(s.windSensor), sensorBatteryName(s.rainSensor));
-    oled.drawStr(0, 63, line);
+    if (displayCfg.windRainFields & DISPLAY_WIND_DIRECTION) {
+        if (windFresh) snprintf(line, sizeof(line), "%s %.0f deg", windDirectionName(s.windDirectionIndex), s.windDirectionDeg);
+        else snprintf(line, sizeof(line), "Direzione --");
+        drawLine(line, y);
+    }
+    if (displayCfg.windRainFields & DISPLAY_WIND_RAIN) {
+        if (s.rainValid && sensorFresh(s.rainUpdatedMs, now))
+            snprintf(line, sizeof(line), "Rain %.2f  rate %.2f", s.rainTotalMm, s.rainRateMmH);
+        else snprintf(line, sizeof(line), "Pioggia --");
+        drawLine(line, y);
+    }
+    if (displayCfg.windRainFields & DISPLAY_WIND_BATTERY) {
+        snprintf(line, sizeof(line), "BAT W:%s R:%s", sensorBatteryName(s.windSensor), sensorBatteryName(s.rainSensor));
+        drawLine(line, y);
+    }
+    if (y == 23) drawLine("Nessun campo selezionato", y);
 }
 
 void renderLaCrosse(const StationState &s, bool wifiOk, bool mqttOk) {
     header("TECHNOLINE", wifiOk, mqttOk);
-    char line[48];
+    char line[52];
     oled.setFont(u8g2_font_5x8_tf);
+    uint8_t y = 23;
     const auto &lc = s.lacrosse;
-    if (lc.temperatureValid || lc.humidityValid)
-        snprintf(line, sizeof(line), "T %.1fC H %.0f%%", lc.temperatureValid?lc.temperatureC:NAN, lc.humidityValid?lc.humidityPct:NAN);
-    else snprintf(line, sizeof(line), "T --.-C H --%%");
-    oled.drawStr(0, 23, line);
-    if (lc.windValid || lc.gustValid)
-        snprintf(line, sizeof(line), "W %.1f G %.1f km/h", lc.windValid?lc.windKmh:0.0f, lc.gustValid?lc.gustKmh:0.0f);
-    else snprintf(line, sizeof(line), "W --  G -- km/h");
-    oled.drawStr(0, 33, line);
-    if (lc.directionValid) snprintf(line, sizeof(line), "%s %.0f deg", laCrosseWindDirectionName(lc.windDirectionIndex), lc.windDirectionDeg);
-    else snprintf(line, sizeof(line), "Direzione --");
-    oled.drawStr(0, 43, line);
-    if (lc.rainValid) snprintf(line, sizeof(line), "Rain %.2f mm", lc.rainTotalMm);
-    else snprintf(line, sizeof(line), "Rain --");
-    oled.drawStr(0, 53, line);
-    snprintf(line, sizeof(line), "ID %02X pkt %lu", lc.sensorId, static_cast<unsigned long>(lc.validPacketCount));
-    oled.drawStr(0, 63, line);
+
+    if (displayCfg.technolineFields & DISPLAY_TECH_TEMP_HUM) {
+        if (lc.temperatureValid || lc.humidityValid) {
+            char t[12], h[10];
+            if (lc.temperatureValid) snprintf(t, sizeof(t), "%.1fC", lc.temperatureC); else snprintf(t, sizeof(t), "--.-C");
+            if (lc.humidityValid) snprintf(h, sizeof(h), "%.0f%%", lc.humidityPct); else snprintf(h, sizeof(h), "--%%");
+            snprintf(line, sizeof(line), "T %s  H %s", t, h);
+        } else snprintf(line, sizeof(line), "T --.-C  H --%%");
+        drawLine(line, y);
+    }
+    if (displayCfg.technolineFields & DISPLAY_TECH_WIND_GUST) {
+        char w[12], g[12];
+        if (lc.windValid) snprintf(w, sizeof(w), "%.1f", lc.windKmh); else snprintf(w, sizeof(w), "--");
+        if (lc.gustValid) snprintf(g, sizeof(g), "%.1f", lc.gustKmh); else snprintf(g, sizeof(g), "--");
+        snprintf(line, sizeof(line), "W %s  G %s km/h", w, g);
+        drawLine(line, y);
+    }
+    if (displayCfg.technolineFields & DISPLAY_TECH_DIRECTION) {
+        if (lc.directionValid) snprintf(line, sizeof(line), "%s %.0f deg", laCrosseWindDirectionName(lc.windDirectionIndex), lc.windDirectionDeg);
+        else snprintf(line, sizeof(line), "Direzione --");
+        drawLine(line, y);
+    }
+    if (displayCfg.technolineFields & DISPLAY_TECH_RAIN) {
+        if (lc.rainValid) snprintf(line, sizeof(line), "Rain %.2f mm", lc.rainTotalMm);
+        else snprintf(line, sizeof(line), "Rain --");
+        drawLine(line, y);
+    }
+    if (displayCfg.technolineFields & DISPLAY_TECH_META) {
+        snprintf(line, sizeof(line), "ID %02X pkt %lu", lc.sensorId, static_cast<unsigned long>(lc.validPacketCount));
+        drawLine(line, y);
+    }
+    if (y == 23) drawLine("Nessun campo selezionato", y);
 }
 
 void renderPressure(const StationState &s, bool wifiOk, bool mqttOk) {
     header("BAROMETRO", wifiOk, mqttOk);
-    char line[44];
-    oled.setFont(u8g2_font_6x10_tf);
+    char line[48];
+    oled.setFont(u8g2_font_5x8_tf);
+    uint8_t y = 23;
 
-    if (s.pressureValid) {
-        snprintf(line, sizeof(line), "Psta %.1f hPa", s.pressureAbsoluteHpa);
-        oled.drawStr(0, 25, line);
-        snprintf(line, sizeof(line), "Alt  %.1f hPa", s.pressureSeaLevelHpa);
-        oled.drawStr(0, 38, line);
-        if (s.pressureTrendValid)
-            snprintf(line, sizeof(line), "Trend %+.1f/3h", s.pressureTrendHpa3h);
-        else snprintf(line, sizeof(line), "Trend acquisizione");
-        oled.drawStr(0, 51, line);
-        snprintf(line, sizeof(line), "%s", barometerForecastName(s));
-        oled.drawStr(0, 63, line);
-    } else {
-        oled.drawStr(0, 25, "BME280 non rilevato");
-        oled.drawStr(0, 38, "I2C 0x76 / 0x77");
+    if (!s.pressureValid) {
+        drawLine("BME280 non rilevato", y);
+        drawLine("I2C 0x76 / 0x77", y);
+        return;
     }
+    if (displayCfg.pressureFields & DISPLAY_PRESS_STATION) {
+        snprintf(line, sizeof(line), "Psta %.1f hPa", s.pressureAbsoluteHpa);
+        drawLine(line, y);
+    }
+    if (displayCfg.pressureFields & DISPLAY_PRESS_ALTIMETER) {
+        snprintf(line, sizeof(line), "Alt %.1f hPa", s.pressureSeaLevelHpa);
+        drawLine(line, y);
+    }
+    if (displayCfg.pressureFields & DISPLAY_PRESS_TREND) {
+        if (s.pressureTrendValid) snprintf(line, sizeof(line), "Trend %+.1f/3h", s.pressureTrendHpa3h);
+        else snprintf(line, sizeof(line), "Trend acquisizione");
+        drawLine(line, y);
+    }
+    if (displayCfg.pressureFields & DISPLAY_PRESS_FORECAST) {
+        snprintf(line, sizeof(line), "%s", barometerForecastName(s));
+        drawLine(line, y);
+    }
+    if (y == 23) drawLine("Nessun campo selezionato", y);
 }
 
 void renderStatus(const StationState &, const OregonRxStats &rx, const LaCrosseRxStats &lc, bool wifiOk, bool mqttOk) {
     const RfProtocolMode mode = getRfProtocolMode();
     header(mode==RfProtocolMode::Dual ? "RF DUAL" : (mode==RfProtocolMode::Oregon ? "RF OREGON" : "RF TECHNOLINE"), wifiOk, mqttOk);
-    char line[48];
+    char line[52];
     oled.setFont(u8g2_font_5x8_tf);
+    uint8_t y = 23;
 
-    snprintf(line, sizeof(line), "AF%lu A1%lu A2%lu AD%lu",
-             static_cast<unsigned long>(rx.rawThermoFrames),
-             static_cast<unsigned long>(rx.rawWindFrames),
-             static_cast<unsigned long>(rx.rawRainFrames),
-             static_cast<unsigned long>(rx.rawUvFrames));
-    oled.drawStr(0, 23, line);
-
-    snprintf(line, sizeof(line), "State %lu Wscan %lu/%lu",
-             static_cast<unsigned long>(rx.stateEdgeFrames),
-             static_cast<unsigned long>(rx.windRecoverySuccess),
-             static_cast<unsigned long>(rx.windRecoveryStarts));
-    oled.drawStr(0, 33, line);
-
-    snprintf(line, sizeof(line), "run4:%lu 8:%lu 12:%lu 18:%lu",
-             static_cast<unsigned long>(rx.preRun04_07),
-             static_cast<unsigned long>(rx.preRun08_11),
-             static_cast<unsigned long>(rx.preRun12_17),
-             static_cast<unsigned long>(rx.preRun18_27));
-    oled.drawStr(0, 43, line);
-
-    snprintf(line, sizeof(line), "LC %lu T%lu W%lu R%lu",
-             static_cast<unsigned long>(lc.validFrames),
-             static_cast<unsigned long>(lc.temperatureFrames),
-             static_cast<unsigned long>(lc.windFrames + lc.gustFrames),
-             static_cast<unsigned long>(lc.rainFrames));
-    oled.drawStr(0, 53, line);
-
-    if (wifiConnected()) snprintf(line, sizeof(line), "WEB %s", wifiIpAddress().c_str());
-    else snprintf(line, sizeof(line), "WEB 192.168.1.220 --");
-    oled.drawStr(0, 63, line);
+    if (displayCfg.statusFields & DISPLAY_STATUS_OREGON) {
+        snprintf(line, sizeof(line), "AF%lu A1%lu A2%lu AD%lu",
+                 static_cast<unsigned long>(rx.rawThermoFrames), static_cast<unsigned long>(rx.rawWindFrames),
+                 static_cast<unsigned long>(rx.rawRainFrames), static_cast<unsigned long>(rx.rawUvFrames));
+        drawLine(line, y);
+    }
+    if (displayCfg.statusFields & DISPLAY_STATUS_DECODER) {
+        snprintf(line, sizeof(line), "State %lu Wscan %lu/%lu",
+                 static_cast<unsigned long>(rx.stateEdgeFrames), static_cast<unsigned long>(rx.windRecoverySuccess),
+                 static_cast<unsigned long>(rx.windRecoveryStarts));
+        drawLine(line, y);
+    }
+    if (displayCfg.statusFields & DISPLAY_STATUS_TIMING) {
+        snprintf(line, sizeof(line), "run4:%lu 8:%lu 12:%lu 18:%lu",
+                 static_cast<unsigned long>(rx.preRun04_07), static_cast<unsigned long>(rx.preRun08_11),
+                 static_cast<unsigned long>(rx.preRun12_17), static_cast<unsigned long>(rx.preRun18_27));
+        drawLine(line, y);
+    }
+    if (displayCfg.statusFields & DISPLAY_STATUS_TECH) {
+        snprintf(line, sizeof(line), "LC %lu T%lu W%lu R%lu",
+                 static_cast<unsigned long>(lc.validFrames), static_cast<unsigned long>(lc.temperatureFrames),
+                 static_cast<unsigned long>(lc.windFrames + lc.gustFrames), static_cast<unsigned long>(lc.rainFrames));
+        drawLine(line, y);
+    }
+    if (displayCfg.statusFields & DISPLAY_STATUS_NETWORK) {
+        if (wifiConnected()) snprintf(line, sizeof(line), "WEB %s", wifiIpAddress().c_str());
+        else snprintf(line, sizeof(line), "WEB non connesso");
+        drawLine(line, y);
+    }
+    if (y == 23) drawLine("Nessun campo selezionato", y);
 }
 } // namespace
 
@@ -173,7 +255,21 @@ void initDisplay() {
     oled.begin();
 
     displayPrefsReady = displayPrefs.begin("display", false);
+    const DisplayRuntimeConfig d = defaults();
     displayOn = displayPrefsReady ? displayPrefs.getBool("on", true) : true;
+    if (displayPrefsReady) {
+        displayCfg.pageMask = displayPrefs.getUChar("pages", d.pageMask);
+        displayCfg.environmentFields = displayPrefs.getUChar("env", d.environmentFields);
+        displayCfg.windRainFields = displayPrefs.getUChar("wind", d.windRainFields);
+        displayCfg.technolineFields = displayPrefs.getUChar("tech", d.technolineFields);
+        displayCfg.pressureFields = displayPrefs.getUChar("press", d.pressureFields);
+        displayCfg.statusFields = displayPrefs.getUChar("status", d.statusFields);
+        displayCfg.pageIntervalSec = displayPrefs.getUShort("page_s", d.pageIntervalSec);
+        displayCfg.contrast = displayPrefs.getUChar("contrast", d.contrast);
+    }
+    normalize(displayCfg);
+    oled.setContrast(displayCfg.contrast);
+    page = firstEnabledPage();
 
     if (!displayOn) {
         oled.clearBuffer();
@@ -245,22 +341,19 @@ int displayButtonPin() {
 #endif
 }
 
-bool displayEnabled() {
-    return displayOn;
-}
+bool displayEnabled() { return displayOn; }
 
 void setDisplayEnabled(bool enabled) {
     if (displayOn == enabled) return;
     displayOn = enabled;
-
-    if (displayPrefsReady && displayPrefs.getBool("on", true) != enabled) {
-        displayPrefs.putBool("on", enabled);
-    }
+    if (displayPrefsReady && displayPrefs.getBool("on", true) != enabled) displayPrefs.putBool("on", enabled);
 
     if (enabled) {
         oled.setPowerSave(0);
+        oled.setContrast(displayCfg.contrast);
         lastRefreshMs = 0;
         pageEpochMs = millis();
+        if (!pageEnabled(page)) page = firstEnabledPage();
         Serial.println(F("[OLED] acceso"));
     } else {
         oled.clearBuffer();
@@ -270,15 +363,69 @@ void setDisplayEnabled(bool enabled) {
     }
 }
 
+DisplayRuntimeConfig getDisplayConfig() { return displayCfg; }
+
+bool validateDisplayConfig(const DisplayRuntimeConfig &cfg) {
+    if ((cfg.pageMask & DISPLAY_PAGE_ALL) == 0U) return false;
+    if ((cfg.pageMask & ~DISPLAY_PAGE_ALL) != 0U) return false;
+    if ((cfg.environmentFields & ~DISPLAY_ENV_ALL) != 0U) return false;
+    if ((cfg.windRainFields & ~DISPLAY_WIND_ALL) != 0U) return false;
+    if ((cfg.technolineFields & ~DISPLAY_TECH_ALL) != 0U) return false;
+    if ((cfg.pressureFields & ~DISPLAY_PRESS_ALL) != 0U) return false;
+    if ((cfg.statusFields & ~DISPLAY_STATUS_ALL) != 0U) return false;
+    if (cfg.pageIntervalSec < 2U || cfg.pageIntervalSec > 60U) return false;
+    if (cfg.contrast < 8U) return false;
+    return true;
+}
+
+bool saveDisplayConfig(const DisplayRuntimeConfig &cfg, bool &changed) {
+    changed = false;
+    if (!validateDisplayConfig(cfg)) return false;
+    DisplayRuntimeConfig next = cfg;
+    normalize(next);
+    if (memcmp(&next, &displayCfg, sizeof(DisplayRuntimeConfig)) == 0) return true;
+
+    if (displayPrefsReady) {
+        if (next.pageMask != displayCfg.pageMask) displayPrefs.putUChar("pages", next.pageMask);
+        if (next.environmentFields != displayCfg.environmentFields) displayPrefs.putUChar("env", next.environmentFields);
+        if (next.windRainFields != displayCfg.windRainFields) displayPrefs.putUChar("wind", next.windRainFields);
+        if (next.technolineFields != displayCfg.technolineFields) displayPrefs.putUChar("tech", next.technolineFields);
+        if (next.pressureFields != displayCfg.pressureFields) displayPrefs.putUChar("press", next.pressureFields);
+        if (next.statusFields != displayCfg.statusFields) displayPrefs.putUChar("status", next.statusFields);
+        if (next.pageIntervalSec != displayCfg.pageIntervalSec) displayPrefs.putUShort("page_s", next.pageIntervalSec);
+        if (next.contrast != displayCfg.contrast) displayPrefs.putUChar("contrast", next.contrast);
+    }
+    displayCfg = next;
+    changed = true;
+    if (!pageEnabled(page)) page = firstEnabledPage();
+    pageEpochMs = millis();
+    lastRefreshMs = 0;
+    oled.setContrast(displayCfg.contrast);
+    return true;
+}
+
+bool resetDisplayConfigToDefaults(bool &changed) {
+    DisplayRuntimeConfig d = defaults();
+    normalize(d);
+    return saveDisplayConfig(d, changed);
+}
+
+uint8_t displayCurrentPage() { return page; }
+
 void updateDisplay(const StationState &state, const OregonRxStats &rxStats, const LaCrosseRxStats &lcStats, bool wifiOk, bool mqttOk) {
     if (!displayOn) return;
     const uint32_t now = millis();
     if (static_cast<uint32_t>(now - lastRefreshMs) < DISPLAY_REFRESH_MS) return;
     lastRefreshMs = now;
 
-    if (static_cast<uint32_t>(now - pageEpochMs) >= DISPLAY_PAGE_MS) {
+    if (!pageEnabled(page)) {
+        page = firstEnabledPage();
         pageEpochMs = now;
-        page = static_cast<uint8_t>((page + 1U) % 5U);
+    }
+    const uint32_t pageMs = static_cast<uint32_t>(displayCfg.pageIntervalSec) * 1000UL;
+    if (static_cast<uint32_t>(now - pageEpochMs) >= pageMs) {
+        pageEpochMs = now;
+        page = nextEnabledPage(page);
     }
 
     oled.clearBuffer();
