@@ -595,6 +595,75 @@ void handleDisplayPower() {
     server.send(200, "application/json", out);
 }
 
+
+void handleDisplayConfigGet() {
+    const DisplayRuntimeConfig c = getDisplayConfig();
+    String out;
+    out.reserve(420);
+    out = "{\"on\":"; out += displayEnabled() ? "true" : "false";
+    out += ",\"page_mask\":" + String(c.pageMask);
+    out += ",\"environment_fields\":" + String(c.environmentFields);
+    out += ",\"wind_rain_fields\":" + String(c.windRainFields);
+    out += ",\"technoline_fields\":" + String(c.technolineFields);
+    out += ",\"pressure_fields\":" + String(c.pressureFields);
+    out += ",\"status_fields\":" + String(c.statusFields);
+    out += ",\"page_interval_sec\":" + String(c.pageIntervalSec);
+    out += ",\"contrast\":" + String(c.contrast);
+    out += ",\"current_page\":" + String(displayCurrentPage());
+    out += "}";
+    sendNoCache();
+    server.send(200, "application/json", out);
+}
+
+void handleDisplayConfigPost() {
+    DisplayRuntimeConfig c = getDisplayConfig();
+    if (server.hasArg("page_mask")) c.pageMask = static_cast<uint8_t>(server.arg("page_mask").toInt());
+    if (server.hasArg("environment_fields")) c.environmentFields = static_cast<uint8_t>(server.arg("environment_fields").toInt());
+    if (server.hasArg("wind_rain_fields")) c.windRainFields = static_cast<uint8_t>(server.arg("wind_rain_fields").toInt());
+    if (server.hasArg("technoline_fields")) c.technolineFields = static_cast<uint8_t>(server.arg("technoline_fields").toInt());
+    if (server.hasArg("pressure_fields")) c.pressureFields = static_cast<uint8_t>(server.arg("pressure_fields").toInt());
+    if (server.hasArg("status_fields")) c.statusFields = static_cast<uint8_t>(server.arg("status_fields").toInt());
+    if (server.hasArg("page_interval_sec")) {
+        const long v = server.arg("page_interval_sec").toInt();
+        if (v < 2 || v > 60) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"page interval must be 2..60 seconds\"}"); return; }
+        c.pageIntervalSec = static_cast<uint16_t>(v);
+    }
+    if (server.hasArg("contrast")) {
+        const long v = server.arg("contrast").toInt();
+        if (v < 8 || v > 255) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"contrast must be 8..255\"}"); return; }
+        c.contrast = static_cast<uint8_t>(v);
+    }
+    if (!validateDisplayConfig(c)) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid display configuration; enable at least one page\"}");
+        return;
+    }
+    bool changed = false;
+    if (!saveDisplayConfig(c, changed)) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"display configuration rejected\"}");
+        return;
+    }
+    if (server.hasArg("on")) {
+        const String v = server.arg("on");
+        setDisplayEnabled(v == "1" || v == "true" || v == "on");
+    }
+    sendNoCache();
+    String out = "{\"ok\":true,\"changed\":"; out += changed ? "true" : "false";
+    out += ",\"display_on\":"; out += displayEnabled() ? "true" : "false";
+    out += "}";
+    server.send(200, "application/json", out);
+}
+
+void handleDisplayConfigReset() {
+    bool changed = false;
+    if (!resetDisplayConfigToDefaults(changed)) {
+        server.send(500, "application/json", "{\"ok\":false}");
+        return;
+    }
+    sendNoCache();
+    String out = "{\"ok\":true,\"changed\":"; out += changed ? "true" : "false"; out += "}";
+    server.send(200, "application/json", out);
+}
+
 void handleRaw() {
     String out;
     out.reserve(7000);
@@ -761,6 +830,15 @@ String configBackupJson(bool includeSecrets) {
     out += ",\n  \"mqtt_ca_certificate\":\"" + jsonEscapeString(m.caCertificate) + "\"";
     out += ",\n  \"mqtt_fields_mask\":" + String(m.fieldsMask);
     out += ",\n  \"display_on\":"; out += displayEnabled() ? "true" : "false";
+    const DisplayRuntimeConfig d = getDisplayConfig();
+    out += ",\n  \"display_page_mask\":" + String(d.pageMask);
+    out += ",\n  \"display_environment_fields\":" + String(d.environmentFields);
+    out += ",\n  \"display_wind_rain_fields\":" + String(d.windRainFields);
+    out += ",\n  \"display_technoline_fields\":" + String(d.technolineFields);
+    out += ",\n  \"display_pressure_fields\":" + String(d.pressureFields);
+    out += ",\n  \"display_status_fields\":" + String(d.statusFields);
+    out += ",\n  \"display_page_interval_sec\":" + String(d.pageIntervalSec);
+    out += ",\n  \"display_contrast\":" + String(d.contrast);
     out += ",\n  \"rf_mode\":" + String(static_cast<uint8_t>(getRfProtocolMode()));
     out += ",\n  \"rf_gain_oregon\":" + String(getRadioGainForMode(RfProtocolMode::Oregon));
     out += ",\n  \"rf_gain_technoline\":" + String(getRadioGainForMode(RfProtocolMode::LaCrosse));
@@ -931,6 +1009,19 @@ void handleConfigImport() {
 
     bool displayOn = displayEnabled();
     jsonGetBool(body, "display_on", displayOn);
+    DisplayRuntimeConfig displayCfg = getDisplayConfig();
+    if (jsonGetUInt(body, "display_page_mask", tmpUInt)) displayCfg.pageMask = static_cast<uint8_t>(tmpUInt);
+    if (jsonGetUInt(body, "display_environment_fields", tmpUInt)) displayCfg.environmentFields = static_cast<uint8_t>(tmpUInt);
+    if (jsonGetUInt(body, "display_wind_rain_fields", tmpUInt)) displayCfg.windRainFields = static_cast<uint8_t>(tmpUInt);
+    if (jsonGetUInt(body, "display_technoline_fields", tmpUInt)) displayCfg.technolineFields = static_cast<uint8_t>(tmpUInt);
+    if (jsonGetUInt(body, "display_pressure_fields", tmpUInt)) displayCfg.pressureFields = static_cast<uint8_t>(tmpUInt);
+    if (jsonGetUInt(body, "display_status_fields", tmpUInt)) displayCfg.statusFields = static_cast<uint8_t>(tmpUInt);
+    if (jsonGetUInt(body, "display_page_interval_sec", tmpUInt)) displayCfg.pageIntervalSec = static_cast<uint16_t>(tmpUInt);
+    if (jsonGetUInt(body, "display_contrast", tmpUInt)) displayCfg.contrast = static_cast<uint8_t>(tmpUInt);
+    if (!validateDisplayConfig(displayCfg)) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid display backup values\"}");
+        return;
+    }
 
     uint32_t rfMode = static_cast<uint8_t>(getRfProtocolMode());
     uint32_t gainO = getRadioGainForMode(RfProtocolMode::Oregon);
@@ -959,6 +1050,11 @@ void handleConfigImport() {
         return;
     }
     setDisplayEnabled(displayOn);
+    bool displayChanged = false;
+    if (!saveDisplayConfig(displayCfg, displayChanged)) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"could not save display configuration\"}");
+        return;
+    }
 
     // Per rendere persistente il profilo Oregon anche se il backup proviene da
     // una sessione Technoline, applichiamo il profilo in Oregon e poi torniamo
@@ -1301,7 +1397,7 @@ void handleRoot() {
 </div><div class="cfgNote">Il monitor usa i dati gia presenti in <code>/api/state</code>. Non aggiunge polling, storage o scritture NVS.</div></div>
 </section>
 <section id="mainConfig" class="mainPage">
-<div class="panel cfgPanel"><div class="panelHead">Configurazione dispositivo <span class="muted">NVS solo su modifica</span></div><div class="cfgTabs"><button id="tabNet" class="cfgTab active" onclick="showCfgTab('net')">RETE / IP</button><button id="tabMqtt" class="cfgTab" onclick="showCfgTab('mqtt')">MQTT / TLS</button><button id="tabBackup" class="cfgTab" onclick="showCfgTab('backup')">BACKUP / RESTORE</button></div><div id="cfgNet" class="cfgPage active">
+<div class="panel cfgPanel"><div class="panelHead">Configurazione dispositivo <span class="muted">NVS solo su modifica</span></div><div class="cfgTabs"><button id="tabNet" class="cfgTab active" onclick="showCfgTab('net')">RETE / IP</button><button id="tabMqtt" class="cfgTab" onclick="showCfgTab('mqtt')">MQTT / TLS</button><button id="tabDisplay" class="cfgTab" onclick="showCfgTab('display')">DISPLAY</button><button id="tabBackup" class="cfgTab" onclick="showCfgTab('backup')">BACKUP / RESTORE</button></div><div id="cfgNet" class="cfgPage active">
 <div class="cfgGrid">
 <label><span>Hostname dispositivo</span><input id="netHostname" type="text" maxlength="32" placeholder="oregon-gateway"></label>
 <label><span>Indirizzo mDNS</span><input id="netMdns" type="text" readonly></label>
@@ -1345,13 +1441,43 @@ void handleRoot() {
 <div class="cfgActions"><button class="modeBtn" onclick="saveMqtt()">Salva MQTT / TLS</button><button class="modeBtn" onclick="resetMqtt()">Default firmware</button><span id="mqttSummary" class="muted"></span></div>
 <div class="cfgNote">TLS verificato usa la CA PEM inserita qui. La modalita TLS senza verifica cifra il traffico ma non autentica il broker: usala solo per test. Password, CA e mask campi vengono scritti in NVS soltanto se cambiano.</div>
 </div>
+<div id="cfgDisplay" class="cfgPage">
+<div class="cfgGrid">
+<label class="checkLine"><input id="dispOn" type="checkbox"><span>OLED acceso</span></label>
+<label><span>Cambio pagina (secondi)</span><input id="dispInterval" type="number" min="2" max="60" value="7"></label>
+<label><span>Contrasto OLED (8-255)</span><input id="dispContrast" type="number" min="8" max="255" value="255"></label>
+</div>
+<div class="cfgActions"><b>Pagine da mostrare</b><button class="modeBtn" onclick="displaySelectPages(true)">Tutte</button><button class="modeBtn" onclick="displaySelectPages(false)">Nessuna</button></div>
+<div class="fieldGrid">
+<div class="fieldGroup"><b>Pagine OLED</b>
+<label class="fieldCheck"><input data-dpagebit="0" type="checkbox">Esterno</label><label class="fieldCheck"><input data-dpagebit="1" type="checkbox">Vento / Pioggia</label><label class="fieldCheck"><input data-dpagebit="2" type="checkbox">Technoline</label><label class="fieldCheck"><input data-dpagebit="3" type="checkbox">Barometro</label><label class="fieldCheck"><input data-dpagebit="4" type="checkbox">RF / Status</label>
+</div>
+<div class="fieldGroup"><b>Esterno</b>
+<label class="fieldCheck"><input data-denvbit="0" type="checkbox">Temperatura + umidita</label><label class="fieldCheck"><input data-denvbit="1" type="checkbox">Punto di rugiada</label><label class="fieldCheck"><input data-denvbit="2" type="checkbox">Heat index + UV</label><label class="fieldCheck"><input data-denvbit="3" type="checkbox">Stato batterie</label>
+</div>
+<div class="fieldGroup"><b>Vento / Pioggia</b>
+<label class="fieldCheck"><input data-dwindbit="0" type="checkbox">Vento + raffica</label><label class="fieldCheck"><input data-dwindbit="1" type="checkbox">Direzione</label><label class="fieldCheck"><input data-dwindbit="2" type="checkbox">Pioggia</label><label class="fieldCheck"><input data-dwindbit="3" type="checkbox">Stato batterie</label>
+</div>
+<div class="fieldGroup"><b>Technoline</b>
+<label class="fieldCheck"><input data-dtechbit="0" type="checkbox">Temperatura + umidita</label><label class="fieldCheck"><input data-dtechbit="1" type="checkbox">Vento + Gust</label><label class="fieldCheck"><input data-dtechbit="2" type="checkbox">Direzione</label><label class="fieldCheck"><input data-dtechbit="3" type="checkbox">Pioggia</label><label class="fieldCheck"><input data-dtechbit="4" type="checkbox">ID + pacchetti</label>
+</div>
+<div class="fieldGroup"><b>Barometro</b>
+<label class="fieldCheck"><input data-dpressbit="0" type="checkbox">Pressione stazione</label><label class="fieldCheck"><input data-dpressbit="1" type="checkbox">Altimetro</label><label class="fieldCheck"><input data-dpressbit="2" type="checkbox">Trend 3 h</label><label class="fieldCheck"><input data-dpressbit="3" type="checkbox">Previsione</label>
+</div>
+<div class="fieldGroup"><b>RF / Status</b>
+<label class="fieldCheck"><input data-dstatusbit="0" type="checkbox">Conteggi Oregon</label><label class="fieldCheck"><input data-dstatusbit="1" type="checkbox">Decoder / WGR scan</label><label class="fieldCheck"><input data-dstatusbit="2" type="checkbox">Timing / run</label><label class="fieldCheck"><input data-dstatusbit="3" type="checkbox">Statistiche Technoline</label><label class="fieldCheck"><input data-dstatusbit="4" type="checkbox">IP / rete</label>
+</div>
+</div>
+<div class="cfgActions"><button class="modeBtn" onclick="saveDisplayConfig()">Salva DISPLAY</button><button class="modeBtn" onclick="resetDisplayConfig()">Default firmware</button><span id="displaySummary" class="muted"></span></div>
+<div class="cfgNote">Le pagine disabilitate vengono saltate automaticamente. Intervallo e campi sono persistenti in NVS e vengono scritti solo quando cambiano. Se il Gust Technoline non e' stato ricevuto il display mostra <code>G --</code>, mai uno zero artificiale.</div>
+</div>
 <div id="cfgBackup" class="cfgPage">
 <div class="cfgGrid">
 <label class="checkLine"><input id="backupSecrets" type="checkbox"><span>Includi password MQTT nel backup</span></label>
 <label class="cfgWide"><span>File backup da ripristinare</span><input id="backupFile" type="file" accept="application/json,.json"></label>
 </div>
 <div class="cfgActions"><button class="modeBtn" onclick="exportConfig()">Esporta configurazione</button><button class="modeBtn dangerBtn" onclick="importConfig()">Importa e riavvia</button><span id="backupSummary" class="muted">Backup schema 1 · JSON</span></div>
-<div class="cfgNote"><b>Incluso:</b> hostname/IP, MQTT/TLS, campi MQTT, stato OLED e configurazione RF persistente. <b>Non incluso:</b> SSID/password Wi-Fi, che in questa versione restano nel firmware/config_private.h. Per sicurezza la password MQTT e' esclusa salvo selezione esplicita. L'import valida il file e riavvia il gateway.</div>
+<div class="cfgNote"><b>Incluso:</b> hostname/IP, MQTT/TLS, campi MQTT, configurazione OLED (pagine, campi, intervallo, contrasto) e configurazione RF persistente. <b>Non incluso:</b> SSID/password Wi-Fi, che in questa versione restano nel firmware/config_private.h. Per sicurezza la password MQTT e' esclusa salvo selezione esplicita. L'import valida il file e riavvia il gateway.</div>
 </div>
 </div>
 </section>
@@ -1368,14 +1494,21 @@ void handleRoot() {
 </section></main><script>
 const E=id=>document.getElementById(id);const f=(v,d=1,u='')=>v==null?'--':Number(v).toFixed(d)+u;const age=v=>(v==null||v>4290000)?'mai':(v<60?v+' s fa':Math.floor(v/60)+' min fa');const batt=x=>!x||!x.battery_known?'<span class=\"battNA\">BAT N/D</span>':(x.battery_low?'<span class=\"battLOW\">BAT LOW</span>':'<span class=\"battOK\">BAT OK</span>');const setBadge=(id,ok,label)=>{const e=E(id);e.className='badge '+(ok?'ok':'wait');e.textContent=label};const qClass=q=>q<0?'':(q>=85?'qgood':(q>=60?'qwarn':'qbad'));const qText=q=>q<0?'--':q+'%';const showOrWait=(el,ok,value)=>{el.classList.toggle('waitingText',!ok);el.textContent=ok?value:'IN ATTESA'};
 const hist={temp:[],bmeTemp:[],press:[],wind:[],rain:[],uv:[],lcTemp:[],lcWind:[],lcRain:[]};let modeBusy=false;async function setRfMode(mode){if(modeBusy)return;modeBusy=true;for(const id of ['modeDual','modeOregon','modeTechnoline'])E(id).disabled=true;try{const r=await fetch('/api/rfmode?mode='+encodeURIComponent(mode),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());await refresh();}catch(e){alert('Cambio modalita RF fallito: '+e)}finally{modeBusy=false;for(const id of ['modeDual','modeOregon','modeTechnoline'])E(id).disabled=false}}async function setRfGain(g){if(modeBusy)return;modeBusy=true;for(let i=0;i<4;i++)E('gain'+i).disabled=true;try{const r=await fetch('/api/rfgain?gain='+g,{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());await refresh();}catch(e){alert('Cambio guadagno fallito: '+e)}finally{modeBusy=false;for(let i=0;i<4;i++)E('gain'+i).disabled=false}}async function setRfProfile(p){if(modeBusy)return;modeBusy=true;for(const id of ['profStable','profWide','profMax','profAuto'])E(id).disabled=true;try{const r=await fetch('/api/rfprofile?profile='+encodeURIComponent(p),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());await refresh();}catch(e){alert('Cambio profilo RF fallito: '+e)}finally{modeBusy=false;for(const id of ['profStable','profWide','profMax','profAuto'])E(id).disabled=false}}async function toggleBurstExtra(){if(modeBusy)return;modeBusy=true;try{const cur=E('burstExtra').classList.contains('active');const r=await fetch('/api/burstextra?enabled='+(cur?'0':'1'),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());await refresh();}catch(e){alert('BURST EXTRA: '+e)}finally{modeBusy=false}}async function toggleWgrProbe(){if(modeBusy)return;modeBusy=true;try{const cur=E('wgrProbe').classList.contains('active');const r=await fetch('/api/wgrprobe?enabled='+(cur?'0':'1'),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());await refresh();}catch(e){alert('WGR PROBE: '+e)}finally{modeBusy=false}}
-let mainTab='dashboard';function showMainTab(t){mainTab=t;for(const x of ['dashboard','hardware','config','diag']){const on=t===x;E('main'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on);E('mainTab'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on)}if(t==='config')loadNetwork();if(t==='config')loadMqtt();}function showCfgTab(t){for(const x of ['net','mqtt','backup']){const on=t===x;E('cfg'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on);E('tab'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on)}if(t==='net')loadNetwork();else if(t==='mqtt')loadMqtt();}function setFresh(id,sec,available=true){const e=E(id),c=e&&e.closest('.card');if(!c)return;c.classList.remove('fresh','aging','stale','nodata');if(!available||sec==null||Number(sec)>4290000){c.classList.add('nodata');return}const v=Number(sec);c.classList.add(v<=90?'fresh':(v<=240?'aging':'stale'))}
+let mainTab='dashboard';function showMainTab(t){mainTab=t;for(const x of ['dashboard','hardware','config','diag']){const on=t===x;E('main'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on);E('mainTab'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on)}if(t==='config')loadNetwork();if(t==='config')loadMqtt();}function showCfgTab(t){for(const x of ['net','mqtt','display','backup']){const on=t===x;E('cfg'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on);E('tab'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on)}if(t==='net')loadNetwork();else if(t==='mqtt')loadMqtt();else if(t==='display')loadDisplay();}function setFresh(id,sec,available=true){const e=E(id),c=e&&e.closest('.card');if(!c)return;c.classList.remove('fresh','aging','stale','nodata');if(!available||sec==null||Number(sec)>4290000){c.classList.add('nodata');return}const v=Number(sec);c.classList.add(v<=90?'fresh':(v<=240?'aging':'stale'))}
 async function loadNetwork(){try{const n=await (await fetch('/api/network',{cache:'no-store'})).json();E('netHostname').value=n.hostname||'';E('netMdns').value=n.mdns?('http://'+n.mdns+'/'):'-';E('netStatic').checked=!!n.use_static;E('netIp').value=n.ip||'';E('netGw').value=n.gateway||'';E('netMask').value=n.subnet||'';E('netDns').value=n.dns||'';E('netActual').value=n.actual_ip||'-';E('netSummary').textContent=(n.use_static?'IP statico':'DHCP')+' · '+(n.mdns_active?'mDNS attivo':'mDNS in attesa');}catch(e){E('netSummary').textContent='errore lettura rete'}}
 async function saveNetwork(){const q=new URLSearchParams();q.set('hostname',E('netHostname').value.trim().toLowerCase());q.set('use_static',E('netStatic').checked?'1':'0');q.set('ip',E('netIp').value);q.set('gateway',E('netGw').value);q.set('subnet',E('netMask').value);q.set('dns',E('netDns').value);q.set('reboot','1');const r=await fetch('/api/network?'+q.toString(),{method:'POST',cache:'no-store'});if(!r.ok){alert('Rete: '+await r.text());return}const j=await r.json();if(j.changed){alert('Configurazione salvata. Riavvio in corso. Prova http://'+j.mdns+'/ oppure l\'IP configurato.');}else{E('netSummary').textContent='Nessuna modifica: zero scritture NVS';}}
 async function resetNetwork(){if(!confirm('Ripristinare IP/rete ai valori compilati nel firmware?'))return;const r=await fetch('/api/network/reset',{method:'POST',cache:'no-store'});if(!r.ok){alert('Reset rete fallito');return}const j=await r.json();if(j.changed)alert('Rete ripristinata. Riavvio in corso.');else E('netSummary').textContent='Gia ai default: zero scritture NVS';}
 function exportConfig(){const secrets=E('backupSecrets').checked?'1':'0';if(secrets&&!confirm('Il file conterra la password MQTT in chiaro. Continuare?'))return;window.location='/api/config/export?secrets='+secrets;}async function importConfig(){const file=E('backupFile').files[0];if(!file){alert('Seleziona un file JSON di backup.');return}if(file.size>12000){alert('Backup troppo grande.');return}if(!confirm('Importare la configurazione e riavviare il gateway?'))return;E('backupSummary').textContent='Importazione in corso...';try{const txt=await file.text();const r=await fetch('/api/config/import',{method:'POST',headers:{'Content-Type':'application/json'},body:txt,cache:'no-store'});const body=await r.text();if(!r.ok)throw new Error(body);const j=JSON.parse(body);E('backupSummary').textContent='Configurazione importata · riavvio in corso';alert('Backup importato correttamente. Il gateway si riavviera.');}catch(e){E('backupSummary').textContent='Importazione fallita';alert('Import backup fallito: '+e)}}
 function mqttSelectAll(v){document.querySelectorAll('[data-mqbit]').forEach(x=>x.checked=!!v)}function mqttSetMask(mask){const m=Number(mask)>>>0;document.querySelectorAll('[data-mqbit]').forEach(x=>x.checked=(m&(1<<Number(x.dataset.mqbit)))!==0)}function mqttGetMask(){let m=0;document.querySelectorAll('[data-mqbit]').forEach(x=>{if(x.checked)m|=(1<<Number(x.dataset.mqbit))});return m>>>0}function updateTlsUi(){const mode=Number(E('mqTlsMode').value);E('mqCaLabel').style.display=mode===1?'flex':'none'}async function loadMqtt(){try{const m=await (await fetch('/api/mqtt',{cache:'no-store'})).json();E('mqEnabled').checked=!!m.enabled;E('mqBroker').value=m.broker||'';E('mqPort').value=m.port||1883;E('mqUser').value=m.user||'';E('mqClient').value=m.client_id||'';E('mqTopic').value=m.base_topic||'';E('mqTlsMode').value=String(m.tls_mode||0);E('mqCa').value=m.ca_certificate||'';mqttSetMask(m.fields_mask==null?268435455:m.fields_mask);E('mqPassword').value='';E('mqClearPass').checked=false;E('mqPassword').placeholder=m.has_password?'password salvata · vuoto = mantieni':'nessuna password';updateTlsUi();E('mqttSummary').textContent=(m.enabled?(m.connected?' · CONNESSO':' · non connesso'):' · disabilitato')+' · '+(m.broker||'-')+':'+m.port+' · '+(m.tls_name||'OFF');const hm=E('hdrMqtt');hm.className='statusPill '+(!m.enabled?'wait':(m.connected?'ok':'bad'));hm.textContent=!m.enabled?'MQTT OFF':(m.connected?'MQTT OK':'MQTT KO');}catch(e){E('mqttSummary').textContent=' · errore';const hm=E('hdrMqtt');if(hm){hm.className='statusPill bad';hm.textContent='MQTT ERR'}}}
 async function saveMqtt(){const q=new URLSearchParams();q.set('enabled',E('mqEnabled').checked?'1':'0');q.set('broker',E('mqBroker').value);q.set('port',E('mqPort').value);q.set('user',E('mqUser').value);q.set('client_id',E('mqClient').value);q.set('base_topic',E('mqTopic').value);q.set('tls_mode',E('mqTlsMode').value);q.set('ca_certificate',E('mqCa').value);q.set('fields_mask',String(mqttGetMask()));if(E('mqPassword').value)q.set('password',E('mqPassword').value);if(E('mqClearPass').checked)q.set('clear_password','1');const r=await fetch('/api/mqtt',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:q.toString(),cache:'no-store'});if(!r.ok){alert('MQTT: '+await r.text());return}await loadMqtt();}
-async function resetMqtt(){if(!confirm('Ripristinare i valori MQTT compilati nel firmware?'))return;const r=await fetch('/api/mqtt/reset',{method:'POST',cache:'no-store'});if(!r.ok){alert('Reset MQTT fallito');return}await loadMqtt();}async function restartDevice(){if(!confirm('Riavviare ora la scheda ESP32?'))return;const r=await fetch('/api/restart',{method:'POST',cache:'no-store'});if(r.ok)alert('Riavvio ESP32 avviato. La pagina tornera disponibile tra pochi secondi.');else alert('Riavvio fallito');}let displayOn=true,displayBusy=false;async function toggleDisplay(){if(displayBusy)return;displayBusy=true;const btn=E('displayBtn'),target=!displayOn;if(btn)btn.disabled=true;try{const r=await fetch('/api/display?on='+(target?1:0),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const j=await r.json();displayOn=!!j.display_on;}catch(e){alert('Comando display fallito: '+e)}finally{if(btn)btn.disabled=false;updateDisplayUi();}}function updateDisplayUi(){const btn=E('displayBtn'),st=E('sysDisplay');if(btn){btn.textContent=displayOn?'OLED ON':'OLED OFF';btn.classList.toggle('active',!displayOn);btn.title=displayOn?'Clic per spegnere il display OLED':'Clic per riaccendere il display OLED';}if(st){st.textContent=displayOn?'ON':'POWER SAVE';st.className='value '+(displayOn?'ok':'muted');}}function setCompass(prefix,deg,label){const g=E(prefix+'CompassNeedle'),d=E(prefix+'CompassDeg'),n=E(prefix+'CompassDir');if(!g||deg==null||!Number.isFinite(Number(deg))){if(g)g.style.opacity=.25;if(d)d.textContent='--°';if(n)n.textContent='--';return}const v=((Number(deg)%360)+360)%360;g.style.opacity=1;g.setAttribute('transform','rotate('+v+' 60 60)');d.textContent=Math.round(v)+'°';n.textContent=label||''}function fmtBytes(v){const n=Number(v||0);if(n>=1048576)return (n/1048576).toFixed(2)+' MB';if(n>=1024)return (n/1024).toFixed(1)+' KB';return n+' B'}function fmtUptime(sec){let s=Number(sec||0),d=Math.floor(s/86400);s%=86400;let h=Math.floor(s/3600);s%=3600;let m=Math.floor(s/60);return (d?d+' g ':'')+String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')}
+async function resetMqtt(){if(!confirm('Ripristinare i valori MQTT compilati nel firmware?'))return;const r=await fetch('/api/mqtt/reset',{method:'POST',cache:'no-store'});if(!r.ok){alert('Reset MQTT fallito');return}await loadMqtt();}
+function dSet(attr,mask){const m=Number(mask)>>>0;document.querySelectorAll('['+attr+']').forEach(x=>x.checked=(m&(1<<Number(x.getAttribute(attr))))!==0)}
+function dGet(attr){let m=0;document.querySelectorAll('['+attr+']').forEach(x=>{if(x.checked)m|=(1<<Number(x.getAttribute(attr)))});return m>>>0}
+function displaySelectPages(v){document.querySelectorAll('[data-dpagebit]').forEach(x=>x.checked=!!v)}
+async function loadDisplay(){try{const d=await (await fetch('/api/display/config',{cache:'no-store'})).json();E('dispOn').checked=!!d.on;E('dispInterval').value=d.page_interval_sec||7;E('dispContrast').value=d.contrast||255;dSet('data-dpagebit',d.page_mask==null?31:d.page_mask);dSet('data-denvbit',d.environment_fields==null?15:d.environment_fields);dSet('data-dwindbit',d.wind_rain_fields==null?15:d.wind_rain_fields);dSet('data-dtechbit',d.technoline_fields==null?31:d.technoline_fields);dSet('data-dpressbit',d.pressure_fields==null?15:d.pressure_fields);dSet('data-dstatusbit',d.status_fields==null?31:d.status_fields);E('displaySummary').textContent=(d.on?'OLED ON':'OLED OFF')+' · pagina '+(Number(d.current_page)+1)+' · cambio '+d.page_interval_sec+' s · contrasto '+d.contrast;}catch(e){E('displaySummary').textContent='errore lettura display'}}
+async function saveDisplayConfig(){const pageMask=dGet('data-dpagebit');if(!pageMask){alert('Seleziona almeno una pagina OLED.');return}const q=new URLSearchParams();q.set('on',E('dispOn').checked?'1':'0');q.set('page_mask',String(pageMask));q.set('environment_fields',String(dGet('data-denvbit')));q.set('wind_rain_fields',String(dGet('data-dwindbit')));q.set('technoline_fields',String(dGet('data-dtechbit')));q.set('pressure_fields',String(dGet('data-dpressbit')));q.set('status_fields',String(dGet('data-dstatusbit')));q.set('page_interval_sec',E('dispInterval').value);q.set('contrast',E('dispContrast').value);const r=await fetch('/api/display/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:q.toString(),cache:'no-store'});if(!r.ok){alert('DISPLAY: '+await r.text());return}const j=await r.json();displayOn=!!j.display_on;updateDisplayUi();await loadDisplay();}
+async function resetDisplayConfig(){if(!confirm('Ripristinare pagine/campi/intervallo/contrasto OLED ai default firmware?'))return;const r=await fetch('/api/display/reset',{method:'POST',cache:'no-store'});if(!r.ok){alert('Reset DISPLAY fallito');return}await loadDisplay();}
+async function restartDevice(){if(!confirm('Riavviare ora la scheda ESP32?'))return;const r=await fetch('/api/restart',{method:'POST',cache:'no-store'});if(r.ok)alert('Riavvio ESP32 avviato. La pagina tornera disponibile tra pochi secondi.');else alert('Riavvio fallito');}let displayOn=true,displayBusy=false;async function toggleDisplay(){if(displayBusy)return;displayBusy=true;const btn=E('displayBtn'),target=!displayOn;if(btn)btn.disabled=true;try{const r=await fetch('/api/display?on='+(target?1:0),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const j=await r.json();displayOn=!!j.display_on;}catch(e){alert('Comando display fallito: '+e)}finally{if(btn)btn.disabled=false;updateDisplayUi();}}function updateDisplayUi(){const btn=E('displayBtn'),st=E('sysDisplay'),cfg=E('dispOn');if(btn){btn.textContent=displayOn?'OLED ON':'OLED OFF';btn.classList.toggle('active',!displayOn);btn.title=displayOn?'Clic per spegnere il display OLED':'Clic per riaccendere il display OLED';}if(st){st.textContent=displayOn?'ON':'POWER SAVE';st.className='value '+(displayOn?'ok':'muted');}if(cfg)cfg.checked=displayOn;}function setCompass(prefix,deg,label){const g=E(prefix+'CompassNeedle'),d=E(prefix+'CompassDeg'),n=E(prefix+'CompassDir');if(!g||deg==null||!Number.isFinite(Number(deg))){if(g)g.style.opacity=.25;if(d)d.textContent='--°';if(n)n.textContent='--';return}const v=((Number(deg)%360)+360)%360;g.style.opacity=1;g.setAttribute('transform','rotate('+v+' 60 60)');d.textContent=Math.round(v)+'°';n.textContent=label||''}function fmtBytes(v){const n=Number(v||0);if(n>=1048576)return (n/1048576).toFixed(2)+' MB';if(n>=1024)return (n/1024).toFixed(1)+' KB';return n+' B'}function fmtUptime(sec){let s=Number(sec||0),d=Math.floor(s/86400);s%=86400;let h=Math.floor(s/3600);s%=3600;let m=Math.floor(s/60);return (d?d+' g ':'')+String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')}
 function push(k,v){if(v==null)return;hist[k].push(Number(v));if(hist[k].length>60)hist[k].shift()}function spark(id,a){const el=document.getElementById(id);if(!el||a.length<2){if(el)el.innerHTML='';return}let mn=Math.min(...a),mx=Math.max(...a);if(mx===mn)mx=mn+1;let pts=a.map((v,i)=>((i/(a.length-1))*112+1).toFixed(1)+','+(26-((v-mn)/(mx-mn))*22).toFixed(1)).join(' ');el.innerHTML='<polyline points="'+pts+'" fill="none" stroke="#83b7ff" stroke-width="2"/>'}
 async function refresh(){try{const s=await (await fetch('/api/state',{cache:'no-store'})).json(),w=s.weather,bme=s.bme280||{},p=s.packets,r=s.rf,a=s.fresh,ss=s.sensors,lc=s.lacrosse,lcr=s.lacrosse_rf,sess=s.session,b=s.burst,wp=s.wgr_probe||{},sys=s.system||{};
 const net=E('net'),temp=E('temp'),hum=E('hum'),hi=E('hi'),dew=E('dew'),tin=E('tin'),hin=E('hin'),ageT=E('ageT'),footT=E('footT'),psta=E('psta'),psea=E('psea'),ptrend=E('ptrend'),forecast=E('forecast'),ageP=E('ageP'),footP=E('footP'),wind=E('wind'),gust=E('gust'),dir=E('dir'),wc=E('wc'),ageW=E('ageW'),footW=E('footW'),rate=E('rate'),r1h=E('r1h'),r24=E('r24'),rtot=E('rtot'),rinc=E('rinc'),ageR=E('ageR'),footR=E('footR'),uv=E('uv'),ageU=E('ageU'),footU=E('footU'),pkts=E('pkts'),rf=E('rf'),timing=E('timing'),quality=E('quality'),qualityLc=E('qualityLc'),burstDiag=E('burstDiag'),wgrDiag=E('wgrDiag'),bursts=E('bursts'),raw=E('raw');
@@ -1445,6 +1578,9 @@ void initWeb(StationState &stateRef) {
     server.on("/api/config/export", HTTP_GET, handleConfigExport);
     server.on("/api/config/import", HTTP_POST, handleConfigImport);
     server.on("/api/display", HTTP_POST, handleDisplayPower);
+    server.on("/api/display/config", HTTP_GET, handleDisplayConfigGet);
+    server.on("/api/display/config", HTTP_POST, handleDisplayConfigPost);
+    server.on("/api/display/reset", HTTP_POST, handleDisplayConfigReset);
     server.on("/api/restart", HTTP_POST, handleDeviceRestart);
     server.onNotFound([](){ server.send(404, "text/plain", "Not found"); });
     Serial.println(F("[WEB] configurato; partira' appena il WiFi sara' connesso"));
