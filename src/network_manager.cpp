@@ -1,6 +1,7 @@
 #include "network_manager.h"
 #include <WiFi.h>
 #include <Preferences.h>
+#include <ESPmDNS.h>
 #include "config.h"
 
 namespace {
@@ -9,6 +10,7 @@ bool wasConnected = false;
 uint8_t bestBssid[6] = {0};
 int32_t bestChannel = 0;
 bool haveBestAp = false;
+bool mdnsStarted = false;
 Preferences netPrefs;
 NetworkRuntimeConfig netCfg;
 
@@ -18,6 +20,7 @@ String ipText(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
 
 NetworkRuntimeConfig defaults() {
     NetworkRuntimeConfig c;
+    c.hostname = DEVICE_HOSTNAME;
     c.useStatic = WIFI_USE_STATIC_IP != 0;
     c.ip = ipText(WIFI_IP_A, WIFI_IP_B, WIFI_IP_C, WIFI_IP_D);
     c.gateway = ipText(WIFI_GW_A, WIFI_GW_B, WIFI_GW_C, WIFI_GW_D);
@@ -32,11 +35,26 @@ bool validIp(const String &s) {
 }
 
 void normalize(NetworkRuntimeConfig &c) {
+    c.hostname.trim();
+    c.hostname.toLowerCase();
     c.ip.trim(); c.gateway.trim(); c.subnet.trim(); c.dns.trim();
+}
+
+bool validHostname(const String &s) {
+    // Arduino-ESP32 WiFi.setHostname(): massimo 32 caratteri.
+    if (s.length() < 1U || s.length() > 32U) return false;
+    if (s[0] == '-' || s[s.length() - 1U] == '-') return false;
+    for (size_t i = 0; i < s.length(); ++i) {
+        const char ch = s[i];
+        const bool ok = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+        if (!ok) return false;
+    }
+    return true;
 }
 
 bool validConfig(NetworkRuntimeConfig c) {
     normalize(c);
+    if (!validHostname(c.hostname)) return false;
     if (!c.useStatic) return true;
     return validIp(c.ip) && validIp(c.gateway) && validIp(c.subnet) && validIp(c.dns);
 }
@@ -44,6 +62,7 @@ bool validConfig(NetworkRuntimeConfig c) {
 void loadConfig() {
     const NetworkRuntimeConfig d = defaults();
     netPrefs.begin("netcfg", true);
+    netCfg.hostname = netPrefs.getString("host", d.hostname);
     netCfg.useStatic = netPrefs.getBool("static", d.useStatic);
     netCfg.ip = netPrefs.getString("ip", d.ip);
     netCfg.gateway = netPrefs.getString("gw", d.gateway);
@@ -134,6 +153,10 @@ void beginSta() {
 
 void initNetwork() {
     loadConfig();
+    // Deve essere impostato prima di WiFi.mode()/WiFi.begin().
+    if (!WiFi.setHostname(netCfg.hostname.c_str())) {
+        Serial.println(F("[WiFi] ATTENZIONE: setHostname fallito"));
+    }
     WiFi.mode(WIFI_STA);
     // Non affidiamo credenziali/configurazione al layer WiFi: evita scritture
     // automatiche nella flash. Le sole impostazioni persistenti sono in NVS e
@@ -144,6 +167,7 @@ void initNetwork() {
     WiFi.disconnect(false, false);
     delay(50);
 
+    Serial.print(F("[WiFi] hostname=")); Serial.println(netCfg.hostname);
     Serial.print(F("[WiFi] modo=")); Serial.print(netCfg.useStatic ? F("STATICO") : F("DHCP"));
     if (netCfg.useStatic) {
         Serial.print(F(" IP=")); Serial.print(netCfg.ip);
@@ -168,11 +192,26 @@ void serviceWiFi() {
             Serial.print(F(" RSSI=")); Serial.print(WiFi.RSSI());
             Serial.print(F(" ch=")); Serial.println(WiFi.channel());
         }
+        if (!mdnsStarted) {
+            if (MDNS.begin(netCfg.hostname.c_str())) {
+                MDNS.addService("http", "tcp", 80);
+                mdnsStarted = true;
+                Serial.print(F("[mDNS] ATTIVO: http://"));
+                Serial.print(netCfg.hostname);
+                Serial.println(F(".local/"));
+            } else {
+                Serial.println(F("[mDNS] inizializzazione fallita; accesso via IP disponibile"));
+            }
+        }
         wasConnected = true;
         return;
     }
     if (wasConnected) {
         Serial.println(F("[WiFi] connessione persa"));
+        if (mdnsStarted) {
+            MDNS.end();
+            mdnsStarted = false;
+        }
         wasConnected = false;
     }
     const uint32_t now = millis();
@@ -188,18 +227,24 @@ void serviceWiFi() {
 bool wifiConnected() { return WiFi.status() == WL_CONNECTED; }
 int32_t wifiRssi() { return wifiConnected() ? WiFi.RSSI() : -127; }
 String wifiIpAddress() { return wifiConnected() ? WiFi.localIP().toString() : String("-"); }
+String networkHostname() { return netCfg.hostname; }
+String networkMdnsName() { return netCfg.hostname.length() ? netCfg.hostname + ".local" : String("-"); }
+bool networkMdnsActive() { return mdnsStarted; }
 
 NetworkRuntimeConfig getNetworkConfig() { return netCfg; }
+
+bool validateNetworkConfig(const NetworkRuntimeConfig &cfg) { return validConfig(cfg); }
 
 bool saveNetworkConfig(const NetworkRuntimeConfig &cfg, bool &changed) {
     NetworkRuntimeConfig next = cfg;
     normalize(next);
     if (!validConfig(next)) return false;
-    changed = next.useStatic != netCfg.useStatic || next.ip != netCfg.ip ||
+    changed = next.hostname != netCfg.hostname || next.useStatic != netCfg.useStatic || next.ip != netCfg.ip ||
               next.gateway != netCfg.gateway || next.subnet != netCfg.subnet || next.dns != netCfg.dns;
     if (!changed) return true; // zero scritture NVS se non cambia nulla
 
     netPrefs.begin("netcfg", false);
+    putStringIfChanged(netPrefs, "host", netCfg.hostname, next.hostname);
     if (next.useStatic != netCfg.useStatic) netPrefs.putBool("static", next.useStatic);
     putStringIfChanged(netPrefs, "ip", netCfg.ip, next.ip);
     putStringIfChanged(netPrefs, "gw", netCfg.gateway, next.gateway);

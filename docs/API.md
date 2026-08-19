@@ -20,6 +20,8 @@ The embedded Web UI communicates with these endpoints.
 | GET | `/api/network` | read network configuration |
 | POST | `/api/network` | update network configuration |
 | POST | `/api/network/reset` | restore network defaults |
+| GET | `/api/config/export` | export persistent configuration as JSON (`?secrets=1` optionally includes MQTT password) |
+| POST | `/api/config/import` | validate/import a JSON backup and restart |
 | POST | `/api/display` | OLED ON/OFF |
 | POST | `/api/restart` | restart ESP32 |
 
@@ -27,4 +29,4 @@ The embedded Web UI communicates with these endpoints.
 
 This API is designed to support the embedded UI and is not currently versioned.
 If you build external integrations against it, pin the firmware release and
-expect diagnostic fields to evolve.
+expect diagnostic fields to evolve. Configuration backups use schema `1`; Wi-Fi credentials are never exported by the current firmware and the MQTT password is omitted unless explicitly requested.

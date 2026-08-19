@@ -164,10 +164,21 @@ const char *mqttTlsModeName(MqttTlsMode mode) {
     }
 }
 
+bool validateMqttConfig(const MqttRuntimeConfig &cfg, bool replacePassword, bool replaceCaCertificate) {
+    if (replaceCaCertificate && cfg.caCertificate.length() > 3900U) return false;
+    MqttRuntimeConfig next = cfg;
+    if (!replacePassword) next.password = mqttCfg.password;
+    if (!replaceCaCertificate) next.caCertificate = mqttCfg.caCertificate;
+    normalize(next);
+    if (next.enabled && next.broker.length() == 0) return false;
+    if (next.enabled && next.tlsMode == MqttTlsMode::CaVerified && next.caCertificate.length() == 0) return false;
+    return true;
+}
+
 bool saveMqttConfig(const MqttRuntimeConfig &cfg, bool replacePassword, bool replaceCaCertificate) {
     // Una stringa NVS e' limitata a 4000 byte incluso il terminatore.
     // Rifiutiamo una CA troppo grande invece di troncarla silenziosamente.
-    if (replaceCaCertificate && cfg.caCertificate.length() > 3900U) return false;
+    if (!validateMqttConfig(cfg, replacePassword, replaceCaCertificate)) return false;
     MqttRuntimeConfig next = cfg;
     if (!replacePassword) next.password = mqttCfg.password;
     if (!replaceCaCertificate) next.caCertificate = mqttCfg.caCertificate;

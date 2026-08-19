@@ -5,8 +5,45 @@
 #include "config_private.h"
 #endif
 
+#ifndef FIRMWARE_VERSION
+#define FIRMWARE_VERSION         "6.4.0-rc1"
+#endif
+#ifndef GIT_COMMIT_HASH
+#define GIT_COMMIT_HASH          "source-archive"
+#endif
+
+// Pulsante fisico PRG/BOOT: pressione breve = OLED ON/OFF.
+// GPIO0 e' il BOOT/User button sulle T3-S3; sulla T3 V1.6.1 il progetto
+// Toggle fisico OLED opzionale; la politica di default dipende dalla board.
+#ifndef OLED_BUTTON_ENABLE
+// Il T3-S3 dichiara ufficialmente BUTTON_PIN=0. Sul T3 V1.6.1 il pinout
+// LILYGO non espone un BUTTON_PIN applicativo: per prudenza il toggle fisico
+// resta disabilitato di default e puo' essere abilitato esplicitamente da
+// config_private.h dopo verifica della propria revisione hardware.
+#if defined(BOARD_T3_S3_SX1278)
+#define OLED_BUTTON_ENABLE       1
+#else
+#define OLED_BUTTON_ENABLE       0
+#endif
+#endif
+#ifndef OLED_BUTTON_PIN
+#define OLED_BUTTON_PIN          0
+#endif
+#ifndef OLED_BUTTON_DEBOUNCE_MS
+#define OLED_BUTTON_DEBOUNCE_MS  35UL
+#endif
+#ifndef OLED_BUTTON_MIN_PRESS_MS
+#define OLED_BUTTON_MIN_PRESS_MS 45UL
+#endif
+#ifndef OLED_BUTTON_MAX_PRESS_MS
+#define OLED_BUTTON_MAX_PRESS_MS 1800UL
+#endif
+
 #ifndef WIFI_SSID
 #define WIFI_SSID               "NomeReteWiFi"
+#endif
+#ifndef DEVICE_HOSTNAME
+#define DEVICE_HOSTNAME         "oregon-gateway"
 #endif
 #ifndef WIFI_PASSWORD
 #define WIFI_PASSWORD           "PasswordWiFi"

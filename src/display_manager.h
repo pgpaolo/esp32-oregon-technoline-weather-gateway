@@ -5,6 +5,9 @@
 #include "lacrosse_ws23xx.h"
 
 void initDisplay();
+void serviceDisplayButton();
+bool displayButtonEnabled();
+int displayButtonPin();
 bool displayEnabled();
 void setDisplayEnabled(bool enabled);
 void updateDisplay(const StationState &state, const OregonRxStats &rxStats, const LaCrosseRxStats &lcStats, bool wifiOk, bool mqttOk);

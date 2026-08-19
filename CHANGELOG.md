@@ -2,6 +2,28 @@
 
 All notable project changes are documented here.
 
+## [6.4.0-rc1] - 2026-08-19
+- Physical OLED button default made board-aware: enabled on T3-S3, conservative OFF on T3 V1.6.1 until hardware verification.
+
+### Added
+
+- Configurable device hostname persisted in NVS.
+- mDNS discovery through `<hostname>.local`.
+- Physical PRG/BOOT short-press fallback for OLED ON/OFF, configurable by GPIO.
+- Firmware, Git commit, build timestamp, board and last reset reason in the Hardware tab.
+- JSON configuration export/import for network, MQTT/TLS, MQTT field mask, OLED and persistent RF settings.
+- Optional inclusion of the MQTT password in configuration backups; Wi-Fi credentials remain excluded.
+
+### Changed
+
+- OLED boot splash now reports the firmware version from `FIRMWARE_VERSION`.
+- PlatformIO builds inject the short Git commit into the firmware when built from a Git checkout.
+
+### Security
+
+- Configuration export omits MQTT credentials by default and always excludes Wi-Fi credentials.
+- Imported backups are validated before persistent network/MQTT settings are applied.
+
 ## [6.3.0] - 2026-08-18
 
 ### Added
