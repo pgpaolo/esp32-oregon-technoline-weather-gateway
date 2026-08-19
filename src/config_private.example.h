@@ -2,6 +2,12 @@
 
 #define WIFI_SSID               "nome_wifi_2_4GHz"
 #define WIFI_PASSWORD           "password_wifi"
+#define DEVICE_HOSTNAME         "oregon-gateway"
+
+// Toggle fisico OLED. T3-S3: GPIO0 e' il BUTTON_PIN ufficiale.
+// T3 V1.6.1: abilitare solo dopo verifica della propria revisione hardware.
+// #define OLED_BUTTON_ENABLE   1
+// #define OLED_BUTTON_PIN      0
 
 #define WIFI_USE_STATIC_IP      1
 #define WIFI_IP_A 192
@@ -44,7 +50,7 @@
 #define OREGON_RX_BW_KHZ        125.0f
 #define OREGON_RX_GAIN          0
 #define OREGON_STRONG_PREAMBLE_MIN_SHORTS 28
-// V6.3: WGR800 1984 trattato come normale Oregon Protocol 3.0; nessuna soglia speciale.
+// WGR800 1984 trattato come normale Oregon Protocol 3.0; nessuna soglia speciale.
 
 // Profilo piu aggressivo da provare solo se necessario:
 // #define OREGON_RX_BW_KHZ     83.3f
@@ -52,6 +58,6 @@
 
 // Technoline WS230x / WS-2310 compatibility: normalmente NON modificare.
 // #define LACROSSE_WS23XX_ENABLE        1
-// V6.3: doppio decoder live (rtl_433 pulse-window + PracticalArduino leader 00001).
+// Doppio decoder live (rtl_433 pulse-window + PracticalArduino leader 00001).
 // #define LACROSSE_PERIOD_TOLERANCE_US 500U
 // #define LACROSSE_RESET_MIN_US        8000U

@@ -173,13 +173,13 @@ void setup() {
     delay(100);
     Serial.println();
     Serial.println(F("========================================"));
-    Serial.println(F(" Oregon + Technoline 433 Gateway V6.3"));
+    Serial.print(F(" Oregon + Technoline 433 Gateway ")); Serial.println(FIRMWARE_VERSION);
     Serial.print(F(" Board: ")); Serial.println(BOARD_NAME);
     Serial.println(F(" RF: SX1278 OOK direct RAW EDGE"));
     Serial.println(F(" Oregon: OSV3 V4.8 multi-decoder"));
     Serial.println(F(" Technoline: WS230x / WS-2310 rtl_433-compatible OOK/PWM 52-bit"));
     Serial.println(F(" RF mode: DUAL simultaneo + modalita singole diagnostiche"));
-    Serial.println(F(" Web: http://192.168.1.220/"));
+    Serial.println(F(" Web: HTTP + hostname/mDNS configurabile"));
     Serial.println(F("========================================"));
 
     pinMode(BOARD_LED_PIN, OUTPUT);
@@ -239,6 +239,7 @@ void loop() {
         }
     }
 
+    serviceDisplayButton();
     serviceWiFi();
     serviceWeb();
 

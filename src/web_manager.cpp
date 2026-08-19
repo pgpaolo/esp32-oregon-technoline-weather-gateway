@@ -3,7 +3,9 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <math.h>
+#include <ctype.h>
 #include "config.h"
+#include "board_config.h"
 #include "network_manager.h"
 #include "barometer_manager.h"
 #include "weather_parser.h"
@@ -11,12 +13,14 @@
 #include "lacrosse_ws23xx.h"
 #include "mqtt_publisher.h"
 #include "display_manager.h"
+#include "firmware_info.h"
 
 namespace {
 WebServer server(80);
 StationState *station = nullptr;
 bool webStarted = false;
 uint32_t rebootAtMs = 0;
+String jsonEscapeString(const String &in);
 
 constexpr uint8_t RAW_HISTORY_SIZE = 32;
 struct RawEntry {
@@ -229,12 +233,15 @@ void handleState() {
     String out;
     out.reserve(9000);
     out += "{";
-    out += "\"version\":\"6.1\"";
+    out += "\"version\":\"" + String(firmwareVersion()) + "\"";
     out += ",\"rf_mode\":\"" + String(rfProtocolModeName(getRfProtocolMode())) + "\"";
     out += ",\"uptime_s\":" + String(now / 1000UL);
     out += ",\"wifi\":{\"connected\":";
     out += wifiConnected() ? "true" : "false";
     out += ",\"ip\":\"" + wifiIpAddress() + "\"";
+    out += ",\"hostname\":\"" + networkHostname() + "\"";
+    out += ",\"mdns\":\"" + networkMdnsName() + "\"";
+    out += ",\"mdns_active\":"; out += networkMdnsActive() ? "true" : "false";
     out += ",\"rssi\":" + String(wifiRssi()) + "}";
 
     out += ",\"session\":{";
@@ -547,6 +554,11 @@ void handleState() {
     const uint32_t freeSketch = ESP.getFreeSketchSpace();
     out += ",\"system\":{";
     out += "\"chip\":\"" + String(ESP.getChipModel()) + "\"";
+    out += ",\"board\":\"" + jsonEscapeString(String(BOARD_NAME)) + "\"";
+    out += ",\"firmware\":\"" + jsonEscapeString(String(firmwareVersion())) + "\"";
+    out += ",\"git_commit\":\"" + jsonEscapeString(String(firmwareGitCommit())) + "\"";
+    out += ",\"build\":\"" + jsonEscapeString(firmwareBuildTimestamp()) + "\"";
+    out += ",\"reset_reason\":\"" + String(firmwareResetReason()) + "\"";
     out += ",\"revision\":" + String(ESP.getChipRevision());
     out += ",\"cores\":" + String(ESP.getChipCores());
     out += ",\"cpu_mhz\":" + String(ESP.getCpuFreqMHz());
@@ -561,6 +573,8 @@ void handleState() {
     out += ",\"wifi_rssi\":" + String(wifiRssi());
     out += ",\"rf_overflows\":" + String(rx.ringOverflows);
     out += ",\"display_on\":"; out += displayEnabled() ? "true" : "false";
+    out += ",\"display_button_enabled\":"; out += displayButtonEnabled() ? "true" : "false";
+    out += ",\"display_button_pin\":" + String(displayButtonPin());
     out += "}";
     out += "}";
 
@@ -720,6 +734,256 @@ String jsonEscapeString(const String &in) {
     return out;
 }
 
+String configBackupJson(bool includeSecrets) {
+    const NetworkRuntimeConfig n = getNetworkConfig();
+    const MqttRuntimeConfig m = getMqttConfig();
+    String out;
+    out.reserve(6500);
+    out += "{\n  \"schema\":1";
+    out += ",\n  \"firmware\":\"" + jsonEscapeString(String(firmwareVersion())) + "\"";
+    out += ",\n  \"generated_by\":\"" + jsonEscapeString(networkHostname()) + "\"";
+    out += ",\n  \"include_secrets\":"; out += includeSecrets ? "true" : "false";
+    out += ",\n  \"wifi_credentials_included\":false";
+    out += ",\n  \"hostname\":\"" + jsonEscapeString(n.hostname) + "\"";
+    out += ",\n  \"use_static\":"; out += n.useStatic ? "true" : "false";
+    out += ",\n  \"ip\":\"" + jsonEscapeString(n.ip) + "\"";
+    out += ",\n  \"gateway\":\"" + jsonEscapeString(n.gateway) + "\"";
+    out += ",\n  \"subnet\":\"" + jsonEscapeString(n.subnet) + "\"";
+    out += ",\n  \"dns\":\"" + jsonEscapeString(n.dns) + "\"";
+    out += ",\n  \"mqtt_enabled\":"; out += m.enabled ? "true" : "false";
+    out += ",\n  \"mqtt_broker\":\"" + jsonEscapeString(m.broker) + "\"";
+    out += ",\n  \"mqtt_port\":" + String(m.port);
+    out += ",\n  \"mqtt_user\":\"" + jsonEscapeString(m.user) + "\"";
+    if (includeSecrets) out += ",\n  \"mqtt_password\":\"" + jsonEscapeString(m.password) + "\"";
+    out += ",\n  \"mqtt_client_id\":\"" + jsonEscapeString(m.clientId) + "\"";
+    out += ",\n  \"mqtt_base_topic\":\"" + jsonEscapeString(m.baseTopic) + "\"";
+    out += ",\n  \"mqtt_tls_mode\":" + String(static_cast<uint8_t>(m.tlsMode));
+    out += ",\n  \"mqtt_ca_certificate\":\"" + jsonEscapeString(m.caCertificate) + "\"";
+    out += ",\n  \"mqtt_fields_mask\":" + String(m.fieldsMask);
+    out += ",\n  \"display_on\":"; out += displayEnabled() ? "true" : "false";
+    out += ",\n  \"rf_mode\":" + String(static_cast<uint8_t>(getRfProtocolMode()));
+    out += ",\n  \"rf_gain_oregon\":" + String(getRadioGainForMode(RfProtocolMode::Oregon));
+    out += ",\n  \"rf_gain_technoline\":" + String(getRadioGainForMode(RfProtocolMode::LaCrosse));
+    out += ",\n  \"rf_profile\":" + String(static_cast<uint8_t>(getRadioFrontendProfile()));
+    out += ",\n  \"burst_extra\":"; out += burstRecoveryEnabled() ? "true" : "false";
+    out += "\n}\n";
+    return out;
+}
+
+bool jsonExtractValue(const String &json, const char *key, String &value, bool &quoted) {
+    // Parser minimale, ma limitato alle chiavi dell'oggetto JSON di primo livello.
+    // In questo modo una stringa PEM/password che contiene ad esempio "hostname"
+    // non puo' essere scambiata per una chiave del backup.
+    int depth = 0;
+    int pos = 0;
+    const int len = static_cast<int>(json.length());
+    while (pos < len) {
+        const char c = json[pos];
+        if (c == '{') { depth++; pos++; continue; }
+        if (c == '}') { depth--; pos++; continue; }
+        if (c != '"') { pos++; continue; }
+
+        // Legge una stringa intera; a depth==1 potrebbe essere una chiave oppure
+        // un valore. Dopo la chiusura verifichiamo la presenza dei due punti.
+        ++pos;
+        bool escape = false;
+        String token;
+        while (pos < len) {
+            const char ch = json[pos++];
+            if (escape) {
+                token += ch;
+                escape = false;
+            } else if (ch == '\\') {
+                escape = true;
+            } else if (ch == '"') {
+                break;
+            } else {
+                token += ch;
+            }
+        }
+        if (depth != 1 || token != key) continue;
+
+        int p = pos;
+        while (p < len && isspace(static_cast<unsigned char>(json[p]))) p++;
+        if (p >= len || json[p] != ':') continue; // era un valore stringa, non una chiave
+        p++;
+        while (p < len && isspace(static_cast<unsigned char>(json[p]))) p++;
+        if (p >= len) return false;
+
+        value = "";
+        quoted = json[p] == '"';
+        if (quoted) {
+            p++;
+            bool valueEscape = false;
+            while (p < len) {
+                const char ch = json[p++];
+                if (valueEscape) {
+                    switch (ch) {
+                        case 'n': value += '\n'; break;
+                        case 'r': value += '\r'; break;
+                        case 't': value += '\t'; break;
+                        case '\\': value += '\\'; break;
+                        case '"': value += '"'; break;
+                        default: value += ch; break;
+                    }
+                    valueEscape = false;
+                } else if (ch == '\\') {
+                    valueEscape = true;
+                } else if (ch == '"') {
+                    return true;
+                } else {
+                    value += ch;
+                }
+            }
+            return false;
+        }
+
+        const int valueStart = p;
+        while (p < len && json[p] != ',' && json[p] != '}') p++;
+        value = json.substring(valueStart, p);
+        value.trim();
+        return value.length() > 0;
+    }
+    return false;
+}
+
+bool jsonGetString(const String &json, const char *key, String &value) {
+    bool quoted = false;
+    String raw;
+    if (!jsonExtractValue(json, key, raw, quoted) || !quoted) return false;
+    value = raw;
+    return true;
+}
+
+bool jsonGetBool(const String &json, const char *key, bool &value) {
+    bool quoted = false;
+    String raw;
+    if (!jsonExtractValue(json, key, raw, quoted) || quoted) return false;
+    raw.toLowerCase();
+    if (raw == "true" || raw == "1") { value = true; return true; }
+    if (raw == "false" || raw == "0") { value = false; return true; }
+    return false;
+}
+
+bool jsonGetUInt(const String &json, const char *key, uint32_t &value) {
+    bool quoted = false;
+    String raw;
+    if (!jsonExtractValue(json, key, raw, quoted) || quoted || raw.length() == 0 || raw[0] == '-') return false;
+    char *end = nullptr;
+    const unsigned long parsed = strtoul(raw.c_str(), &end, 10);
+    if (!end || *end != '\0') return false;
+    value = static_cast<uint32_t>(parsed);
+    return true;
+}
+
+void handleConfigExport() {
+    const bool includeSecrets = server.hasArg("secrets") && (server.arg("secrets") == "1" || server.arg("secrets") == "true");
+    const String filename = networkHostname() + "-config-backup.json";
+    sendNoCache();
+    server.sendHeader("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+    server.send(200, "application/json; charset=utf-8", configBackupJson(includeSecrets));
+}
+
+void handleConfigImport() {
+    const String body = server.arg("plain");
+    if (body.length() < 20U || body.length() > 12000U) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"backup size invalid\"}");
+        return;
+    }
+
+    uint32_t schema = 0;
+    if (!jsonGetUInt(body, "schema", schema) || schema != 1U) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"unsupported backup schema\"}");
+        return;
+    }
+
+    NetworkRuntimeConfig n = getNetworkConfig();
+    MqttRuntimeConfig m = getMqttConfig();
+    bool tmpBool = false;
+    uint32_t tmpUInt = 0;
+    String tmpString;
+
+    if (jsonGetString(body, "hostname", tmpString)) n.hostname = tmpString;
+    if (jsonGetBool(body, "use_static", tmpBool)) n.useStatic = tmpBool;
+    if (jsonGetString(body, "ip", tmpString)) n.ip = tmpString;
+    if (jsonGetString(body, "gateway", tmpString)) n.gateway = tmpString;
+    if (jsonGetString(body, "subnet", tmpString)) n.subnet = tmpString;
+    if (jsonGetString(body, "dns", tmpString)) n.dns = tmpString;
+
+    if (jsonGetBool(body, "mqtt_enabled", tmpBool)) m.enabled = tmpBool;
+    if (jsonGetString(body, "mqtt_broker", tmpString)) m.broker = tmpString;
+    if (jsonGetUInt(body, "mqtt_port", tmpUInt)) {
+        if (tmpUInt < 1U || tmpUInt > 65535U) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid mqtt port\"}"); return; }
+        m.port = static_cast<uint16_t>(tmpUInt);
+    }
+    if (jsonGetString(body, "mqtt_user", tmpString)) m.user = tmpString;
+    bool replacePassword = jsonGetString(body, "mqtt_password", tmpString);
+    if (replacePassword) m.password = tmpString;
+    if (jsonGetString(body, "mqtt_client_id", tmpString)) m.clientId = tmpString;
+    if (jsonGetString(body, "mqtt_base_topic", tmpString)) m.baseTopic = tmpString;
+    if (jsonGetUInt(body, "mqtt_tls_mode", tmpUInt)) {
+        if (tmpUInt > 2U) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid mqtt tls mode\"}"); return; }
+        m.tlsMode = static_cast<MqttTlsMode>(tmpUInt);
+    }
+    const bool replaceCa = jsonGetString(body, "mqtt_ca_certificate", tmpString);
+    if (replaceCa) m.caCertificate = tmpString;
+    if (jsonGetUInt(body, "mqtt_fields_mask", tmpUInt)) m.fieldsMask = tmpUInt & MQTT_FIELDS_ALL;
+
+    bool displayOn = displayEnabled();
+    jsonGetBool(body, "display_on", displayOn);
+
+    uint32_t rfMode = static_cast<uint8_t>(getRfProtocolMode());
+    uint32_t gainO = getRadioGainForMode(RfProtocolMode::Oregon);
+    uint32_t gainL = getRadioGainForMode(RfProtocolMode::LaCrosse);
+    uint32_t profile = static_cast<uint8_t>(getRadioFrontendProfile());
+    bool burstExtra = burstRecoveryEnabled();
+    jsonGetUInt(body, "rf_mode", rfMode);
+    jsonGetUInt(body, "rf_gain_oregon", gainO);
+    jsonGetUInt(body, "rf_gain_technoline", gainL);
+    jsonGetUInt(body, "rf_profile", profile);
+    jsonGetBool(body, "burst_extra", burstExtra);
+    if (rfMode > 2U || gainO > 3U || gainL > 3U || profile > static_cast<uint8_t>(RfFrontendProfile::Manual)) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid RF backup values\"}");
+        return;
+    }
+    if (profile == static_cast<uint8_t>(RfFrontendProfile::AutoScan)) profile = static_cast<uint8_t>(RfFrontendProfile::Stable);
+
+    if (!validateNetworkConfig(n) || !validateMqttConfig(m, replacePassword, replaceCa)) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"backup contains invalid network or MQTT values\"}");
+        return;
+    }
+
+    bool netChanged = false;
+    if (!saveMqttConfig(m, replacePassword, replaceCa) || !saveNetworkConfig(n, netChanged)) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"could not save imported configuration\"}");
+        return;
+    }
+    setDisplayEnabled(displayOn);
+
+    // Per rendere persistente il profilo Oregon anche se il backup proviene da
+    // una sessione Technoline, applichiamo il profilo in Oregon e poi torniamo
+    // alla modalita' RF richiesta. L'import e' un'operazione occasionale.
+    const RfProtocolMode desiredMode = static_cast<RfProtocolMode>(rfMode);
+    setRfProtocolMode(RfProtocolMode::Oregon);
+    setRadioGainForMode(RfProtocolMode::LaCrosse, static_cast<uint8_t>(gainL));
+    if (profile <= static_cast<uint8_t>(RfFrontendProfile::WideMaxGain)) {
+        setRadioFrontendProfile(static_cast<RfFrontendProfile>(profile));
+    } else {
+        setRadioGainForMode(RfProtocolMode::Oregon, static_cast<uint8_t>(gainO));
+    }
+    setBurstRecoveryEnabled(burstExtra);
+    setRfProtocolMode(desiredMode);
+    resetRfSession(true);
+
+    rebootAtMs = millis() + 1500UL;
+    sendNoCache();
+    String out = "{\"ok\":true,\"rebooting\":true,\"network_changed\":";
+    out += netChanged ? "true" : "false";
+    out += ",\"password_imported\":"; out += replacePassword ? "true" : "false";
+    out += "}";
+    server.send(200, "application/json", out);
+}
+
 
 void handleBurstExtra() {
     if (!server.hasArg("enabled")) {
@@ -866,7 +1130,10 @@ void handleNetworkConfigGet() {
     const NetworkRuntimeConfig c = getNetworkConfig();
     String out;
     out.reserve(520);
-    out = "{\"use_static\":"; out += c.useStatic ? "true" : "false";
+    out = "{\"hostname\":\"" + jsonEscapeString(c.hostname) + "\"";
+    out += ",\"mdns\":\"" + jsonEscapeString(networkMdnsName()) + "\"";
+    out += ",\"mdns_active\":"; out += networkMdnsActive() ? "true" : "false";
+    out += ",\"use_static\":"; out += c.useStatic ? "true" : "false";
     out += ",\"ip\":\"" + jsonEscapeString(c.ip) + "\"";
     out += ",\"gateway\":\"" + jsonEscapeString(c.gateway) + "\"";
     out += ",\"subnet\":\"" + jsonEscapeString(c.subnet) + "\"";
@@ -878,6 +1145,7 @@ void handleNetworkConfigGet() {
 
 void handleNetworkConfigPost() {
     NetworkRuntimeConfig c = getNetworkConfig();
+    if (server.hasArg("hostname")) c.hostname = server.arg("hostname");
     if (server.hasArg("use_static")) c.useStatic = server.arg("use_static") == "1" || server.arg("use_static") == "true" || server.arg("use_static") == "on";
     if (server.hasArg("ip")) c.ip = server.arg("ip");
     if (server.hasArg("gateway")) c.gateway = server.arg("gateway");
@@ -893,7 +1161,9 @@ void handleNetworkConfigPost() {
     sendNoCache();
     String out = "{\"ok\":true,\"changed\":"; out += changed ? "true" : "false";
     out += ",\"rebooting\":"; out += reboot ? "true" : "false";
-    out += ",\"new_ip\":\"" + jsonEscapeString(c.ip) + "\"}";
+    out += ",\"new_ip\":\"" + jsonEscapeString(c.ip) + "\"";
+    out += ",\"hostname\":\"" + jsonEscapeString(c.hostname) + "\"";
+    out += ",\"mdns\":\"" + jsonEscapeString(c.hostname + ".local") + "\"}";
     server.send(200, "application/json", out);
 }
 
@@ -940,7 +1210,7 @@ void handleBursts() {
 void handleRoot() {
     static const char PAGE[] PROGMEM = R"HTML(
 <!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Oregon + Technoline Gateway V6.3</title>
+<title>Oregon + Technoline Gateway</title>
 <style>
 :root{color-scheme:dark;--bg:#08111f;--panel:#0d1829;--panel2:#101d30;--panel3:#0a1525;--border:#26384e;--text:#e8eef8;--muted:#8fa7c5;--ok:#30d99a;--warn:#f0b24a;--bad:#ff7070;--blue:#83b7ff;--oregon:#3fd39b;--tech:#55aef6;--bme:#f0b24a}
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#08111f 0,#07101c 100%);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif}main{max-width:1580px;margin:auto;padding:14px}.top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.brand{min-width:280px;flex:1}.title{font-weight:800;font-size:1.28rem;letter-spacing:.01em}.sub,.muted{color:var(--muted);font-size:.83rem}.headerActions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.statusPill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--border);background:#0d1829;padding:8px 11px;border-radius:999px;font-size:.78rem;font-weight:700;color:var(--muted)}.statusPill:before{content:'';width:8px;height:8px;border-radius:50%;background:#65758a;box-shadow:0 0 0 3px #65758a18}.statusPill.ok{color:#91e8c4;border-color:#1d664f}.statusPill.ok:before{background:var(--ok);box-shadow:0 0 0 3px #30d99a20}.statusPill.wait{color:#f2cb7c;border-color:#6a5424}.statusPill.wait:before{background:var(--warn)}.statusPill.bad{color:#ff9b9b;border-color:#71323a}.statusPill.bad:before{background:var(--bad)}
@@ -955,7 +1225,7 @@ void handleRoot() {
 @media(max-width:1220px){.weatherGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.bmeGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.diagGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.fieldGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.rfControls{grid-template-columns:1fr 1fr}}
 @media(max-width:760px){main{padding:9px}.title{font-size:1.08rem}.sub{font-size:.75rem}.headerActions{width:100%}.statusPill{padding:7px 9px}.mainTabs{position:sticky;top:0;z-index:5}.weatherGrid,.bmeGrid{grid-template-columns:1fr;padding:10px}.diagGrid,.resourceGrid,.resourceHeroGrid,.fieldGrid,.cfgGrid,.rfControls{grid-template-columns:1fr}.windCard .body{grid-template-columns:minmax(0,1fr) 100px}.windCompass{width:94px;height:94px}.spark{width:82px}.modeBox{align-items:flex-start}.modeBtn{padding:8px 10px}}
 </style></head><body><main>
-<div class="top"><div class="brand"><div class="title">Oregon + Technoline 433 Gateway V6.3</div><div class="sub">LILYGO T3 · SX1278 OOK 433.92 MHz · decoder Oregon OSV3 + Technoline WS230x</div></div><div class="headerActions"><span id="hdrRf" class="statusPill wait">RF --</span><span id="net" class="statusPill wait">Wi-Fi...</span><span id="hdrMqtt" class="statusPill wait">MQTT...</span><button id="displayBtn" class="modeBtn" onclick="toggleDisplay()" title="Accende o spegne il display OLED; RF, Wi-Fi, Web e MQTT restano attivi">OLED --</button><button class="modeBtn dangerBtn" onclick="restartDevice()" title="Riavvia ESP32 senza cancellare la configurazione">⟳ RIAVVIA</button></div></div>
+<div class="top"><div class="brand"><div class="title">Oregon + Technoline 433 Gateway</div><div class="sub">LILYGO T3 · SX1278 OOK 433.92 MHz · decoder Oregon OSV3 + Technoline WS230x</div></div><div class="headerActions"><span id="hdrRf" class="statusPill wait">RF --</span><span id="net" class="statusPill wait">Wi-Fi...</span><span id="hdrMqtt" class="statusPill wait">MQTT...</span><button id="displayBtn" class="modeBtn" onclick="toggleDisplay()" title="Accende o spegne il display OLED; RF, Wi-Fi, Web e MQTT restano attivi">OLED --</button><button class="modeBtn dangerBtn" onclick="restartDevice()" title="Riavvia ESP32 senza cancellare la configurazione">⟳ RIAVVIA</button></div></div>
 <div class="mainTabs"><button id="mainTabDashboard" class="mainTab active" onclick="showMainTab('dashboard')">DASHBOARD</button><button id="mainTabHardware" class="mainTab" onclick="showMainTab('hardware')">HARDWARE</button><button id="mainTabConfig" class="mainTab" onclick="showMainTab('config')">CONFIGURAZIONE</button><button id="mainTabDiag" class="mainTab" onclick="showMainTab('diag')">DIAGNOSTICA</button></div>
 <section id="mainDashboard" class="mainPage active"><div class="panel stationOregon" id="oregonPanel"><div class="panelHead">Dati meteo live · Oregon OSV3 <span id="oregonModeBadge" class="badge off">RF non in ascolto</span></div><div class="acqBar"><b>Acquisizione Oregon</b><span id="sessionAge" class="badge off">--</span><span id="acqThermo" class="badge wait">THGN attesa</span><span id="acqWind" class="badge wait">WGR attesa</span><span id="acqRain" class="badge wait">PCR attesa</span><span id="acqUv" class="badge wait">UVN attesa</span></div><div class="weatherGrid">
 <section class="card good"><div class="cardTitle">Temperatura e umidita<svg class="spark" id="spTemp"></svg></div><div class="body">
@@ -1023,14 +1293,18 @@ void handleRoot() {
 <div class="panel"><div class="panelHead">Hardware Monitor <span class="muted">aggiornamento live · nessuna scrittura flash</span></div>
 <div class="resourceHeroGrid"><div class="resourceHero"><div class="heroLabel">CPU</div><div class="heroValue" id="sysCpu">--</div><div class="heroState">ESP32 runtime</div></div><div class="resourceHero"><div class="heroLabel">RAM utilizzata</div><div class="heroValue" id="sysHeapPct">--</div><div class="heroState">heap dinamico</div></div><div class="resourceHero"><div class="heroLabel">Wi-Fi</div><div class="heroValue" id="sysWifi">--</div><div class="heroState">RSSI collegamento</div></div></div>
 <div class="resourceGrid">
-<section class="card"><div class="cardTitle">CPU / SoC</div><div class="body"><div class="resourceLine"><span class="name">Chip</span><span class="value" id="sysChip">--</span></div><div class="resourceLine"><span class="name">Core</span><span class="value" id="sysCores">--</span></div><div class="resourceLine"><span class="name">Uptime</span><span class="value" id="sysUptime">--</span></div><div class="resourceLine"><span class="name">Display OLED</span><span class="value" id="sysDisplay">--</span></div></div></section>
+<section class="card"><div class="cardTitle">CPU / SoC</div><div class="body"><div class="resourceLine"><span class="name">Chip</span><span class="value" id="sysChip">--</span></div><div class="resourceLine"><span class="name">Core</span><span class="value" id="sysCores">--</span></div><div class="resourceLine"><span class="name">Uptime</span><span class="value" id="sysUptime">--</span></div><div class="resourceLine"><span class="name">Display OLED</span><span class="value" id="sysDisplay">--</span></div><div class="resourceLine"><span class="name">Pulsante OLED</span><span class="value" id="sysDisplayButton">--</span></div></div></section>
+<section class="card"><div class="cardTitle">Firmware / boot</div><div class="body"><div class="resourceLine"><span class="name">Firmware</span><span class="value" id="sysFirmware">--</span></div><div class="resourceLine"><span class="name">Git commit</span><span class="value" id="sysGit">--</span></div><div class="resourceLine"><span class="name">Build</span><span class="value" id="sysBuild">--</span></div><div class="resourceLine"><span class="name">Ultimo reset</span><span class="value" id="sysReset">--</span></div><div class="resourceLine"><span class="name">Board</span><span class="value" id="sysBoard">--</span></div></div></section>
 <section class="card"><div class="cardTitle">Memoria RAM</div><div class="body"><div class="resourceLine"><span class="name">Heap usato</span><span class="value" id="sysHeapUsed">--</span></div><div class="resourceLine"><span class="name">Heap libero</span><span class="value" id="sysHeapFree">--</span></div><div class="resourceLine"><span class="name">Minimo libero</span><span class="value" id="sysHeapMin">--</span></div><div class="meter"><span id="sysHeapBar"></span></div></div></section>
 <section class="card"><div class="cardTitle">Flash / radio</div><div class="body"><div class="resourceLine"><span class="name">Sketch / flash</span><span class="value" id="sysFlash">--</span></div><div class="resourceLine"><span class="name">Spazio OTA libero</span><span class="value" id="sysOta">--</span></div><div class="resourceLine"><span class="name">RF ring overflow</span><span class="value" id="sysOvf">--</span></div><div class="meter"><span id="sysFlashBar"></span></div></div></section>
+<section class="card"><div class="cardTitle">Rete</div><div class="body"><div class="resourceLine"><span class="name">Hostname</span><span class="value" id="sysHostname">--</span></div><div class="resourceLine"><span class="name">mDNS</span><span class="value" id="sysMdns">--</span></div><div class="resourceLine"><span class="name">IP</span><span class="value" id="sysIp">--</span></div></div></section>
 </div><div class="cfgNote">Il monitor usa i dati gia presenti in <code>/api/state</code>. Non aggiunge polling, storage o scritture NVS.</div></div>
 </section>
 <section id="mainConfig" class="mainPage">
-<div class="panel cfgPanel"><div class="panelHead">Configurazione dispositivo <span class="muted">NVS solo su modifica</span></div><div class="cfgTabs"><button id="tabNet" class="cfgTab active" onclick="showCfgTab('net')">RETE / IP</button><button id="tabMqtt" class="cfgTab" onclick="showCfgTab('mqtt')">MQTT / TLS</button></div><div id="cfgNet" class="cfgPage active">
+<div class="panel cfgPanel"><div class="panelHead">Configurazione dispositivo <span class="muted">NVS solo su modifica</span></div><div class="cfgTabs"><button id="tabNet" class="cfgTab active" onclick="showCfgTab('net')">RETE / IP</button><button id="tabMqtt" class="cfgTab" onclick="showCfgTab('mqtt')">MQTT / TLS</button><button id="tabBackup" class="cfgTab" onclick="showCfgTab('backup')">BACKUP / RESTORE</button></div><div id="cfgNet" class="cfgPage active">
 <div class="cfgGrid">
+<label><span>Hostname dispositivo</span><input id="netHostname" type="text" maxlength="32" placeholder="oregon-gateway"></label>
+<label><span>Indirizzo mDNS</span><input id="netMdns" type="text" readonly></label>
 <label class="checkLine"><input id="netStatic" type="checkbox"><span>Usa IP statico</span></label>
 <label><span>IP scheda</span><input id="netIp" type="text" maxlength="15" placeholder="192.168.1.220"></label>
 <label><span>Gateway</span><input id="netGw" type="text" maxlength="15" placeholder="192.168.1.1"></label>
@@ -1038,7 +1312,7 @@ void handleRoot() {
 <label><span>DNS</span><input id="netDns" type="text" maxlength="15" placeholder="192.168.1.1"></label>
 <label><span>IP attuale</span><input id="netActual" type="text" readonly></label>
 </div><div class="cfgActions"><button class="modeBtn" onclick="saveNetwork()">Salva e riavvia</button><button class="modeBtn" onclick="resetNetwork()">Default firmware</button><span id="netSummary" class="muted"></span></div>
-<div class="cfgNote">Le modifiche di rete vengono salvate solo se cambiano davvero e diventano attive dopo il riavvio. Con DHCP disattivi l'IP statico. I dati meteo non vengono mai scritti in flash.</div>
+<div class="cfgNote">Hostname: 1-32 caratteri, solo a-z, 0-9 e trattino; viene convertito in minuscolo. Le modifiche di rete diventano attive dopo il riavvio. mDNS consente l'accesso come <code>http://hostname.local/</code> sui client che supportano Bonjour/mDNS. I dati meteo non vengono mai scritti in flash.</div>
 </div>
 <div id="cfgMqtt" class="cfgPage">
 <div class="cfgGrid">
@@ -1071,6 +1345,14 @@ void handleRoot() {
 <div class="cfgActions"><button class="modeBtn" onclick="saveMqtt()">Salva MQTT / TLS</button><button class="modeBtn" onclick="resetMqtt()">Default firmware</button><span id="mqttSummary" class="muted"></span></div>
 <div class="cfgNote">TLS verificato usa la CA PEM inserita qui. La modalita TLS senza verifica cifra il traffico ma non autentica il broker: usala solo per test. Password, CA e mask campi vengono scritti in NVS soltanto se cambiano.</div>
 </div>
+<div id="cfgBackup" class="cfgPage">
+<div class="cfgGrid">
+<label class="checkLine"><input id="backupSecrets" type="checkbox"><span>Includi password MQTT nel backup</span></label>
+<label class="cfgWide"><span>File backup da ripristinare</span><input id="backupFile" type="file" accept="application/json,.json"></label>
+</div>
+<div class="cfgActions"><button class="modeBtn" onclick="exportConfig()">Esporta configurazione</button><button class="modeBtn dangerBtn" onclick="importConfig()">Importa e riavvia</button><span id="backupSummary" class="muted">Backup schema 1 · JSON</span></div>
+<div class="cfgNote"><b>Incluso:</b> hostname/IP, MQTT/TLS, campi MQTT, stato OLED e configurazione RF persistente. <b>Non incluso:</b> SSID/password Wi-Fi, che in questa versione restano nel firmware/config_private.h. Per sicurezza la password MQTT e' esclusa salvo selezione esplicita. L'import valida il file e riavvia il gateway.</div>
+</div>
 </div>
 </section>
 <section id="mainDiag" class="mainPage">
@@ -1086,17 +1368,18 @@ void handleRoot() {
 </section></main><script>
 const E=id=>document.getElementById(id);const f=(v,d=1,u='')=>v==null?'--':Number(v).toFixed(d)+u;const age=v=>(v==null||v>4290000)?'mai':(v<60?v+' s fa':Math.floor(v/60)+' min fa');const batt=x=>!x||!x.battery_known?'<span class=\"battNA\">BAT N/D</span>':(x.battery_low?'<span class=\"battLOW\">BAT LOW</span>':'<span class=\"battOK\">BAT OK</span>');const setBadge=(id,ok,label)=>{const e=E(id);e.className='badge '+(ok?'ok':'wait');e.textContent=label};const qClass=q=>q<0?'':(q>=85?'qgood':(q>=60?'qwarn':'qbad'));const qText=q=>q<0?'--':q+'%';const showOrWait=(el,ok,value)=>{el.classList.toggle('waitingText',!ok);el.textContent=ok?value:'IN ATTESA'};
 const hist={temp:[],bmeTemp:[],press:[],wind:[],rain:[],uv:[],lcTemp:[],lcWind:[],lcRain:[]};let modeBusy=false;async function setRfMode(mode){if(modeBusy)return;modeBusy=true;for(const id of ['modeDual','modeOregon','modeTechnoline'])E(id).disabled=true;try{const r=await fetch('/api/rfmode?mode='+encodeURIComponent(mode),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());await refresh();}catch(e){alert('Cambio modalita RF fallito: '+e)}finally{modeBusy=false;for(const id of ['modeDual','modeOregon','modeTechnoline'])E(id).disabled=false}}async function setRfGain(g){if(modeBusy)return;modeBusy=true;for(let i=0;i<4;i++)E('gain'+i).disabled=true;try{const r=await fetch('/api/rfgain?gain='+g,{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());await refresh();}catch(e){alert('Cambio guadagno fallito: '+e)}finally{modeBusy=false;for(let i=0;i<4;i++)E('gain'+i).disabled=false}}async function setRfProfile(p){if(modeBusy)return;modeBusy=true;for(const id of ['profStable','profWide','profMax','profAuto'])E(id).disabled=true;try{const r=await fetch('/api/rfprofile?profile='+encodeURIComponent(p),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());await refresh();}catch(e){alert('Cambio profilo RF fallito: '+e)}finally{modeBusy=false;for(const id of ['profStable','profWide','profMax','profAuto'])E(id).disabled=false}}async function toggleBurstExtra(){if(modeBusy)return;modeBusy=true;try{const cur=E('burstExtra').classList.contains('active');const r=await fetch('/api/burstextra?enabled='+(cur?'0':'1'),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());await refresh();}catch(e){alert('BURST EXTRA: '+e)}finally{modeBusy=false}}async function toggleWgrProbe(){if(modeBusy)return;modeBusy=true;try{const cur=E('wgrProbe').classList.contains('active');const r=await fetch('/api/wgrprobe?enabled='+(cur?'0':'1'),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());await refresh();}catch(e){alert('WGR PROBE: '+e)}finally{modeBusy=false}}
-let mainTab='dashboard';function showMainTab(t){mainTab=t;for(const x of ['dashboard','hardware','config','diag']){const on=t===x;E('main'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on);E('mainTab'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on)}if(t==='config')loadNetwork();if(t==='config')loadMqtt();}function showCfgTab(t){for(const x of ['net','mqtt']){const on=t===x;E('cfg'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on);E('tab'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on)}if(t==='net')loadNetwork();else if(t==='mqtt')loadMqtt();}function setFresh(id,sec,available=true){const e=E(id),c=e&&e.closest('.card');if(!c)return;c.classList.remove('fresh','aging','stale','nodata');if(!available||sec==null||Number(sec)>4290000){c.classList.add('nodata');return}const v=Number(sec);c.classList.add(v<=90?'fresh':(v<=240?'aging':'stale'))}
-async function loadNetwork(){try{const n=await (await fetch('/api/network',{cache:'no-store'})).json();E('netStatic').checked=!!n.use_static;E('netIp').value=n.ip||'';E('netGw').value=n.gateway||'';E('netMask').value=n.subnet||'';E('netDns').value=n.dns||'';E('netActual').value=n.actual_ip||'-';E('netSummary').textContent=n.use_static?'IP statico salvato':'DHCP';}catch(e){E('netSummary').textContent='errore lettura rete'}}
-async function saveNetwork(){const q=new URLSearchParams();q.set('use_static',E('netStatic').checked?'1':'0');q.set('ip',E('netIp').value);q.set('gateway',E('netGw').value);q.set('subnet',E('netMask').value);q.set('dns',E('netDns').value);q.set('reboot','1');const r=await fetch('/api/network?'+q.toString(),{method:'POST',cache:'no-store'});if(!r.ok){alert('Rete: '+await r.text());return}const j=await r.json();if(j.changed){alert('Configurazione salvata. La scheda si riavvia; se hai cambiato IP riapri http://'+j.new_ip+'/');}else{E('netSummary').textContent='Nessuna modifica: zero scritture NVS';}}
+let mainTab='dashboard';function showMainTab(t){mainTab=t;for(const x of ['dashboard','hardware','config','diag']){const on=t===x;E('main'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on);E('mainTab'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on)}if(t==='config')loadNetwork();if(t==='config')loadMqtt();}function showCfgTab(t){for(const x of ['net','mqtt','backup']){const on=t===x;E('cfg'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on);E('tab'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on)}if(t==='net')loadNetwork();else if(t==='mqtt')loadMqtt();}function setFresh(id,sec,available=true){const e=E(id),c=e&&e.closest('.card');if(!c)return;c.classList.remove('fresh','aging','stale','nodata');if(!available||sec==null||Number(sec)>4290000){c.classList.add('nodata');return}const v=Number(sec);c.classList.add(v<=90?'fresh':(v<=240?'aging':'stale'))}
+async function loadNetwork(){try{const n=await (await fetch('/api/network',{cache:'no-store'})).json();E('netHostname').value=n.hostname||'';E('netMdns').value=n.mdns?('http://'+n.mdns+'/'):'-';E('netStatic').checked=!!n.use_static;E('netIp').value=n.ip||'';E('netGw').value=n.gateway||'';E('netMask').value=n.subnet||'';E('netDns').value=n.dns||'';E('netActual').value=n.actual_ip||'-';E('netSummary').textContent=(n.use_static?'IP statico':'DHCP')+' · '+(n.mdns_active?'mDNS attivo':'mDNS in attesa');}catch(e){E('netSummary').textContent='errore lettura rete'}}
+async function saveNetwork(){const q=new URLSearchParams();q.set('hostname',E('netHostname').value.trim().toLowerCase());q.set('use_static',E('netStatic').checked?'1':'0');q.set('ip',E('netIp').value);q.set('gateway',E('netGw').value);q.set('subnet',E('netMask').value);q.set('dns',E('netDns').value);q.set('reboot','1');const r=await fetch('/api/network?'+q.toString(),{method:'POST',cache:'no-store'});if(!r.ok){alert('Rete: '+await r.text());return}const j=await r.json();if(j.changed){alert('Configurazione salvata. Riavvio in corso. Prova http://'+j.mdns+'/ oppure l\'IP configurato.');}else{E('netSummary').textContent='Nessuna modifica: zero scritture NVS';}}
 async function resetNetwork(){if(!confirm('Ripristinare IP/rete ai valori compilati nel firmware?'))return;const r=await fetch('/api/network/reset',{method:'POST',cache:'no-store'});if(!r.ok){alert('Reset rete fallito');return}const j=await r.json();if(j.changed)alert('Rete ripristinata. Riavvio in corso.');else E('netSummary').textContent='Gia ai default: zero scritture NVS';}
+function exportConfig(){const secrets=E('backupSecrets').checked?'1':'0';if(secrets&&!confirm('Il file conterra la password MQTT in chiaro. Continuare?'))return;window.location='/api/config/export?secrets='+secrets;}async function importConfig(){const file=E('backupFile').files[0];if(!file){alert('Seleziona un file JSON di backup.');return}if(file.size>12000){alert('Backup troppo grande.');return}if(!confirm('Importare la configurazione e riavviare il gateway?'))return;E('backupSummary').textContent='Importazione in corso...';try{const txt=await file.text();const r=await fetch('/api/config/import',{method:'POST',headers:{'Content-Type':'application/json'},body:txt,cache:'no-store'});const body=await r.text();if(!r.ok)throw new Error(body);const j=JSON.parse(body);E('backupSummary').textContent='Configurazione importata · riavvio in corso';alert('Backup importato correttamente. Il gateway si riavviera.');}catch(e){E('backupSummary').textContent='Importazione fallita';alert('Import backup fallito: '+e)}}
 function mqttSelectAll(v){document.querySelectorAll('[data-mqbit]').forEach(x=>x.checked=!!v)}function mqttSetMask(mask){const m=Number(mask)>>>0;document.querySelectorAll('[data-mqbit]').forEach(x=>x.checked=(m&(1<<Number(x.dataset.mqbit)))!==0)}function mqttGetMask(){let m=0;document.querySelectorAll('[data-mqbit]').forEach(x=>{if(x.checked)m|=(1<<Number(x.dataset.mqbit))});return m>>>0}function updateTlsUi(){const mode=Number(E('mqTlsMode').value);E('mqCaLabel').style.display=mode===1?'flex':'none'}async function loadMqtt(){try{const m=await (await fetch('/api/mqtt',{cache:'no-store'})).json();E('mqEnabled').checked=!!m.enabled;E('mqBroker').value=m.broker||'';E('mqPort').value=m.port||1883;E('mqUser').value=m.user||'';E('mqClient').value=m.client_id||'';E('mqTopic').value=m.base_topic||'';E('mqTlsMode').value=String(m.tls_mode||0);E('mqCa').value=m.ca_certificate||'';mqttSetMask(m.fields_mask==null?268435455:m.fields_mask);E('mqPassword').value='';E('mqClearPass').checked=false;E('mqPassword').placeholder=m.has_password?'password salvata · vuoto = mantieni':'nessuna password';updateTlsUi();E('mqttSummary').textContent=(m.enabled?(m.connected?' · CONNESSO':' · non connesso'):' · disabilitato')+' · '+(m.broker||'-')+':'+m.port+' · '+(m.tls_name||'OFF');const hm=E('hdrMqtt');hm.className='statusPill '+(!m.enabled?'wait':(m.connected?'ok':'bad'));hm.textContent=!m.enabled?'MQTT OFF':(m.connected?'MQTT OK':'MQTT KO');}catch(e){E('mqttSummary').textContent=' · errore';const hm=E('hdrMqtt');if(hm){hm.className='statusPill bad';hm.textContent='MQTT ERR'}}}
 async function saveMqtt(){const q=new URLSearchParams();q.set('enabled',E('mqEnabled').checked?'1':'0');q.set('broker',E('mqBroker').value);q.set('port',E('mqPort').value);q.set('user',E('mqUser').value);q.set('client_id',E('mqClient').value);q.set('base_topic',E('mqTopic').value);q.set('tls_mode',E('mqTlsMode').value);q.set('ca_certificate',E('mqCa').value);q.set('fields_mask',String(mqttGetMask()));if(E('mqPassword').value)q.set('password',E('mqPassword').value);if(E('mqClearPass').checked)q.set('clear_password','1');const r=await fetch('/api/mqtt',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:q.toString(),cache:'no-store'});if(!r.ok){alert('MQTT: '+await r.text());return}await loadMqtt();}
 async function resetMqtt(){if(!confirm('Ripristinare i valori MQTT compilati nel firmware?'))return;const r=await fetch('/api/mqtt/reset',{method:'POST',cache:'no-store'});if(!r.ok){alert('Reset MQTT fallito');return}await loadMqtt();}async function restartDevice(){if(!confirm('Riavviare ora la scheda ESP32?'))return;const r=await fetch('/api/restart',{method:'POST',cache:'no-store'});if(r.ok)alert('Riavvio ESP32 avviato. La pagina tornera disponibile tra pochi secondi.');else alert('Riavvio fallito');}let displayOn=true,displayBusy=false;async function toggleDisplay(){if(displayBusy)return;displayBusy=true;const btn=E('displayBtn'),target=!displayOn;if(btn)btn.disabled=true;try{const r=await fetch('/api/display?on='+(target?1:0),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const j=await r.json();displayOn=!!j.display_on;}catch(e){alert('Comando display fallito: '+e)}finally{if(btn)btn.disabled=false;updateDisplayUi();}}function updateDisplayUi(){const btn=E('displayBtn'),st=E('sysDisplay');if(btn){btn.textContent=displayOn?'OLED ON':'OLED OFF';btn.classList.toggle('active',!displayOn);btn.title=displayOn?'Clic per spegnere il display OLED':'Clic per riaccendere il display OLED';}if(st){st.textContent=displayOn?'ON':'POWER SAVE';st.className='value '+(displayOn?'ok':'muted');}}function setCompass(prefix,deg,label){const g=E(prefix+'CompassNeedle'),d=E(prefix+'CompassDeg'),n=E(prefix+'CompassDir');if(!g||deg==null||!Number.isFinite(Number(deg))){if(g)g.style.opacity=.25;if(d)d.textContent='--°';if(n)n.textContent='--';return}const v=((Number(deg)%360)+360)%360;g.style.opacity=1;g.setAttribute('transform','rotate('+v+' 60 60)');d.textContent=Math.round(v)+'°';n.textContent=label||''}function fmtBytes(v){const n=Number(v||0);if(n>=1048576)return (n/1048576).toFixed(2)+' MB';if(n>=1024)return (n/1024).toFixed(1)+' KB';return n+' B'}function fmtUptime(sec){let s=Number(sec||0),d=Math.floor(s/86400);s%=86400;let h=Math.floor(s/3600);s%=3600;let m=Math.floor(s/60);return (d?d+' g ':'')+String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')}
 function push(k,v){if(v==null)return;hist[k].push(Number(v));if(hist[k].length>60)hist[k].shift()}function spark(id,a){const el=document.getElementById(id);if(!el||a.length<2){if(el)el.innerHTML='';return}let mn=Math.min(...a),mx=Math.max(...a);if(mx===mn)mx=mn+1;let pts=a.map((v,i)=>((i/(a.length-1))*112+1).toFixed(1)+','+(26-((v-mn)/(mx-mn))*22).toFixed(1)).join(' ');el.innerHTML='<polyline points="'+pts+'" fill="none" stroke="#83b7ff" stroke-width="2"/>'}
 async function refresh(){try{const s=await (await fetch('/api/state',{cache:'no-store'})).json(),w=s.weather,bme=s.bme280||{},p=s.packets,r=s.rf,a=s.fresh,ss=s.sensors,lc=s.lacrosse,lcr=s.lacrosse_rf,sess=s.session,b=s.burst,wp=s.wgr_probe||{},sys=s.system||{};
 const net=E('net'),temp=E('temp'),hum=E('hum'),hi=E('hi'),dew=E('dew'),tin=E('tin'),hin=E('hin'),ageT=E('ageT'),footT=E('footT'),psta=E('psta'),psea=E('psea'),ptrend=E('ptrend'),forecast=E('forecast'),ageP=E('ageP'),footP=E('footP'),wind=E('wind'),gust=E('gust'),dir=E('dir'),wc=E('wc'),ageW=E('ageW'),footW=E('footW'),rate=E('rate'),r1h=E('r1h'),r24=E('r24'),rtot=E('rtot'),rinc=E('rinc'),ageR=E('ageR'),footR=E('footR'),uv=E('uv'),ageU=E('ageU'),footU=E('footU'),pkts=E('pkts'),rf=E('rf'),timing=E('timing'),quality=E('quality'),qualityLc=E('qualityLc'),burstDiag=E('burstDiag'),wgrDiag=E('wgrDiag'),bursts=E('bursts'),raw=E('raw');
-net.className='statusPill '+(s.wifi.connected?'ok':'bad');net.textContent=s.wifi.connected?'Wi-Fi '+s.wifi.rssi+' dBm':'Wi-Fi KO';const hr=E('hdrRf');hr.className='statusPill '+(s.rf_mode?'ok':'wait');hr.textContent='RF '+String(s.rf_mode||'--').toUpperCase();E('sysChip').textContent=(sys.chip||'ESP32')+' rev '+(sys.revision??'-');E('sysCpu').textContent=(sys.cpu_mhz??'--')+' MHz';E('sysCores').textContent=sys.cores??'--';E('sysUptime').textContent=fmtUptime(sys.uptime_s);E('sysHeapUsed').textContent=fmtBytes(sys.heap_used)+' / '+fmtBytes(sys.heap_size);E('sysHeapFree').textContent=fmtBytes(sys.heap_free);E('sysHeapMin').textContent=fmtBytes(sys.heap_min_free);const heapPct=sys.heap_size?Math.min(100,Math.max(0,Number(sys.heap_used)*100/Number(sys.heap_size))):0;E('sysHeapBar').style.width=heapPct.toFixed(1)+'%';E('sysHeapPct').textContent=heapPct.toFixed(1)+'%';E('sysFlash').textContent=fmtBytes(sys.sketch_size)+' / '+fmtBytes(sys.flash_size);E('sysOta').textContent=fmtBytes(sys.free_sketch_space);E('sysWifi').textContent=(sys.wifi_rssi??'--')+' dBm';E('sysOvf').textContent=sys.rf_overflows??0;displayOn=sys.display_on!==false;updateDisplayUi();const flashPct=sys.flash_size?Math.min(100,Math.max(0,Number(sys.sketch_size)*100/Number(sys.flash_size))):0;E('sysFlashBar').style.width=flashPct.toFixed(1)+'%';const isDual=s.rf_mode==='dual',isO=s.rf_mode==='oregon'||isDual,isT=s.rf_mode==='technoline'||isDual;E('modeDual').classList.toggle('active',isDual);E('modeOregon').classList.toggle('active',s.rf_mode==='oregon');E('modeTechnoline').classList.toggle('active',s.rf_mode==='technoline');E('oregonPanel').classList.toggle('stationInactive',!isO);E('lacrossePanel').classList.toggle('stationInactive',!isT);for(let i=0;i<4;i++)E('gain'+i).classList.toggle('active',Number(r.rx_gain)===i);const profMap={STABILE:'profStable','AMPIO-AGC':'profWide','MAX-125':'profMax','AUTO-SCAN':'profAuto'};for(const id of ['profStable','profWide','profMax','profAuto']){E(id).classList.toggle('active',profMap[r.frontend_profile]===id);E(id).disabled=!isO||modeBusy||(id==='profAuto'&&isDual)}const mb=E('oregonModeBadge');mb.className='badge '+(isO?'ok':'off');mb.textContent=isO?(isDual?'RF OREGON · DUAL':'RF OREGON IN ASCOLTO'):'RF non in ascolto · seleziona OREGON/DUAL';E('sessionAge').textContent=isO?'attiva da '+age(sess.age_s).replace(' fa',''):'sessione sospesa';E('sessionAge').className='badge '+(isO?'ok':'off');setBadge('acqThermo',sess.thermo_acquired,'THGN '+(sess.thermo_acquired?'OK':'attesa'));setBadge('acqWind',sess.wind_acquired,'WGR '+(sess.wind_acquired?'OK':'attesa'));setBadge('acqRain',sess.rain_acquired,'PCR '+(sess.rain_acquired?'OK':'attesa'));setBadge('acqUv',sess.uv_acquired,'UVN '+(sess.uv_acquired?'OK':'attesa'));const tmb=E('technolineModeBadge');tmb.className='badge '+(isT?'ok':'off');tmb.textContent=isT?(isDual?'RF TECHNOLINE · DUAL':'RF TECHNOLINE IN ASCOLTO'):'RF non in ascolto';E('lcSessionAge').textContent=isT?'attiva da '+age(sess.age_s).replace(' fa',''):'sessione sospesa';E('lcSessionAge').className='badge '+(isT?'ok':'off');setBadge('lcAcqT',sess.lc_temperature_acquired,'TEMP '+(sess.lc_temperature_acquired?'OK':'attesa'));setBadge('lcAcqH',sess.lc_humidity_acquired,'HUM '+(sess.lc_humidity_acquired?'OK':'attesa'));setBadge('lcAcqW',sess.lc_wind_acquired,'WIND '+(sess.lc_wind_acquired?'OK':'attesa'));const lcGustExpected=(Number(sess.lc_expected_mask||0)&16)!==0;if(lcGustExpected)setBadge('lcAcqG',sess.lc_gust_acquired,'GUST '+(sess.lc_gust_acquired?'OK':'attesa'));else{E('lcAcqG').className='badge off';E('lcAcqG').textContent='GUST non annunciata'}setBadge('lcAcqR',sess.lc_rain_acquired,'RAIN '+(sess.lc_rain_acquired?'OK':'attesa'));E('burstExtra').classList.toggle('active',!!b.enabled);E('burstExtra').textContent=b.enabled?'BURST EXTRA ON':'BURST EXTRA OFF';E('wgrProbe').classList.toggle('active',!!wp.enabled);E('wgrProbe').textContent=wp.enabled?'WGR PROBE ON':'WGR PROBE OFF';
+net.className='statusPill '+(s.wifi.connected?'ok':'bad');net.textContent=s.wifi.connected?'Wi-Fi '+s.wifi.rssi+' dBm':'Wi-Fi KO';const hr=E('hdrRf');hr.className='statusPill '+(s.rf_mode?'ok':'wait');hr.textContent='RF '+String(s.rf_mode||'--').toUpperCase();E('sysChip').textContent=(sys.chip||'ESP32')+' rev '+(sys.revision??'-');E('sysCpu').textContent=(sys.cpu_mhz??'--')+' MHz';E('sysCores').textContent=sys.cores??'--';E('sysUptime').textContent=fmtUptime(sys.uptime_s);E('sysFirmware').textContent=sys.firmware||'--';E('sysGit').textContent=sys.git_commit||'--';E('sysBuild').textContent=sys.build||'--';E('sysReset').textContent=sys.reset_reason||'--';E('sysBoard').textContent=sys.board||'--';E('sysDisplayButton').textContent=sys.display_button_enabled?('GPIO '+sys.display_button_pin+' · pressione breve'):'disabilitato';E('sysHeapUsed').textContent=fmtBytes(sys.heap_used)+' / '+fmtBytes(sys.heap_size);E('sysHeapFree').textContent=fmtBytes(sys.heap_free);E('sysHeapMin').textContent=fmtBytes(sys.heap_min_free);const heapPct=sys.heap_size?Math.min(100,Math.max(0,Number(sys.heap_used)*100/Number(sys.heap_size))):0;E('sysHeapBar').style.width=heapPct.toFixed(1)+'%';E('sysHeapPct').textContent=heapPct.toFixed(1)+'%';E('sysFlash').textContent=fmtBytes(sys.sketch_size)+' / '+fmtBytes(sys.flash_size);E('sysOta').textContent=fmtBytes(sys.free_sketch_space);E('sysWifi').textContent=(sys.wifi_rssi??'--')+' dBm';E('sysOvf').textContent=sys.rf_overflows??0;E('sysHostname').textContent=s.wifi.hostname||'--';E('sysMdns').textContent=s.wifi.mdns||'--';E('sysIp').textContent=s.wifi.ip||'--';displayOn=sys.display_on!==false;updateDisplayUi();const flashPct=sys.flash_size?Math.min(100,Math.max(0,Number(sys.sketch_size)*100/Number(sys.flash_size))):0;E('sysFlashBar').style.width=flashPct.toFixed(1)+'%';const isDual=s.rf_mode==='dual',isO=s.rf_mode==='oregon'||isDual,isT=s.rf_mode==='technoline'||isDual;E('modeDual').classList.toggle('active',isDual);E('modeOregon').classList.toggle('active',s.rf_mode==='oregon');E('modeTechnoline').classList.toggle('active',s.rf_mode==='technoline');E('oregonPanel').classList.toggle('stationInactive',!isO);E('lacrossePanel').classList.toggle('stationInactive',!isT);for(let i=0;i<4;i++)E('gain'+i).classList.toggle('active',Number(r.rx_gain)===i);const profMap={STABILE:'profStable','AMPIO-AGC':'profWide','MAX-125':'profMax','AUTO-SCAN':'profAuto'};for(const id of ['profStable','profWide','profMax','profAuto']){E(id).classList.toggle('active',profMap[r.frontend_profile]===id);E(id).disabled=!isO||modeBusy||(id==='profAuto'&&isDual)}const mb=E('oregonModeBadge');mb.className='badge '+(isO?'ok':'off');mb.textContent=isO?(isDual?'RF OREGON · DUAL':'RF OREGON IN ASCOLTO'):'RF non in ascolto · seleziona OREGON/DUAL';E('sessionAge').textContent=isO?'attiva da '+age(sess.age_s).replace(' fa',''):'sessione sospesa';E('sessionAge').className='badge '+(isO?'ok':'off');setBadge('acqThermo',sess.thermo_acquired,'THGN '+(sess.thermo_acquired?'OK':'attesa'));setBadge('acqWind',sess.wind_acquired,'WGR '+(sess.wind_acquired?'OK':'attesa'));setBadge('acqRain',sess.rain_acquired,'PCR '+(sess.rain_acquired?'OK':'attesa'));setBadge('acqUv',sess.uv_acquired,'UVN '+(sess.uv_acquired?'OK':'attesa'));const tmb=E('technolineModeBadge');tmb.className='badge '+(isT?'ok':'off');tmb.textContent=isT?(isDual?'RF TECHNOLINE · DUAL':'RF TECHNOLINE IN ASCOLTO'):'RF non in ascolto';E('lcSessionAge').textContent=isT?'attiva da '+age(sess.age_s).replace(' fa',''):'sessione sospesa';E('lcSessionAge').className='badge '+(isT?'ok':'off');setBadge('lcAcqT',sess.lc_temperature_acquired,'TEMP '+(sess.lc_temperature_acquired?'OK':'attesa'));setBadge('lcAcqH',sess.lc_humidity_acquired,'HUM '+(sess.lc_humidity_acquired?'OK':'attesa'));setBadge('lcAcqW',sess.lc_wind_acquired,'WIND '+(sess.lc_wind_acquired?'OK':'attesa'));const lcGustExpected=(Number(sess.lc_expected_mask||0)&16)!==0;if(lcGustExpected)setBadge('lcAcqG',sess.lc_gust_acquired,'GUST '+(sess.lc_gust_acquired?'OK':'attesa'));else{E('lcAcqG').className='badge off';E('lcAcqG').textContent='GUST non annunciata'}setBadge('lcAcqR',sess.lc_rain_acquired,'RAIN '+(sess.lc_rain_acquired?'OK':'attesa'));E('burstExtra').classList.toggle('active',!!b.enabled);E('burstExtra').textContent=b.enabled?'BURST EXTRA ON':'BURST EXTRA OFF';E('wgrProbe').classList.toggle('active',!!wp.enabled);E('wgrProbe').textContent=wp.enabled?'WGR PROBE ON':'WGR PROBE OFF';
 if(isO&&!sess.thermo_acquired){showOrWait(temp,false,'');showOrWait(hum,false,'');showOrWait(hi,false,'');showOrWait(dew,false,'');ageT.textContent='ultimo dato '+age(a.thermo_age_s)}else{showOrWait(temp,true,f(w.temperature_c,1,' °C'));showOrWait(hum,true,f(w.humidity_pct,0,' %'));showOrWait(hi,true,w.heat_index_c==null?'N/A':f(w.heat_index_c,1,' °C'));showOrWait(dew,true,f(w.dew_point_c,1,' °C'));ageT.textContent=age(a.thermo_age_s)}footT.innerHTML='AF: '+p.AF+' · sessione '+sess.thermo_received+' · '+ss.thermo.model+' '+ss.thermo.code+' · '+batt(ss.thermo);setFresh('ageT',a.thermo_age_s,isO&&sess.thermo_acquired);
 const bmeOk=!!bme.detected;E('bmeBadge').className='badge '+(bmeOk?'ok':'off');E('bmeBadge').textContent=bmeOk?'BME280 locale OK':'BME280 non rilevato';tin.textContent=f(bme.temperature_c,1,' °C');hin.textContent=f(bme.humidity_pct,0,' %');E('bmeAge').textContent=age(bme.age_s);psta.textContent=f(bme.pressure_station_hpa,1,' hPa');psea.textContent=f(bme.altimeter_hpa,1,' hPa');ptrend.textContent=bme.trend_hpa_3h==null?'in acquisizione':((bme.trend_hpa_3h>=0?'+':'')+f(bme.trend_hpa_3h,1,' hPa/3h'));forecast.textContent=bme.forecast||'In acquisizione';ageP.textContent=age(bme.age_s);footP.textContent=bmeOk?(bme.model+' · quota '+f(bme.altitude_m,0,' m')+' · trend '+(bme.trend||'N/D')):'BME280 non rilevato';E('bmeFootEnv').textContent=bmeOk?'Sensore hardware locale · indipendente da Oregon e Technoline':'BME280 non rilevato sul bus I²C';setFresh('bmeAge',bme.age_s,bmeOk);setFresh('ageP',bme.age_s,bmeOk);
 if(isO&&!sess.wind_acquired){showOrWait(wind,false,'');showOrWait(gust,false,'');showOrWait(dir,false,'');showOrWait(wc,false,'');ageW.textContent='ultimo dato '+age(a.wind_age_s)}else{showOrWait(wind,true,f(w.wind_average_kmh,1,' km/h'));showOrWait(gust,true,f(w.wind_gust_kmh,1,' km/h'));showOrWait(dir,true,w.wind_direction_deg==null?'--':f(w.wind_direction_deg,1,'° ')+w.wind_direction);showOrWait(wc,true,w.wind_chill_c==null?'N/A':f(w.wind_chill_c,1,' °C'));ageW.textContent=age(a.wind_age_s)}footW.innerHTML='A1: '+p.A1+' · sessione '+sess.wind_received+' · '+ss.wind.model+' '+ss.wind.code+' · '+batt(ss.wind)+' · WGR scan '+r.wind_recovery_success+'/'+r.wind_recovery_starts+' · csKO '+r.wind_scan_checksum_fail;setCompass('oregon',isO&&sess.wind_acquired?w.wind_direction_deg:null,w.wind_direction||'');setFresh('ageW',a.wind_age_s,isO&&sess.wind_acquired);
@@ -1106,7 +1389,7 @@ if(isT&&!sess.lc_temperature_acquired){showOrWait(E('lcTemp'),false,'')}else{sho
 push('temp',w.temperature_c);push('bmeTemp',bme.temperature_c);push('press',bme.pressure_station_hpa);push('wind',w.wind_average_kmh);push('rain',w.rain_rate_mmh);push('uv',w.uv<0?null:w.uv);push('lcTemp',lc.temperature_c);push('lcWind',lc.wind_kmh);push('lcRain',lc.rain_total_mm);spark('spTemp',hist.temp);spark('spBmeTemp',hist.bmeTemp);spark('spPress',hist.press);spark('spWind',hist.wind);spark('spRain',hist.rain);spark('spUv',hist.uv);spark('spLcTemp',hist.lcTemp);spark('spLcWind',hist.lcWind);spark('spLcRain',hist.lcRain);
 pkts.innerHTML='<b>Pacchetti validi</b><br>AF termo: '+p.AF+'<br>A1 vento: <b>'+p.A1+'</b><br>A2 pioggia: '+p.A2+'<br>AD UV: '+p.AD+'<br>DROP parser/checksum: '+p.rejected;
 rf.innerHTML='<b>Decoder RF Oregon</b><br>legacy strong: '+r.strong_frames+' frame<br>state-aware: <b>'+r.state_frames+'</b> frame · pre '+r.state_preambles+' · cand '+r.state_candidates+'<br>state checksum OK/fail: '+r.state_checksum_ok+'/'+r.state_checksum_fail+'<br><b>WGR800 1984 V3.0</b>: nessun preambolo speciale<br>WGR window OK/header/checksum KO: <b>'+r.wind_recovery_success+'</b>/'+r.wind_recovery_starts+'/'+r.wind_scan_checksum_fail+'<br>Burst Analyzer: <span class=muted>solo diagnostica, non decodifica</span><br>raw A1: <b>'+r.raw_A1+'</b> · duplicati '+r.duplicates;
-timing.innerHTML='<b>Timing RF · modo '+s.rf_mode.toUpperCase()+'</b><br>ON short/long: '+r.on_short_avg_us+'/'+r.on_long_avg_us+' µs<br>OFF short/long: '+r.off_short_avg_us+'/'+r.off_long_avg_us+' µs<br>state err timing/manchester: '+r.state_timing_errors+'/'+r.state_manchester_errors+'<br>legacy short/long: '+r.short_avg_us+'/'+r.long_avg_us+' µs<br>BW '+r.rx_bw_khz.toFixed(1)+' kHz · gain '+r.rx_gain+' ('+r.gain_name+') · profilo <b>'+r.frontend_profile+'</b> · O/T '+r.gain_oregon+'/'+r.gain_lacrosse+' · ovf '+r.overflows+(r.rx_gain===0?' · <span class=ok>AGC</span>':' · <span class=bad>gain fisso</span>')+'<br><b>TECH live PWM V6.3 · doppio decoder</b><br><b>PracticalArduino leader 00001:</b> start '+lcr.leader_starts+' (lost0 '+lcr.leader_lost_zero+') · frame '+lcr.leader_frames+' · <span class=ok>OK '+lcr.leader_valid+'</span> · KO '+lcr.leader_invalid+'<br>progress L0/L1 '+lcr.leader_bits_0+'/'+lcr.leader_bits_1+' · reset '+lcr.leader_resets+' · reject '+lcr.leader_rejects+'<br><b>rtl_433 pulse-window:</b> OK '+lcr.stream_valid+' · windows '+lcr.stream_windows+' · header '+lcr.stream_header_matches+' · pulses '+lcr.stream_pulses+' · H '+lcr.active_hypothesis+'<br>fail H/C/P/S '+lcr.header_fail+'/'+lcr.complement_fail+'/'+lcr.parity_fail+'/'+lcr.checksum_fail+' · short/long '+lcr.short_us+'/'+lcr.long_us+' µs<br>BURST recovery '+lcr.burst_valid+'/'+lcr.burst_attempts+' · missing-edge '+lcr.burst_recovered_missing_edge+' · reject '+lcr.burst_rejects+'<br>raw intervalli &lt;200/200-599/600-1099/1100-1799/1800-3499/≥3500: '+(lcr.interval_bins||[]).join('/');const stepRemain=b.auto_active?Math.max(0,Math.ceil((b.auto_step_duration_ms-(Number(s.uptime_s)*1000-b.auto_step_started_ms))/1000)):0;burstDiag.innerHTML='<b>RF Burst Analyzer / Recovery</b><br>stato: '+(b.enabled?'<span class=ok>ON</span>':'<span class=muted>OFF · percorso live invariato</span>')+'<br>burst totali: '+b.total+' · OSV3-like: <b>'+b.osv3_like+'</b> · TECH-like '+b.technoline_like+' · scartati '+b.discarded+'<br>profilo: <b>'+r.frontend_profile+'</b> · BW '+r.rx_bw_khz.toFixed(1)+' kHz · gain '+r.rx_gain+(b.auto_active?'<br><span class=ok>AUTO SCAN step '+(b.auto_step+1)+'/4 · ~'+stepRemain+' s residui</span>':'')+'<br><span class=muted>BURST EXTRA è opzionale: attivalo solo per diagnostica/recovery. In DUAL i decoder Oregon e Technoline live lavorano sempre insieme.</span>';wgrDiag.innerHTML='<b>WGR800 1984 · RF Probe V6.3</b><br>stato: '+(wp.enabled?'<span class=ok>ON · RAM-only</span>':'<span class=muted>OFF · nessun overhead</span>')+'<br>burst/osv3: '+wp.bursts_total+'/'+wp.osv3_like+' · classificati AF/A1/A2/AD '+wp.classified_af+'/'+wp.classified_a1+'/'+wp.classified_a2+'/'+wp.classified_ad+'<br>OSV3 non classificati: <b>'+wp.unclassified_osv3+'</b> · cadenza ~14 s: <b>'+wp.cadence14+'</b><br>ultimo non classificato: Δ '+(wp.last_unclassified_delta_ms?Math.round(wp.last_unclassified_delta_ms/1000*10)/10+' s':'-')+' · '+wp.last_unclassified_duration_ms+' ms · '+wp.last_unclassified_edges+' edge · match '+wp.last_unclassified_match_pct+'% · RSSI '+f(wp.last_unclassified_rssi,1)+'<br><span class=muted>Se crescono “OSV3 non classificati” e “cadenza ~14 s” mentre A1 resta a zero, la portante WGR arriva ma il Manchester/frame non viene ricostruito. Se restano a zero, indagare il trasmettitore/RF.</span>';quality.innerHTML=isO?('<b>Qualita sessione Oregon</b><div class="qrow qhdr"><span>Sensore</span><span>Rx</span><span>Attesi</span><span>Qualita</span></div>'+'<div class="qrow"><span>THGN ~53s</span><span>'+sess.thermo_received+'</span><span>'+sess.thermo_expected+'</span><span class="'+qClass(sess.thermo_quality_pct)+'">'+qText(sess.thermo_quality_pct)+'</span></div>'+'<div class="qrow"><span>WGR ~14s</span><span>'+sess.wind_received+'</span><span>'+sess.wind_expected+'</span><span class="'+qClass(sess.wind_quality_pct)+'">'+qText(sess.wind_quality_pct)+'</span></div>'+'<div class="qrow"><span>PCR ~47s</span><span>'+sess.rain_received+'</span><span>'+sess.rain_expected+'</span><span class="'+qClass(sess.rain_quality_pct)+'">'+qText(sess.rain_quality_pct)+'</span></div>'+'<div class="qrow"><span>UVN ~73s</span><span>'+sess.uv_received+'</span><span>'+sess.uv_expected+'</span><span class="'+qClass(sess.uv_quality_pct)+'">'+qText(sess.uv_quality_pct)+'</span></div><div class="muted" style="margin-top:7px">Sessione azzerata al cambio protocollo/gain.</div>'):'<b>Qualita sessione Oregon</b><br><span class="muted">OREGON non in ascolto.</span>';qualityLc.innerHTML=isT?('<b>Qualita sessione Technoline</b><div class="qrow qhdr"><span>Dato</span><span>Rx</span><span>Ultimo</span><span>Stato</span></div>'+ '<div class="qrow"><span>Decoder leader</span><span>'+lcr.leader_valid+'/'+lcr.leader_frames+'</span><span>-</span><span class="'+qClass(sess.lc_decoder_quality_pct)+'">'+qText(sess.lc_decoder_quality_pct)+'</span></div>'+ '<div class="qrow"><span>Temperatura</span><span>'+sess.lc_temperature_received+'</span><span>'+age(lc.temperature_age_s)+'</span><span>'+(sess.lc_temperature_acquired?'<span class=qgood>OK</span>':'attesa')+'</span></div>'+ '<div class="qrow"><span>Umidita</span><span>'+sess.lc_humidity_received+'</span><span>'+age(lc.humidity_age_s)+'</span><span>'+(sess.lc_humidity_acquired?'<span class=qgood>OK</span>':'attesa')+'</span></div>'+ '<div class="qrow"><span>Pioggia</span><span>'+sess.lc_rain_received+'</span><span>'+age(lc.rain_age_s)+'</span><span>'+(sess.lc_rain_acquired?'<span class=qgood>OK</span>':'attesa')+'</span></div>'+ '<div class="qrow"><span>Vento/Gust</span><span>'+sess.lc_wind_received+'/'+sess.lc_gust_received+'</span><span>'+age(lc.wind_age_s)+'</span><span>'+((sess.lc_wind_acquired||sess.lc_gust_acquired)?'<span class=qgood>OK</span>':'attesa')+'</span></div>'+ '<div class="muted" style="margin-top:7px">Tipi annunciati GWRH/T: mask 0x'+Number(sess.lc_expected_mask||0).toString(16).toUpperCase()+' · copertura tipi sessione <span class="'+qClass(sess.lc_type_coverage_pct)+'">'+qText(sess.lc_type_coverage_pct)+'</span> · next '+(sess.lc_cadence_ms?Math.round(sess.lc_cadence_ms/1000)+' s':'N/D')+'.</div>'):'<b>Qualita sessione Technoline</b><br><span class="muted">TECHNOLINE non in ascolto.</span>';if(mainTab==='diag'){const rr=await (await fetch('/api/raw',{cache:'no-store'})).json();raw.innerHTML=rr.map(e=>'<tr><td>'+e.ms+'</td><td class="'+(e.accepted?'ok':'bad')+'">'+(e.accepted?'OK':'DROP')+'</td><td>'+e.protocol+'</td><td>'+e.source+'</td><td>'+e.type+'</td><td>'+f(e.rssi,1)+'</td><td>'+e.hex+'</td><td>'+e.decoded+'</td></tr>').join('');if(b.enabled||b.auto_active){const bb=await (await fetch('/api/bursts',{cache:'no-store'})).json();bursts.innerHTML=bb.map(x=>'<tr><td>'+x.ms+'</td><td>'+x.duration_ms+' ms</td><td>'+x.edges+'</td><td>'+f(x.rssi,1)+'</td><td>'+x.match_pct+'%</td><td class="'+(x.osv3_like?'ok':'muted')+'">'+(x.osv3_like?'SI':'no')+'</td><td>'+(x.technoline_like?'TECH-like':(x.osv3_like?'OREGON-like':'rumore'))+'</td><td class="'+(x.adaptive_recovered?'ok':'muted')+'">'+(x.adaptive_recovered?'REC':'-')+'</td><td>'+x.on_short_us+'/'+x.on_long_us+'</td><td>'+x.off_short_us+'/'+x.off_long_us+'</td></tr>').join('')}else{bursts.innerHTML='<tr><td colspan=10 class=muted>BURST EXTRA disattivato · nessun overhead diagnostico sul percorso RF live</td></tr>';}}
+timing.innerHTML='<b>Timing RF · modo '+s.rf_mode.toUpperCase()+'</b><br>ON short/long: '+r.on_short_avg_us+'/'+r.on_long_avg_us+' µs<br>OFF short/long: '+r.off_short_avg_us+'/'+r.off_long_avg_us+' µs<br>state err timing/manchester: '+r.state_timing_errors+'/'+r.state_manchester_errors+'<br>legacy short/long: '+r.short_avg_us+'/'+r.long_avg_us+' µs<br>BW '+r.rx_bw_khz.toFixed(1)+' kHz · gain '+r.rx_gain+' ('+r.gain_name+') · profilo <b>'+r.frontend_profile+'</b> · O/T '+r.gain_oregon+'/'+r.gain_lacrosse+' · ovf '+r.overflows+(r.rx_gain===0?' · <span class=ok>AGC</span>':' · <span class=bad>gain fisso</span>')+'<br><b>TECH live PWM · doppio decoder</b><br><b>PracticalArduino leader 00001:</b> start '+lcr.leader_starts+' (lost0 '+lcr.leader_lost_zero+') · frame '+lcr.leader_frames+' · <span class=ok>OK '+lcr.leader_valid+'</span> · KO '+lcr.leader_invalid+'<br>progress L0/L1 '+lcr.leader_bits_0+'/'+lcr.leader_bits_1+' · reset '+lcr.leader_resets+' · reject '+lcr.leader_rejects+'<br><b>rtl_433 pulse-window:</b> OK '+lcr.stream_valid+' · windows '+lcr.stream_windows+' · header '+lcr.stream_header_matches+' · pulses '+lcr.stream_pulses+' · H '+lcr.active_hypothesis+'<br>fail H/C/P/S '+lcr.header_fail+'/'+lcr.complement_fail+'/'+lcr.parity_fail+'/'+lcr.checksum_fail+' · short/long '+lcr.short_us+'/'+lcr.long_us+' µs<br>BURST recovery '+lcr.burst_valid+'/'+lcr.burst_attempts+' · missing-edge '+lcr.burst_recovered_missing_edge+' · reject '+lcr.burst_rejects+'<br>raw intervalli &lt;200/200-599/600-1099/1100-1799/1800-3499/≥3500: '+(lcr.interval_bins||[]).join('/');const stepRemain=b.auto_active?Math.max(0,Math.ceil((b.auto_step_duration_ms-(Number(s.uptime_s)*1000-b.auto_step_started_ms))/1000)):0;burstDiag.innerHTML='<b>RF Burst Analyzer / Recovery</b><br>stato: '+(b.enabled?'<span class=ok>ON</span>':'<span class=muted>OFF · percorso live invariato</span>')+'<br>burst totali: '+b.total+' · OSV3-like: <b>'+b.osv3_like+'</b> · TECH-like '+b.technoline_like+' · scartati '+b.discarded+'<br>profilo: <b>'+r.frontend_profile+'</b> · BW '+r.rx_bw_khz.toFixed(1)+' kHz · gain '+r.rx_gain+(b.auto_active?'<br><span class=ok>AUTO SCAN step '+(b.auto_step+1)+'/4 · ~'+stepRemain+' s residui</span>':'')+'<br><span class=muted>BURST EXTRA è opzionale: attivalo solo per diagnostica/recovery. In DUAL i decoder Oregon e Technoline live lavorano sempre insieme.</span>';wgrDiag.innerHTML='<b>WGR800 1984 · RF Probe</b><br>stato: '+(wp.enabled?'<span class=ok>ON · RAM-only</span>':'<span class=muted>OFF · nessun overhead</span>')+'<br>burst/osv3: '+wp.bursts_total+'/'+wp.osv3_like+' · classificati AF/A1/A2/AD '+wp.classified_af+'/'+wp.classified_a1+'/'+wp.classified_a2+'/'+wp.classified_ad+'<br>OSV3 non classificati: <b>'+wp.unclassified_osv3+'</b> · cadenza ~14 s: <b>'+wp.cadence14+'</b><br>ultimo non classificato: Δ '+(wp.last_unclassified_delta_ms?Math.round(wp.last_unclassified_delta_ms/1000*10)/10+' s':'-')+' · '+wp.last_unclassified_duration_ms+' ms · '+wp.last_unclassified_edges+' edge · match '+wp.last_unclassified_match_pct+'% · RSSI '+f(wp.last_unclassified_rssi,1)+'<br><span class=muted>Se crescono “OSV3 non classificati” e “cadenza ~14 s” mentre A1 resta a zero, la portante WGR arriva ma il Manchester/frame non viene ricostruito. Se restano a zero, indagare il trasmettitore/RF.</span>';quality.innerHTML=isO?('<b>Qualita sessione Oregon</b><div class="qrow qhdr"><span>Sensore</span><span>Rx</span><span>Attesi</span><span>Qualita</span></div>'+'<div class="qrow"><span>THGN ~53s</span><span>'+sess.thermo_received+'</span><span>'+sess.thermo_expected+'</span><span class="'+qClass(sess.thermo_quality_pct)+'">'+qText(sess.thermo_quality_pct)+'</span></div>'+'<div class="qrow"><span>WGR ~14s</span><span>'+sess.wind_received+'</span><span>'+sess.wind_expected+'</span><span class="'+qClass(sess.wind_quality_pct)+'">'+qText(sess.wind_quality_pct)+'</span></div>'+'<div class="qrow"><span>PCR ~47s</span><span>'+sess.rain_received+'</span><span>'+sess.rain_expected+'</span><span class="'+qClass(sess.rain_quality_pct)+'">'+qText(sess.rain_quality_pct)+'</span></div>'+'<div class="qrow"><span>UVN ~73s</span><span>'+sess.uv_received+'</span><span>'+sess.uv_expected+'</span><span class="'+qClass(sess.uv_quality_pct)+'">'+qText(sess.uv_quality_pct)+'</span></div><div class="muted" style="margin-top:7px">Sessione azzerata al cambio protocollo/gain.</div>'):'<b>Qualita sessione Oregon</b><br><span class="muted">OREGON non in ascolto.</span>';qualityLc.innerHTML=isT?('<b>Qualita sessione Technoline</b><div class="qrow qhdr"><span>Dato</span><span>Rx</span><span>Ultimo</span><span>Stato</span></div>'+ '<div class="qrow"><span>Decoder leader</span><span>'+lcr.leader_valid+'/'+lcr.leader_frames+'</span><span>-</span><span class="'+qClass(sess.lc_decoder_quality_pct)+'">'+qText(sess.lc_decoder_quality_pct)+'</span></div>'+ '<div class="qrow"><span>Temperatura</span><span>'+sess.lc_temperature_received+'</span><span>'+age(lc.temperature_age_s)+'</span><span>'+(sess.lc_temperature_acquired?'<span class=qgood>OK</span>':'attesa')+'</span></div>'+ '<div class="qrow"><span>Umidita</span><span>'+sess.lc_humidity_received+'</span><span>'+age(lc.humidity_age_s)+'</span><span>'+(sess.lc_humidity_acquired?'<span class=qgood>OK</span>':'attesa')+'</span></div>'+ '<div class="qrow"><span>Pioggia</span><span>'+sess.lc_rain_received+'</span><span>'+age(lc.rain_age_s)+'</span><span>'+(sess.lc_rain_acquired?'<span class=qgood>OK</span>':'attesa')+'</span></div>'+ '<div class="qrow"><span>Vento/Gust</span><span>'+sess.lc_wind_received+'/'+sess.lc_gust_received+'</span><span>'+age(lc.wind_age_s)+'</span><span>'+((sess.lc_wind_acquired||sess.lc_gust_acquired)?'<span class=qgood>OK</span>':'attesa')+'</span></div>'+ '<div class="muted" style="margin-top:7px">Tipi annunciati GWRH/T: mask 0x'+Number(sess.lc_expected_mask||0).toString(16).toUpperCase()+' · copertura tipi sessione <span class="'+qClass(sess.lc_type_coverage_pct)+'">'+qText(sess.lc_type_coverage_pct)+'</span> · next '+(sess.lc_cadence_ms?Math.round(sess.lc_cadence_ms/1000)+' s':'N/D')+'.</div>'):'<b>Qualita sessione Technoline</b><br><span class="muted">TECHNOLINE non in ascolto.</span>';if(mainTab==='diag'){const rr=await (await fetch('/api/raw',{cache:'no-store'})).json();raw.innerHTML=rr.map(e=>'<tr><td>'+e.ms+'</td><td class="'+(e.accepted?'ok':'bad')+'">'+(e.accepted?'OK':'DROP')+'</td><td>'+e.protocol+'</td><td>'+e.source+'</td><td>'+e.type+'</td><td>'+f(e.rssi,1)+'</td><td>'+e.hex+'</td><td>'+e.decoded+'</td></tr>').join('');if(b.enabled||b.auto_active){const bb=await (await fetch('/api/bursts',{cache:'no-store'})).json();bursts.innerHTML=bb.map(x=>'<tr><td>'+x.ms+'</td><td>'+x.duration_ms+' ms</td><td>'+x.edges+'</td><td>'+f(x.rssi,1)+'</td><td>'+x.match_pct+'%</td><td class="'+(x.osv3_like?'ok':'muted')+'">'+(x.osv3_like?'SI':'no')+'</td><td>'+(x.technoline_like?'TECH-like':(x.osv3_like?'OREGON-like':'rumore'))+'</td><td class="'+(x.adaptive_recovered?'ok':'muted')+'">'+(x.adaptive_recovered?'REC':'-')+'</td><td>'+x.on_short_us+'/'+x.on_long_us+'</td><td>'+x.off_short_us+'/'+x.off_long_us+'</td></tr>').join('')}else{bursts.innerHTML='<tr><td colspan=10 class=muted>BURST EXTRA disattivato · nessun overhead diagnostico sul percorso RF live</td></tr>';}}
 }catch(e){net.textContent='Web: '+e}}
 loadNetwork();loadMqtt();refresh();setInterval(refresh,2000);setInterval(loadMqtt,10000);
 </script></body></html>)HTML";
@@ -1159,6 +1442,8 @@ void initWeb(StationState &stateRef) {
     server.on("/api/network", HTTP_GET, handleNetworkConfigGet);
     server.on("/api/network", HTTP_POST, handleNetworkConfigPost);
     server.on("/api/network/reset", HTTP_POST, handleNetworkConfigReset);
+    server.on("/api/config/export", HTTP_GET, handleConfigExport);
+    server.on("/api/config/import", HTTP_POST, handleConfigImport);
     server.on("/api/display", HTTP_POST, handleDisplayPower);
     server.on("/api/restart", HTTP_POST, handleDeviceRestart);
     server.onNotFound([](){ server.send(404, "text/plain", "Not found"); });
@@ -1181,7 +1466,7 @@ void serviceWeb() {
         server.handleClient();
     }
     if (rebootAtMs && static_cast<int32_t>(millis() - rebootAtMs) >= 0) {
-        Serial.println(F("[WEB] riavvio per applicare configurazione rete"));
+        Serial.println(F("[WEB] riavvio richiesto dalla configurazione"));
         delay(80);
         ESP.restart();
     }

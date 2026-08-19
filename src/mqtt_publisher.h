@@ -69,6 +69,7 @@ bool mqttConnected(PubSubClient &client);
 bool mqttEnabled();
 bool mqttRuntimeConnected();
 MqttRuntimeConfig getMqttConfig();
+bool validateMqttConfig(const MqttRuntimeConfig &cfg, bool replacePassword, bool replaceCaCertificate);
 bool saveMqttConfig(const MqttRuntimeConfig &cfg, bool replacePassword, bool replaceCaCertificate);
 void resetMqttConfigToDefaults();
 const char *mqttTlsModeName(MqttTlsMode mode);

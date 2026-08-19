@@ -27,6 +27,10 @@ Optional build environment: `t3-s3-433`
 The pin mapping is defined in `src/board_config.h` and selected by PlatformIO
 build flags.
 
+## OLED physical button
+
+The V6.4 development line supports an optional active-low PRG/BOOT button for OLED power-save toggle. The project default is `GPIO0`, configurable with `OLED_BUTTON_PIN`; set `OLED_BUTTON_ENABLE 0` if GPIO0 is used by other hardware or the specific board revision does not expose a suitable runtime button. The input uses the internal pull-up and only a debounced short press toggles the display.
+
 ## BME280
 
 The optional BME280 shares the I²C bus with the SSD1306 OLED and is detected at

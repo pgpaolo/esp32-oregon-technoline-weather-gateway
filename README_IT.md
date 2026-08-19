@@ -2,7 +2,7 @@
 
 Firmware standalone per **ESP32 / LILYGO T3 + SX1278 433.92 MHz** capace di ricevere contemporaneamente sensori **Oregon Scientific OSV3** e **Technoline / La Crosse WS23xx**, mostrare i dati tramite interfaccia Web e pubblicarli via MQTT.
 
-Versione firmware: **V6.3**
+Firmware release candidate: **V6.4.0-rc1** (release stabile: **V6.3.0**)
 
 ## Funzioni principali
 
@@ -15,9 +15,13 @@ Versione firmware: **V6.3**
 - BME280 locale opzionale;
 - MQTT con selezione dei singoli campi da pubblicare;
 - MQTT TLS configurabile da Web;
+- hostname configurabile e mDNS (`hostname.local`) persistenti in NVS;
 - configurazione rete/MQTT persistente in NVS;
+- backup e ripristino JSON della configurazione;
 - pulsante di riavvio ESP32;
-- **OLED ON/OFF** da Web con power-save persistente.
+- **OLED ON/OFF** da Web con power-save persistente;
+- pressione breve del pulsante PRG/BOOT configurato per OLED ON/OFF;
+- versione firmware, Git commit, data build, board e motivo ultimo reset nel tab Hardware.
 
 ## Hardware principale
 
@@ -44,11 +48,15 @@ pio device monitor -b 115200
 La UI è divisa in:
 
 - **Dashboard** — Oregon, Technoline e BME280;
-- **Hardware** — risorse ESP32 e stato display;
-- **Configurazione** — rete e MQTT/TLS;
+- **Hardware** — risorse ESP32, firmware/build/reset e stato display;
+- **Configurazione** — hostname/rete, MQTT/TLS e backup/restore;
 - **Diagnostica** — RF, gain, profili, RAW e burst.
 
-Il display OLED può essere spento dalla Web. In questo stato U8g2 usa il power-save e il firmware sospende i refresh del display; RF, MQTT, Wi-Fi e Web continuano a funzionare.
+Il display OLED può essere spento dalla Web oppure commutato con una pressione breve del pulsante PRG/BOOT configurato. In questo stato U8g2 usa il power-save e il firmware sospende i refresh del display; RF, MQTT, Wi-Fi e Web continuano a funzionare. L'hostname è modificabile dalla Web e, se mDNS è disponibile sulla rete client, il gateway è raggiungibile anche come `http://<hostname>.local/`.
+
+## Backup configurazione
+
+La Web UI può esportare e reimportare un file JSON con hostname/IP, MQTT/TLS, maschera campi MQTT, stato OLED e configurazione RF persistente. La password MQTT è esclusa per default e viene inclusa solo su scelta esplicita; SSID e password Wi-Fi non vengono esportati perché restano nel firmware/configurazione privata. L'import valida i valori e riavvia il gateway. Dettagli: [docs/CONFIG_BACKUP.md](docs/CONFIG_BACKUP.md).
 
 ## MQTT
 
@@ -68,3 +76,6 @@ Non pubblicare mai `src/config_private.h`. La modalità MQTT TLS senza verifica 
 
 Il progetto viene distribuito sotto **GNU GPL v3 o successiva**. Il decoder WS23xx utilizza conoscenze e logica derivate da `rtl_433` e `PracticalArduino WeatherStationReceiver`; vedere [NOTICE](NOTICE).
 
+### Nota pulsante OLED e board
+
+Il controllo OLED dalla Web UI e' disponibile su entrambe le board. Il toggle fisico e' abilitato di default solo su T3-S3, dove LILYGO dichiara `BUTTON_PIN = 0`. Sul T3 V1.6.1 resta disabilitato per default e puo' essere abilitato esplicitamente in `config_private.h` dopo verifica della revisione hardware.
