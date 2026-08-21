@@ -1,0 +1,30 @@
+name: Refine DISPLAY page selection
+
+on:
+  push:
+    branches:
+      - fix/webui-nvs-persistence
+    paths:
+      - scripts/refine_display_page_selection.py
+      - .github/workflows/zz-one-shot-display-refine.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/webui-nvs-persistence
+          fetch-depth: 0
+      - run: python3 scripts/refine_display_page_selection.py
+      - name: Commit generated source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/web_manager.cpp
+          git diff --cached --quiet && exit 0
+          git commit -m "Refine DISPLAY page selection behavior"
+          git push origin HEAD:fix/webui-nvs-persistence
