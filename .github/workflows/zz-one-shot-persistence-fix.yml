@@ -1,0 +1,196 @@
+name: One-shot persistence patch
+
+on:
+  push:
+    branches:
+      - fix/webui-nvs-persistence
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/webui-nvs-persistence
+          fetch-depth: 0
+      - name: Patch large source files
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(text, old, new, label):
+              n = text.count(old)
+              if n != 1:
+                  raise SystemExit(f"{label}: expected 1 match, got {n}")
+              return text.replace(old, new, 1)
+
+          # ------------------------------------------------------------------
+          # MQTT: fail visibly if NVS cannot be opened/written, and verify the
+          # effective configuration by reading it back before applying runtime.
+          # ------------------------------------------------------------------
+          p = Path('src/mqtt_publisher.cpp')
+          s = p.read_text()
+          s = replace_once(s,
+              '    mqttPrefs.begin("mqttcfg", true);\n    mqttCfg.enabled = mqttPrefs.getBool("enabled", d.enabled);',
+              '    if (!mqttPrefs.begin("mqttcfg", true)) {\n        mqttCfg = d;\n        normalize(mqttCfg);\n        Serial.println(F("[MQTT] NVS mqttcfg non disponibile: uso valori firmware"));\n        return;\n    }\n    mqttCfg.enabled = mqttPrefs.getBool("enabled", d.enabled);',
+              'mqtt load begin')
+
+          marker = 'void applyClientConfig() {'
+          helper = '''bool verifyStoredMqttConfig(Preferences &p, const MqttRuntimeConfig &expected) {
+    MqttRuntimeConfig d = defaults();
+    normalize(d);
+    return p.getBool("enabled", d.enabled) == expected.enabled &&
+           p.getString("broker", d.broker) == expected.broker &&
+           p.getUShort("port", d.port) == expected.port &&
+           p.getString("user", d.user) == expected.user &&
+           p.getString("pass", d.password) == expected.password &&
+           p.getString("client", d.clientId) == expected.clientId &&
+           p.getString("topic", d.baseTopic) == expected.baseTopic &&
+           p.getUChar("tlsmode", static_cast<uint8_t>(d.tlsMode)) == static_cast<uint8_t>(expected.tlsMode) &&
+           p.getString("cacert", d.caCertificate) == expected.caCertificate &&
+           p.getUInt("fields", d.fieldsMask) == expected.fieldsMask;
+}
+
+'''
+          s = replace_once(s, marker, helper + marker, 'mqtt verification helper')
+
+          old_block = '''    mqttPrefs.begin("mqttcfg", false);
+    if (next.enabled != old.enabled) mqttPrefs.putBool("enabled", next.enabled);
+    if (next.broker != old.broker) mqttPrefs.putString("broker", next.broker);
+    if (next.port != old.port) mqttPrefs.putUShort("port", next.port);
+    if (next.user != old.user) mqttPrefs.putString("user", next.user);
+    if (next.password != old.password) mqttPrefs.putString("pass", next.password);
+    if (next.clientId != old.clientId) mqttPrefs.putString("client", next.clientId);
+    if (next.baseTopic != old.baseTopic) mqttPrefs.putString("topic", next.baseTopic);
+    if (next.tlsMode != old.tlsMode) mqttPrefs.putUChar("tlsmode", static_cast<uint8_t>(next.tlsMode));
+    if (next.caCertificate != old.caCertificate) mqttPrefs.putString("cacert", next.caCertificate);
+    if (next.fieldsMask != old.fieldsMask) mqttPrefs.putUInt("fields", next.fieldsMask);
+    mqttPrefs.end();
+    mqttCfg = next;
+    applyClientConfig();
+    return true;
+'''
+          new_block = '''    if (!mqttPrefs.begin("mqttcfg", false)) {
+        Serial.println(F("[MQTT] ERRORE apertura NVS mqttcfg in scrittura"));
+        return false;
+    }
+    if (next.enabled != old.enabled) mqttPrefs.putBool("enabled", next.enabled);
+    if (next.broker != old.broker) mqttPrefs.putString("broker", next.broker);
+    if (next.port != old.port) mqttPrefs.putUShort("port", next.port);
+    if (next.user != old.user) mqttPrefs.putString("user", next.user);
+    if (next.password != old.password) mqttPrefs.putString("pass", next.password);
+    if (next.clientId != old.clientId) mqttPrefs.putString("client", next.clientId);
+    if (next.baseTopic != old.baseTopic) mqttPrefs.putString("topic", next.baseTopic);
+    if (next.tlsMode != old.tlsMode) mqttPrefs.putUChar("tlsmode", static_cast<uint8_t>(next.tlsMode));
+    if (next.caCertificate != old.caCertificate) mqttPrefs.putString("cacert", next.caCertificate);
+    if (next.fieldsMask != old.fieldsMask) mqttPrefs.putUInt("fields", next.fieldsMask);
+    const bool verified = verifyStoredMqttConfig(mqttPrefs, next);
+    mqttPrefs.end();
+    if (!verified) {
+        Serial.println(F("[MQTT] ERRORE verifica NVS mqttcfg: configurazione non confermata"));
+        return false;
+    }
+    mqttCfg = next;
+    applyClientConfig();
+    Serial.println(F("[MQTT] configurazione Web verificata in NVS"));
+    return true;
+'''
+          s = replace_once(s, old_block, new_block, 'mqtt save block')
+
+          pattern = re.compile(r'void resetMqttConfigToDefaults\(\) \{.*?\n\}\n\nvoid serviceMQTT', re.S)
+          repl = '''bool resetMqttConfigToDefaults() {
+    MqttRuntimeConfig d = defaults();
+    normalize(d);
+    if (mqttCfg.enabled == d.enabled && mqttCfg.broker == d.broker && mqttCfg.port == d.port &&
+        mqttCfg.user == d.user && mqttCfg.password == d.password && mqttCfg.clientId == d.clientId &&
+        mqttCfg.baseTopic == d.baseTopic && mqttCfg.tlsMode == d.tlsMode &&
+        mqttCfg.caCertificate == d.caCertificate && mqttCfg.fieldsMask == d.fieldsMask) return true;
+    if (!mqttPrefs.begin("mqttcfg", false)) return false;
+    const bool cleared = mqttPrefs.clear();
+    const bool verified = cleared && verifyStoredMqttConfig(mqttPrefs, d);
+    mqttPrefs.end();
+    if (!verified) {
+        Serial.println(F("[MQTT] ERRORE reset/verifica NVS mqttcfg"));
+        return false;
+    }
+    mqttCfg = d;
+    applyClientConfig();
+    Serial.println(F("[MQTT] default firmware verificati dopo reset NVS"));
+    return true;
+}
+
+void serviceMQTT'''
+          s, n = pattern.subn(repl, s, count=1)
+          if n != 1:
+              raise SystemExit(f'mqtt reset: expected 1 match, got {n}')
+          p.write_text(s)
+
+          # ------------------------------------------------------------------
+          # Web UI: do not overwrite a form while the user is editing it;
+          # automatically enable OLED pages that contain selected fields;
+          # expose NVS verification failures instead of reporting fake success.
+          # ------------------------------------------------------------------
+          p = Path('src/web_manager.cpp')
+          s = p.read_text()
+
+          s = replace_once(s,
+              '    setDisplayEnabled(enabled);\n    sendNoCache();',
+              '    if (!setDisplayEnabled(enabled)) {\n        server.send(500, "application/json", "{\\"ok\\":false,\\"error\\":\\"display changed in RAM but NVS verification failed\\"}");\n        return;\n    }\n    sendNoCache();',
+              'display power persistence')
+
+          s = replace_once(s,
+              '    out += ",\\"current_page\\":" + String(displayCurrentPage());\n    out += "}";',
+              '    out += ",\\"current_page\\":" + String(displayCurrentPage());\n    out += ",\\"nvs_ok\\":"; out += displayPersistenceAvailable() ? "true" : "false";\n    out += "}";',
+              'display get nvs flag')
+
+          s = replace_once(s,
+              '        setDisplayEnabled(v == "1" || v == "true" || v == "on");\n    }\n    sendNoCache();',
+              '        if (!setDisplayEnabled(v == "1" || v == "true" || v == "on")) {\n            server.send(500, "application/json", "{\\"ok\\":false,\\"error\\":\\"display power NVS verification failed\\"}");\n            return;\n        }\n    }\n    sendNoCache();',
+              'display config power verify')
+
+          s = replace_once(s,
+              '    resetMqttConfigToDefaults();\n    sendNoCache();',
+              '    if (!resetMqttConfigToDefaults()) {\n        server.send(500, "application/json", "{\\"ok\\":false,\\"error\\":\\"MQTT NVS reset verification failed\\"}");\n        return;\n    }\n    sendNoCache();',
+              'mqtt reset endpoint')
+
+          old = "function displaySelectPages(v){document.querySelectorAll('[data-dpagebit]').forEach(x=>x.checked=!!v)}"
+          new = old + "function displayAutoEnablePages(){const g=[['data-denvbit',0],['data-dwindbit',1],['data-dtechbit',2],['data-dpressbit',3],['data-dstatusbit',4]];for(const [a,b] of g){const any=[...document.querySelectorAll('['+a+']')].some(x=>x.checked);if(any){const p=document.querySelector('[data-dpagebit=\\\"'+b+'\\\"]');if(p)p.checked=true;}}}"
+          s = replace_once(s, old, new, 'display auto pages helper')
+          s = replace_once(s,
+              "async function saveDisplayConfig(){const pageMask=dGet('data-dpagebit');",
+              "async function saveDisplayConfig(){displayAutoEnablePages();const pageMask=dGet('data-dpagebit');",
+              'display auto pages call')
+
+          s = replace_once(s,
+              'if(cfg)cfg.checked=displayOn;',
+              "if(cfg&&!(mainTab==='config'&&E('cfgDisplay')&&E('cfgDisplay').classList.contains('active')))cfg.checked=displayOn;",
+              'display form refresh protection')
+
+          s = replace_once(s,
+              'setInterval(loadMqtt,10000);',
+              "setInterval(()=>{const editing=mainTab==='config'&&E('cfgMqtt')&&E('cfgMqtt').classList.contains('active');if(!editing)loadMqtt();},10000);",
+              'mqtt form refresh protection')
+
+          s = replace_once(s,
+              "E('displaySummary').textContent=(d.on?'OLED ON':'OLED OFF')+' · pagina '+(Number(d.current_page)+1)+' · cambio '+d.page_interval_sec+' s · contrasto '+d.contrast;",
+              "E('displaySummary').textContent=(d.on?'OLED ON':'OLED OFF')+' · pagina '+(Number(d.current_page)+1)+' · cambio '+d.page_interval_sec+' s · contrasto '+d.contrast+' · NVS '+(d.nvs_ok?'OK':'KO');",
+              'display NVS summary')
+
+          p.write_text(s)
+
+          # One-shot helper must not remain in the final branch.
+          Path('.github/workflows/zz-one-shot-persistence-fix.yml').unlink()
+          PY
+
+      - name: Commit generated patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/mqtt_publisher.cpp src/web_manager.cpp .github/workflows/zz-one-shot-persistence-fix.yml
+          git commit -m "Harden Web UI settings persistence"
+          git push origin HEAD:fix/webui-nvs-persistence
