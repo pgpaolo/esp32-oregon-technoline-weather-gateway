@@ -46,6 +46,12 @@ enum MqttField : uint32_t {
     MQTT_F_STATE_JSON     = 1UL << 25,
     MQTT_F_RF_META        = 1UL << 26,
     MQTT_F_SYSTEM         = 1UL << 27,
+
+    // AS3935 usa i quattro bit ancora liberi della mask generale:
+    // STATE       -> snapshot completo retained;
+    // EVENT       -> IRQ/eventi live non-retained;
+    // LAST_STRIKE -> ultimo fulmine retained, utile a WeeWX/automazioni;
+    // DIAG        -> calibrazione, risonanza e contatori diagnostici retained.
     MQTT_F_AS_STATE       = 1UL << 28,
     MQTT_F_AS_EVENT       = 1UL << 29,
     MQTT_F_AS_LAST_STRIKE = 1UL << 30,
