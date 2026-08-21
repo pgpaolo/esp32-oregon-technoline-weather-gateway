@@ -9,6 +9,7 @@
 #include "barometer_manager.h"
 #include "oregon_receiver.h"
 #include "mqtt_publisher.h"
+#include "lightning_manager.h"
 
 namespace {
 void configureWakeSource() {
@@ -85,6 +86,7 @@ String controllerWakeHint() {
     prepareMqttForDeepSleep();
     prepareDisplayForDeepSleep();
     prepareBarometerForDeepSleep();
+    prepareLightningForDeepSleep();
     const bool radioOk = prepareRadioForDeepSleep();
     if (!radioOk) Serial.println(F("[POWER] ATTENZIONE: SX1278 non ha confermato sleep"));
 

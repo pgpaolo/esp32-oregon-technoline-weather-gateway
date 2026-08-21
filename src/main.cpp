@@ -12,6 +12,7 @@
 #include "barometer_manager.h"
 #include "web_manager.h"
 #include "lacrosse_ws23xx.h"
+#include "lightning_manager.h"
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -187,6 +188,7 @@ void setup() {
 
     initDisplay();
     initBarometer();
+    initLightning();
     initNetwork();
     initMQTT(mqttClient, wifiClient);
     initWeb(station);
@@ -248,6 +250,9 @@ void loop() {
     // piu' scarico durante la fase di acquisizione.
     serviceOregonReceiver();
 
+    // AS3935 e' servito solo dopo la seconda passata RF. L'ISR imposta una flag:
+    // nessuna lettura I2C e nessun delay bloccante vengono eseguiti nell'interrupt.
+    serviceLightning(mqttClient);
     serviceMQTT(mqttClient);
     serviceBarometer(station);
 
