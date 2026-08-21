@@ -13,7 +13,6 @@
 #include "web_manager.h"
 #include "lacrosse_ws23xx.h"
 #include "lightning_manager.h"
-#include "lightning_web.h"
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -193,7 +192,6 @@ void setup() {
     initNetwork();
     initMQTT(mqttClient, wifiClient);
     initWeb(station);
-    initLightningWeb();
     initLaCrosseWs23xx();
 
     if (!initOregonReceiver()) {
@@ -246,7 +244,6 @@ void loop() {
     serviceDisplayButton();
     serviceWiFi();
     serviceWeb();
-    serviceLightningWeb();
 
     // V6.3: seconda passata RF subito dopo il Web. Non cambia il decoder,
     // ma riduce la latenza con richieste HTTP frequenti e mantiene il ring
