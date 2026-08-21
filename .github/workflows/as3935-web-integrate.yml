@@ -1,0 +1,42 @@
+name: Integrate AS3935 Web UI
+
+on:
+  push:
+    branches:
+      - feature/as3935-lightning
+    paths:
+      - scripts/apply_as3935_web_integration.py
+      - .github/workflows/as3935-web-integrate.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v6
+        with:
+          ref: feature/as3935-lightning
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Apply AS3935 UI integration
+        run: python scripts/apply_as3935_web_integration.py
+
+      - name: Commit generated integration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/web_manager.cpp src/main.cpp
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "feat: integrate AS3935 into main web UI"
+            git push origin HEAD:feature/as3935-lightning
+          fi
