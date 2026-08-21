@@ -1965,6 +1965,31 @@ bool setWgrProbeEnabled(bool enabled) {
     return true;
 }
 
+bool prepareRadioForDeepSleep() {
+    burstStats.autoActive = false;
+    finalizeRfBurst();
+    if (wgrProbeOn) resetWgrProbeStatsInternal();
+#if OREGON_RAW_EDGE_MODE
+    detachInterrupt(digitalPinToInterrupt(RADIO_DIO2_PIN));
+    noInterrupts();
+    edgeTail = edgeHead;
+    interrupts();
+#endif
+    packetHead = packetTail = 0;
+    resetLaCrosseDecoderState();
+
+    if (!radioReady) return true;
+    const int16_t state = radio.sleep();
+    if (state != RADIOLIB_ERR_NONE) {
+        lastError = String("sleep: ") + state;
+        return false;
+    }
+    radioReady = false;
+    lastError = "SLEEP";
+    Serial.println(F("[RF] SX1278 -> sleep"));
+    return true;
+}
+
 bool wgrProbeEnabled() {
     return wgrProbeOn;
 }

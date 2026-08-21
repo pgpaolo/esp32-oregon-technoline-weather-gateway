@@ -3,6 +3,7 @@
 
 void initBarometer();
 void serviceBarometer(StationState &state);
+void prepareBarometerForDeepSleep();
 bool barometerDetected();
 const char *barometerName();
 uint8_t barometerAddress();

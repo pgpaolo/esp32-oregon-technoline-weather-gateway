@@ -301,6 +301,19 @@ void serviceMQTT(PubSubClient &client) {
     }
 }
 
+void prepareMqttForDeepSleep() {
+    if (mqttClientRef && mqttClientRef->connected()) {
+        const String statusTopic = topic("status");
+        mqttClientRef->publish(statusTopic.c_str(), "offline", true);
+        mqttClientRef->loop();
+        delay(25);
+        mqttClientRef->disconnect();
+    }
+    mqttSecureClient.stop();
+    if (mqttPlainClientRef) mqttPlainClientRef->stop();
+    Serial.println(F("[MQTT] arresto per deep sleep"));
+}
+
 bool mqttConnected(PubSubClient &client) { return mqttCfg.enabled && client.connected(); }
 
 void publishWeatherReading(PubSubClient &client, const WeatherReading &reading, const OregonPacket &packet) {

@@ -121,6 +121,14 @@ void serviceBarometer(StationState &state) {
 #endif
 }
 
+void prepareBarometerForDeepSleep() {
+#if BAROMETER_ENABLE
+    if (!detected) return;
+    bme.setSampling(Adafruit_BME280::MODE_SLEEP);
+    Serial.println(F("[BARO] BME280 -> sleep"));
+#endif
+}
+
 bool barometerDetected() { return detected; }
 const char *barometerName() { return detected ? "BME280" : "none"; }
 uint8_t barometerAddress() { return address; }

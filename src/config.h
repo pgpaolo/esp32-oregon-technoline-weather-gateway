@@ -6,7 +6,7 @@
 #endif
 
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION         "6.4.0-rc1"
+#define FIRMWARE_VERSION         "6.4.0-rc2"
 #endif
 #ifndef GIT_COMMIT_HASH
 #define GIT_COMMIT_HASH          "source-archive"
@@ -37,6 +37,24 @@
 #endif
 #ifndef OLED_BUTTON_MAX_PRESS_MS
 #define OLED_BUTTON_MAX_PRESS_MS 1800UL
+#endif
+
+// Soft power-off: la Web UI puo' mettere il controller in deep sleep senza
+// togliere alimentazione. Non e' un sezionamento elettrico vero e proprio.
+#ifndef POWER_SOFT_OFF_ENABLE
+#define POWER_SOFT_OFF_ENABLE       1
+#endif
+#ifndef POWER_WAKE_BUTTON_ENABLE
+#if defined(BOARD_T3_S3_SX1278)
+#define POWER_WAKE_BUTTON_ENABLE    1
+#else
+// Sul T3 V1.6.1 il pinout usato dal progetto non garantisce un pulsante utente.
+// Il risveglio resta quindi affidato a RESET/EN, salvo override verificato.
+#define POWER_WAKE_BUTTON_ENABLE    0
+#endif
+#endif
+#ifndef POWER_WAKE_BUTTON_PIN
+#define POWER_WAKE_BUTTON_PIN       OLED_BUTTON_PIN
 #endif
 
 #ifndef WIFI_SSID

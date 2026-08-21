@@ -385,6 +385,13 @@ int displayButtonPin() {
 bool displayEnabled() { return displayOn; }
 bool displayPersistenceAvailable() { return displayPrefsReady; }
 
+void prepareDisplayForDeepSleep() {
+    oled.clearBuffer();
+    oled.sendBuffer();
+    oled.setPowerSave(1);
+    Serial.println(F("[OLED] deep-sleep power save"));
+}
+
 bool setDisplayEnabled(bool enabled) {
     if (displayOn == enabled) return displayPrefsReady;
 
