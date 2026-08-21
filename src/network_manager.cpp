@@ -59,9 +59,27 @@ bool validConfig(NetworkRuntimeConfig c) {
     return validIp(c.ip) && validIp(c.gateway) && validIp(c.subnet) && validIp(c.dns);
 }
 
+bool sameConfig(const NetworkRuntimeConfig &a, const NetworkRuntimeConfig &b) {
+    return a.hostname == b.hostname && a.useStatic == b.useStatic && a.ip == b.ip &&
+           a.gateway == b.gateway && a.subnet == b.subnet && a.dns == b.dns;
+}
+
+bool verifyStoredConfig(Preferences &p, const NetworkRuntimeConfig &expected) {
+    return p.getString("host", "") == expected.hostname &&
+           p.getBool("static", !expected.useStatic) == expected.useStatic &&
+           p.getString("ip", "") == expected.ip &&
+           p.getString("gw", "") == expected.gateway &&
+           p.getString("mask", "") == expected.subnet &&
+           p.getString("dns", "") == expected.dns;
+}
+
 void loadConfig() {
     const NetworkRuntimeConfig d = defaults();
-    netPrefs.begin("netcfg", true);
+    if (!netPrefs.begin("netcfg", true)) {
+        Serial.println(F("[WiFi] NVS netcfg non disponibile: uso valori firmware"));
+        netCfg = d;
+        return;
+    }
     netCfg.hostname = netPrefs.getString("host", d.hostname);
     netCfg.useStatic = netPrefs.getBool("static", d.useStatic);
     netCfg.ip = netPrefs.getString("ip", d.ip);
@@ -74,12 +92,6 @@ void loadConfig() {
         Serial.println(F("[WiFi] configurazione NVS non valida: uso valori firmware"));
         netCfg = d;
     }
-}
-
-bool putStringIfChanged(Preferences &p, const char *key, const String &oldValue, const String &newValue) {
-    if (oldValue == newValue) return false;
-    p.putString(key, newValue);
-    return true;
 }
 
 const char *statusName(wl_status_t s) {
@@ -239,19 +251,30 @@ bool saveNetworkConfig(const NetworkRuntimeConfig &cfg, bool &changed) {
     NetworkRuntimeConfig next = cfg;
     normalize(next);
     if (!validConfig(next)) return false;
-    changed = next.hostname != netCfg.hostname || next.useStatic != netCfg.useStatic || next.ip != netCfg.ip ||
-              next.gateway != netCfg.gateway || next.subnet != netCfg.subnet || next.dns != netCfg.dns;
+    changed = !sameConfig(next, netCfg);
     if (!changed) return true; // zero scritture NVS se non cambia nulla
 
-    netPrefs.begin("netcfg", false);
-    putStringIfChanged(netPrefs, "host", netCfg.hostname, next.hostname);
+    if (!netPrefs.begin("netcfg", false)) {
+        Serial.println(F("[WiFi] ERRORE apertura NVS netcfg in scrittura"));
+        return false;
+    }
+
+    if (next.hostname != netCfg.hostname) netPrefs.putString("host", next.hostname);
     if (next.useStatic != netCfg.useStatic) netPrefs.putBool("static", next.useStatic);
-    putStringIfChanged(netPrefs, "ip", netCfg.ip, next.ip);
-    putStringIfChanged(netPrefs, "gw", netCfg.gateway, next.gateway);
-    putStringIfChanged(netPrefs, "mask", netCfg.subnet, next.subnet);
-    putStringIfChanged(netPrefs, "dns", netCfg.dns, next.dns);
+    if (next.ip != netCfg.ip) netPrefs.putString("ip", next.ip);
+    if (next.gateway != netCfg.gateway) netPrefs.putString("gw", next.gateway);
+    if (next.subnet != netCfg.subnet) netPrefs.putString("mask", next.subnet);
+    if (next.dns != netCfg.dns) netPrefs.putString("dns", next.dns);
+
+    const bool verified = verifyStoredConfig(netPrefs, next);
     netPrefs.end();
+    if (!verified) {
+        Serial.println(F("[WiFi] ERRORE verifica NVS netcfg: configurazione non confermata"));
+        return false;
+    }
+
     netCfg = next;
+    Serial.println(F("[WiFi] configurazione Web verificata in NVS"));
     return true;
 }
 
