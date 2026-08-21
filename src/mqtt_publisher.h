@@ -65,6 +65,7 @@ struct MqttRuntimeConfig {
 
 void initMQTT(PubSubClient &client, Client &plainClient);
 void serviceMQTT(PubSubClient &client);
+void prepareMqttForDeepSleep();
 bool mqttConnected(PubSubClient &client);
 bool mqttEnabled();
 bool mqttRuntimeConnected();
