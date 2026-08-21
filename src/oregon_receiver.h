@@ -204,6 +204,7 @@ uint8_t getWgrProbeHistory(WgrProbeRecord *out, uint8_t maxRecords);
 
 bool initOregonReceiver();
 void serviceOregonReceiver();
+bool prepareRadioForDeepSleep();
 bool getOregonPacket(OregonPacket &packet);
 OregonRxStats getOregonRxStats();
 const char *oregonRadioError();

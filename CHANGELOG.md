@@ -1,5 +1,14 @@
 # Changelog
 
+## 6.4.0-rc2
+
+- Aggiunto pulsante Web `SPEGNI` con arresto controllato in ESP32 deep sleep.
+- Prima del deep sleep vengono arrestati MQTT, OLED, BME280 e SX1278; Wi-Fi viene disabilitato.
+- T3-S3: wake opzionale di default dal pulsante BOOT/User GPIO0 oppure RESET/EN.
+- T3 V1.6.1: wake di default tramite RESET/EN, senza assumere un pulsante utente non garantito dal pinout.
+- Lo spegnimento software non sostituisce un vero sezionatore/load-switch: la scheda resta elettricamente alimentata.
+
+
 All notable project changes are documented here.
 
 ## [6.4.0-rc1] - 2026-08-19

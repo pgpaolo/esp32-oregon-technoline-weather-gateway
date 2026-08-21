@@ -14,12 +14,14 @@
 #include "mqtt_publisher.h"
 #include "display_manager.h"
 #include "firmware_info.h"
+#include "power_manager.h"
 
 namespace {
 WebServer server(80);
 StationState *station = nullptr;
 bool webStarted = false;
 uint32_t rebootAtMs = 0;
+uint32_t powerOffAtMs = 0;
 String jsonEscapeString(const String &in);
 
 constexpr uint8_t RAW_HISTORY_SIZE = 32;
@@ -1242,6 +1244,19 @@ void handleDeviceRestart() {
     server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
 }
 
+void handleDevicePowerOff() {
+    if (!controllerSoftPowerOffEnabled()) {
+        server.send(403, "application/json", "{\"ok\":false,\"error\":\"soft power-off disabled\"}");
+        return;
+    }
+    powerOffAtMs = millis() + 900UL;
+    sendNoCache();
+    String out = "{\"ok\":true,\"powering_off\":true,\"mode\":\"deep_sleep\",\"wake_hint\":\"";
+    out += jsonEscapeString(controllerWakeHint());
+    out += "\"}";
+    server.send(200, "application/json", out);
+}
+
 void handleNetworkConfigGet() {
     const NetworkRuntimeConfig c = getNetworkConfig();
     String out;
@@ -1341,7 +1356,7 @@ void handleRoot() {
 @media(max-width:1220px){.weatherGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.bmeGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.diagGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.fieldGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.rfControls{grid-template-columns:1fr 1fr}}
 @media(max-width:760px){main{padding:9px}.title{font-size:1.08rem}.sub{font-size:.75rem}.headerActions{width:100%}.statusPill{padding:7px 9px}.mainTabs{position:sticky;top:0;z-index:5}.weatherGrid,.bmeGrid{grid-template-columns:1fr;padding:10px}.diagGrid,.resourceGrid,.resourceHeroGrid,.fieldGrid,.cfgGrid,.rfControls{grid-template-columns:1fr}.windCard .body{grid-template-columns:minmax(0,1fr) 100px}.windCompass{width:94px;height:94px}.spark{width:82px}.modeBox{align-items:flex-start}.modeBtn{padding:8px 10px}}
 </style></head><body><main>
-<div class="top"><div class="brand"><div class="title">Oregon + Technoline 433 Gateway</div><div class="sub">LILYGO T3 · SX1278 OOK 433.92 MHz · decoder Oregon OSV3 + Technoline WS230x</div></div><div class="headerActions"><span id="hdrRf" class="statusPill wait">RF --</span><span id="net" class="statusPill wait">Wi-Fi...</span><span id="hdrMqtt" class="statusPill wait">MQTT...</span><button id="displayBtn" class="modeBtn" onclick="toggleDisplay()" title="Accende o spegne il display OLED; RF, Wi-Fi, Web e MQTT restano attivi">OLED --</button><button class="modeBtn dangerBtn" onclick="restartDevice()" title="Riavvia ESP32 senza cancellare la configurazione">⟳ RIAVVIA</button></div></div>
+<div class="top"><div class="brand"><div class="title">Oregon + Technoline 433 Gateway</div><div class="sub">LILYGO T3 · SX1278 OOK 433.92 MHz · decoder Oregon OSV3 + Technoline WS230x</div></div><div class="headerActions"><span id="hdrRf" class="statusPill wait">RF --</span><span id="net" class="statusPill wait">Wi-Fi...</span><span id="hdrMqtt" class="statusPill wait">MQTT...</span><button id="displayBtn" class="modeBtn" onclick="toggleDisplay()" title="Accende o spegne il display OLED; RF, Wi-Fi, Web e MQTT restano attivi">OLED --</button><button class="modeBtn dangerBtn" onclick="powerOffDevice()" title="Arresta servizi e periferiche e mette ESP32 in deep sleep">⏻ SPEGNI</button><button class="modeBtn dangerBtn" onclick="restartDevice()" title="Riavvia ESP32 senza cancellare la configurazione">⟳ RIAVVIA</button></div></div>
 <div class="mainTabs"><button id="mainTabDashboard" class="mainTab active" onclick="showMainTab('dashboard')">DASHBOARD</button><button id="mainTabHardware" class="mainTab" onclick="showMainTab('hardware')">HARDWARE</button><button id="mainTabConfig" class="mainTab" onclick="showMainTab('config')">CONFIGURAZIONE</button><button id="mainTabDiag" class="mainTab" onclick="showMainTab('diag')">DIAGNOSTICA</button></div>
 <section id="mainDashboard" class="mainPage active"><div class="panel stationOregon" id="oregonPanel"><div class="panelHead">Dati meteo live · Oregon OSV3 <span id="oregonModeBadge" class="badge off">RF non in ascolto</span></div><div class="acqBar"><b>Acquisizione Oregon</b><span id="sessionAge" class="badge off">--</span><span id="acqThermo" class="badge wait">THGN attesa</span><span id="acqWind" class="badge wait">WGR attesa</span><span id="acqRain" class="badge wait">PCR attesa</span><span id="acqUv" class="badge wait">UVN attesa</span></div><div class="weatherGrid">
 <section class="card good"><div class="cardTitle">Temperatura e umidita<svg class="spark" id="spTemp"></svg></div><div class="body">
@@ -1528,6 +1543,7 @@ function displaySelectPages(v){document.querySelectorAll('[data-dpagebit]').forE
 async function loadDisplay(){try{const d=await (await fetch('/api/display/config',{cache:'no-store'})).json();E('dispOn').checked=!!d.on;E('dispInterval').value=d.page_interval_sec||7;E('dispContrast').value=d.contrast||255;dSet('data-dpagebit',d.page_mask==null?31:d.page_mask);dSet('data-denvbit',d.environment_fields==null?15:d.environment_fields);dSet('data-dwindbit',d.wind_rain_fields==null?15:d.wind_rain_fields);dSet('data-dtechbit',d.technoline_fields==null?31:d.technoline_fields);dSet('data-dpressbit',d.pressure_fields==null?15:d.pressure_fields);dSet('data-dstatusbit',d.status_fields==null?31:d.status_fields);E('displaySummary').textContent=(d.on?'OLED ON':'OLED OFF')+' · pagina '+(Number(d.current_page)+1)+' · cambio '+d.page_interval_sec+' s · contrasto '+d.contrast+' · NVS '+(d.nvs_ok?'OK':'KO');}catch(e){E('displaySummary').textContent='errore lettura display'}}
 async function saveDisplayConfig(){const pageMask=dGet('data-dpagebit');if(!pageMask){alert('Seleziona almeno una pagina OLED.');return}const q=new URLSearchParams();q.set('on',E('dispOn').checked?'1':'0');q.set('page_mask',String(pageMask));q.set('environment_fields',String(dGet('data-denvbit')));q.set('wind_rain_fields',String(dGet('data-dwindbit')));q.set('technoline_fields',String(dGet('data-dtechbit')));q.set('pressure_fields',String(dGet('data-dpressbit')));q.set('status_fields',String(dGet('data-dstatusbit')));q.set('page_interval_sec',E('dispInterval').value);q.set('contrast',E('dispContrast').value);const r=await fetch('/api/display/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:q.toString(),cache:'no-store'});if(!r.ok){alert('DISPLAY: '+await r.text());return}const j=await r.json();displayOn=!!j.display_on;updateDisplayUi();await loadDisplay();}
 async function resetDisplayConfig(){if(!confirm('Ripristinare pagine/campi/intervallo/contrasto OLED ai default firmware?'))return;const r=await fetch('/api/display/reset',{method:'POST',cache:'no-store'});if(!r.ok){alert('Reset DISPLAY fallito');return}await loadDisplay();}
+async function powerOffDevice(){if(!confirm('Spegnere il controller? Entrera in DEEP SLEEP: RF, Wi-Fi, Web, MQTT, OLED e BME280 verranno arrestati.'))return;try{const r=await fetch('/api/poweroff',{method:'POST',cache:'no-store'});const t=await r.text();if(!r.ok)throw new Error(t);const j=JSON.parse(t);alert('Controller in spegnimento. Per riaccenderlo: '+(j.wake_hint||'usa RESET/EN.'));}catch(e){alert('Spegnimento fallito: '+e)}}
 async function restartDevice(){if(!confirm('Riavviare ora la scheda ESP32?'))return;const r=await fetch('/api/restart',{method:'POST',cache:'no-store'});if(r.ok)alert('Riavvio ESP32 avviato. La pagina tornera disponibile tra pochi secondi.');else alert('Riavvio fallito');}let displayOn=true,displayBusy=false;async function toggleDisplay(){if(displayBusy)return;displayBusy=true;const btn=E('displayBtn'),target=!displayOn;if(btn)btn.disabled=true;try{const r=await fetch('/api/display?on='+(target?1:0),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const j=await r.json();displayOn=!!j.display_on;}catch(e){alert('Comando display fallito: '+e)}finally{if(btn)btn.disabled=false;updateDisplayUi();}}function updateDisplayUi(){const btn=E('displayBtn'),st=E('sysDisplay'),cfg=E('dispOn');if(btn){btn.textContent=displayOn?'OLED ON':'OLED OFF';btn.classList.toggle('active',!displayOn);btn.title=displayOn?'Clic per spegnere il display OLED':'Clic per riaccendere il display OLED';}if(st){st.textContent=displayOn?'ON':'POWER SAVE';st.className='value '+(displayOn?'ok':'muted');}if(cfg&&!(mainTab==='config'&&E('cfgDisplay')&&E('cfgDisplay').classList.contains('active')))cfg.checked=displayOn;}function setCompass(prefix,deg,label){const g=E(prefix+'CompassNeedle'),d=E(prefix+'CompassDeg'),n=E(prefix+'CompassDir');if(!g||deg==null||!Number.isFinite(Number(deg))){if(g)g.style.opacity=.25;if(d)d.textContent='--°';if(n)n.textContent='--';return}const v=((Number(deg)%360)+360)%360;g.style.opacity=1;g.setAttribute('transform','rotate('+v+' 60 60)');d.textContent=Math.round(v)+'°';n.textContent=label||''}function fmtBytes(v){const n=Number(v||0);if(n>=1048576)return (n/1048576).toFixed(2)+' MB';if(n>=1024)return (n/1024).toFixed(1)+' KB';return n+' B'}function fmtUptime(sec){let s=Number(sec||0),d=Math.floor(s/86400);s%=86400;let h=Math.floor(s/3600);s%=3600;let m=Math.floor(s/60);return (d?d+' g ':'')+String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')}
 function push(k,v){if(v==null)return;hist[k].push(Number(v));if(hist[k].length>60)hist[k].shift()}function spark(id,a){const el=document.getElementById(id);if(!el||a.length<2){if(el)el.innerHTML='';return}let mn=Math.min(...a),mx=Math.max(...a);if(mx===mn)mx=mn+1;let pts=a.map((v,i)=>((i/(a.length-1))*112+1).toFixed(1)+','+(26-((v-mn)/(mx-mn))*22).toFixed(1)).join(' ');el.innerHTML='<polyline points="'+pts+'" fill="none" stroke="#83b7ff" stroke-width="2"/>'}
 async function refresh(){try{const s=await (await fetch('/api/state',{cache:'no-store'})).json(),w=s.weather,bme=s.bme280||{},p=s.packets,r=s.rf,a=s.fresh,ss=s.sensors,lc=s.lacrosse,lcr=s.lacrosse_rf,sess=s.session,b=s.burst,wp=s.wgr_probe||{},sys=s.system||{};
@@ -1601,6 +1617,7 @@ void initWeb(StationState &stateRef) {
     server.on("/api/display/config", HTTP_GET, handleDisplayConfigGet);
     server.on("/api/display/config", HTTP_POST, handleDisplayConfigPost);
     server.on("/api/display/reset", HTTP_POST, handleDisplayConfigReset);
+    server.on("/api/poweroff", HTTP_POST, handleDevicePowerOff);
     server.on("/api/restart", HTTP_POST, handleDeviceRestart);
     server.onNotFound([](){ server.send(404, "text/plain", "Not found"); });
     Serial.println(F("[WEB] configurato; partira' appena il WiFi sara' connesso"));
@@ -1620,6 +1637,12 @@ void serviceWeb() {
             Serial.println('/');
         }
         server.handleClient();
+    }
+    if (powerOffAtMs && static_cast<int32_t>(millis() - powerOffAtMs) >= 0) {
+        powerOffAtMs = 0;
+        Serial.println(F("[WEB] spegnimento controller richiesto"));
+        delay(50);
+        enterControllerDeepSleep();
     }
     if (rebootAtMs && static_cast<int32_t>(millis() - rebootAtMs) >= 0) {
         Serial.println(F("[WEB] riavvio richiesto dalla configurazione"));

@@ -79,3 +79,10 @@ Il progetto viene distribuito sotto **GNU GPL v3 o successiva**. Il decoder WS23
 ### Nota pulsante OLED e board
 
 Il controllo OLED dalla Web UI e' disponibile su entrambe le board. Il toggle fisico e' abilitato di default solo su T3-S3, dove LILYGO dichiara `BUTTON_PIN = 0`. Sul T3 V1.6.1 resta disabilitato per default e puo' essere abilitato esplicitamente in `config_private.h` dopo verifica della revisione hardware.
+
+## Spegnimento software del controller
+
+La Web UI espone il pulsante **SPEGNI**. Il comando esegue un arresto controllato e porta l'ESP32 in **deep sleep** senza scollegare il cavo di alimentazione. Prima dello sleep il firmware pubblica MQTT `offline`, spegne l'OLED, porta il BME280 e l'SX1278 in sleep e disabilita il Wi-Fi.
+
+Sul **T3 V1.6.1** il risveglio predefinito avviene con **RESET/EN**; il progetto non presume l'esistenza di un pulsante utente applicativo su quella revisione. Sul **T3-S3** il BOOT/User button GPIO0 puo' essere usato come sorgente di wake oltre a RESET/EN. Lo stato deep sleep riduce fortemente i consumi ma non equivale a un'interruzione fisica dell'alimentazione; per consumo praticamente nullo serve un load-switch/latch hardware esterno.
+
