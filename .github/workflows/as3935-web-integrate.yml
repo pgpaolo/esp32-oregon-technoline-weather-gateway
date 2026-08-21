@@ -1,42 +1,33 @@
-name: Integrate AS3935 Web UI
+name: AS3935 Integration Guard
 
 on:
-  push:
+  pull_request:
     branches:
-      - feature/as3935-lightning
-    paths:
-      - scripts/apply_as3935_web_integration.py
-      - .github/workflows/as3935-web-integrate.yml
+      - main
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  integrate:
+  guard:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout branch
+      - name: Checkout repository
         uses: actions/checkout@v6
-        with:
-          ref: feature/as3935-lightning
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Apply AS3935 UI integration
-        run: python scripts/apply_as3935_web_integration.py
-
-      - name: Commit generated integration
+      - name: Verify main-UI integration
+        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/web_manager.cpp src/main.cpp
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "feat: integrate AS3935 into main web UI"
-            git push origin HEAD:feature/as3935-lightning
+          set -euo pipefail
+          grep -q 'AS3935_UI_INTEGRATED' src/web_manager.cpp
+          grep -q '/api/as3935/state' src/web_manager.cpp
+          grep -q '/api/as3935/config' src/web_manager.cpp
+          grep -q 'lightning_manager.h' src/main.cpp
+
+          if grep -REn 'lightning_web\.h|initLightningWeb|serviceLightningWeb|WebServer[[:space:]]+[^;]*\(81\)' src; then
+            echo 'Standalone AS3935 Web UI / port 81 reference found.' >&2
+            exit 1
           fi
+
+          echo 'AS3935 is integrated into the main Web UI; no standalone port-81 server found.'
