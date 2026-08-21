@@ -25,6 +25,7 @@ Preferences prefs;
 LightningConfig cfg{};
 LightningState state{};
 AS3935I2C *sensor = nullptr;
+int8_t activeIrqPin = -1;
 volatile bool irqPending = false;
 volatile uint32_t irqRaisedUs = 0;
 uint32_t lastStatePublishMs = 0;
@@ -125,7 +126,10 @@ bool verifyStored(Preferences &p, const LightningConfig &expected) {
 }
 
 void stopSensor() {
-    if (cfg.irqPin >= 0) detachInterrupt(digitalPinToInterrupt(cfg.irqPin));
+    if (activeIrqPin >= 0) {
+        detachInterrupt(digitalPinToInterrupt(static_cast<uint8_t>(activeIrqPin)));
+        activeIrqPin = -1;
+    }
     irqPending = false;
     if (sensor) {
         sensor->writePowerDown(true);
@@ -182,11 +186,11 @@ bool configureSensor() {
     }
     if (cfg.irqPin < 0 || pinReserved(cfg.irqPin)) {
         Serial.print(F("[AS3935] IRQ non valido o riservato: GPIO"));
-        Serial.println(cfg.irqPin);
+        Serial.println(static_cast<int>(cfg.irqPin));
         return false;
     }
 
-    pinMode(cfg.irqPin, INPUT);
+    pinMode(static_cast<uint8_t>(cfg.irqPin), INPUT);
     sensor = new AS3935I2C(cfg.i2cAddress, static_cast<uint8_t>(cfg.irqPin));
     if (!sensor) {
         Serial.println(F("[AS3935] allocazione sensore fallita"));
@@ -224,10 +228,11 @@ bool configureSensor() {
     sensor->writeMaskDisturbers(cfg.maskDisturbers);
     sensor->clearStatistics();
 
-    attachInterrupt(digitalPinToInterrupt(cfg.irqPin), lightningIsr, RISING);
+    attachInterrupt(digitalPinToInterrupt(static_cast<uint8_t>(cfg.irqPin)), lightningIsr, RISING);
+    activeIrqPin = cfg.irqPin;
 
     Serial.print(F("[AS3935] OK I2C=0x")); Serial.print(cfg.i2cAddress, HEX);
-    Serial.print(F(" IRQ=GPIO")); Serial.print(cfg.irqPin);
+    Serial.print(F(" IRQ=GPIO")); Serial.print(static_cast<int>(cfg.irqPin));
     Serial.print(F(" mode=")); Serial.print(cfg.indoor ? F("INDOOR") : F("OUTDOOR"));
     Serial.print(F(" noise=")); Serial.print(cfg.noiseFloor);
     Serial.print(F(" watchdog=")); Serial.print(cfg.watchdogThreshold);
@@ -395,7 +400,7 @@ String lightningConfigJson() {
     out = "{\"enabled\":"; out += cfg.enabled ? "true" : "false";
     out += ",\"indoor\":"; out += cfg.indoor ? "true" : "false";
     out += ",\"i2c_address\":" + String(cfg.i2cAddress);
-    out += ",\"irq_pin\":" + String(cfg.irqPin);
+    out += ",\"irq_pin\":" + String(static_cast<int>(cfg.irqPin));
     out += ",\"noise_floor\":" + String(cfg.noiseFloor);
     out += ",\"watchdog_threshold\":" + String(cfg.watchdogThreshold);
     out += ",\"spike_rejection\":" + String(cfg.spikeRejection);
@@ -417,7 +422,7 @@ String lightningStateJson() {
     out += ",\"resonance_hz\":" + String(state.resonanceHz);
     out += ",\"mode\":\"" + String(cfg.indoor ? "indoor" : "outdoor") + "\"";
     out += ",\"i2c_address\":" + String(cfg.i2cAddress);
-    out += ",\"irq_pin\":" + String(cfg.irqPin);
+    out += ",\"irq_pin\":" + String(static_cast<int>(cfg.irqPin));
     out += ",\"irq_total\":" + String(state.irqTotal);
     out += ",\"noise_total\":" + String(state.noiseTotal);
     out += ",\"disturber_total\":" + String(state.disturberTotal);
@@ -425,7 +430,8 @@ String lightningStateJson() {
     out += ",\"last_event_ms\":" + String(state.lastEventMs);
     out += ",\"last_lightning_ms\":" + String(state.lastLightningMs);
     out += ",\"last_source\":" + String(state.lastInterruptSource);
-    out += ",\"last_type\":\"" + String(lightningInterruptName(state.lastInterruptSource)) + "\"";
+    if (state.lastEventMs == 0) out += ",\"last_type\":\"none\"";
+    else out += ",\"last_type\":\"" + String(lightningInterruptName(state.lastInterruptSource)) + "\"";
     if (state.lastLightningMs == 0 || state.distanceOutOfRange) out += ",\"last_distance_km\":null";
     else out += ",\"last_distance_km\":" + String(state.lastDistanceKm);
     out += ",\"distance_out_of_range\":"; out += state.distanceOutOfRange ? "true" : "false";
