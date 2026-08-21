@@ -140,37 +140,72 @@ void stopSensor() {
     state.irqOk = false;
 }
 
+bool mqttFieldEnabled(const MqttRuntimeConfig &mqtt, uint32_t bit) {
+    return (mqtt.fieldsMask & bit) != 0U;
+}
+
 void publishMqttState(PubSubClient &client) {
     const MqttRuntimeConfig mqtt = getMqttConfig();
     if (!mqtt.enabled || !client.connected()) return;
-    const String topic = mqtt.baseTopic + "/as3935/state";
-    const String json = lightningStateJson();
-    client.publish(topic.c_str(), json.c_str(), true);
+
+    if (mqttFieldEnabled(mqtt, MQTT_F_AS_STATE)) {
+        const String json = lightningStateJson();
+        client.publish((mqtt.baseTopic + "/as3935/state").c_str(), json.c_str(), true);
+    }
+
+    if (mqttFieldEnabled(mqtt, MQTT_F_AS_LAST_STRIKE)) {
+        String json;
+        json.reserve(150);
+        json = "{\"last_lightning_ms\":" + String(state.lastLightningMs);
+        if (!state.lastLightningMs || state.distanceOutOfRange) json += ",\"distance_km\":null";
+        else json += ",\"distance_km\":" + String(state.lastDistanceKm);
+        json += ",\"distance_out_of_range\":";
+        json += state.distanceOutOfRange ? "true" : "false";
+        json += ",\"energy\":" + String(state.lastEnergy) + "}";
+        client.publish((mqtt.baseTopic + "/as3935/last_strike").c_str(), json.c_str(), true);
+    }
+
+    if (mqttFieldEnabled(mqtt, MQTT_F_AS_DIAG)) {
+        String json;
+        json.reserve(240);
+        json = "{\"detected\":";
+        json += state.detected ? "true" : "false";
+        json += ",\"irq_ok\":"; json += state.irqOk ? "true" : "false";
+        json += ",\"calibration_ok\":"; json += state.calibrationOk ? "true" : "false";
+        json += ",\"resonance_hz\":" + String(state.resonanceHz);
+        json += ",\"irq_total\":" + String(state.irqTotal);
+        json += ",\"noise_total\":" + String(state.noiseTotal);
+        json += ",\"disturber_total\":" + String(state.disturberTotal);
+        json += ",\"lightning_total\":" + String(state.lightningTotal);
+        json += ",\"last_type\":\"" + String(state.lastEventMs ? lightningInterruptName(state.lastInterruptSource) : "none") + "\"}";
+        client.publish((mqtt.baseTopic + "/as3935/diagnostics").c_str(), json.c_str(), true);
+    }
 }
 
 void publishMqttEvent(PubSubClient &client, uint8_t source) {
     const MqttRuntimeConfig mqtt = getMqttConfig();
     if (!mqtt.enabled || !client.connected()) return;
 
-    String json;
-    json.reserve(320);
-    json = "{\"type\":\"" + String(lightningInterruptName(source)) + "\"";
-    json += ",\"source\":" + String(source);
-    json += ",\"uptime_ms\":" + String(state.lastEventMs);
-    json += ",\"irq_total\":" + String(state.irqTotal);
-    json += ",\"noise_total\":" + String(state.noiseTotal);
-    json += ",\"disturber_total\":" + String(state.disturberTotal);
-    json += ",\"lightning_total\":" + String(state.lightningTotal);
-    if (source == AS3935MI::AS3935_INT_L) {
-        if (state.distanceOutOfRange) json += ",\"distance_km\":null";
-        else json += ",\"distance_km\":" + String(state.lastDistanceKm);
-        json += ",\"distance_out_of_range\":";
-        json += state.distanceOutOfRange ? "true" : "false";
-        json += ",\"energy\":" + String(state.lastEnergy);
+    if (mqttFieldEnabled(mqtt, MQTT_F_AS_EVENT)) {
+        String json;
+        json.reserve(320);
+        json = "{\"type\":\"" + String(lightningInterruptName(source)) + "\"";
+        json += ",\"source\":" + String(source);
+        json += ",\"uptime_ms\":" + String(state.lastEventMs);
+        json += ",\"irq_total\":" + String(state.irqTotal);
+        json += ",\"noise_total\":" + String(state.noiseTotal);
+        json += ",\"disturber_total\":" + String(state.disturberTotal);
+        json += ",\"lightning_total\":" + String(state.lightningTotal);
+        if (source == AS3935MI::AS3935_INT_L) {
+            if (state.distanceOutOfRange) json += ",\"distance_km\":null";
+            else json += ",\"distance_km\":" + String(state.lastDistanceKm);
+            json += ",\"distance_out_of_range\":";
+            json += state.distanceOutOfRange ? "true" : "false";
+            json += ",\"energy\":" + String(state.lastEnergy);
+        }
+        json += "}";
+        client.publish((mqtt.baseTopic + "/as3935/event").c_str(), json.c_str(), false);
     }
-    json += "}";
-
-    client.publish((mqtt.baseTopic + "/as3935/event").c_str(), json.c_str(), false);
     publishMqttState(client);
 }
 

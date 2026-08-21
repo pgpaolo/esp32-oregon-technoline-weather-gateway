@@ -45,10 +45,14 @@ enum MqttField : uint32_t {
     MQTT_F_BME_TREND      = 1UL << 24,
     MQTT_F_STATE_JSON     = 1UL << 25,
     MQTT_F_RF_META        = 1UL << 26,
-    MQTT_F_SYSTEM         = 1UL << 27
+    MQTT_F_SYSTEM         = 1UL << 27,
+    MQTT_F_AS_STATE       = 1UL << 28,
+    MQTT_F_AS_EVENT       = 1UL << 29,
+    MQTT_F_AS_LAST_STRIKE = 1UL << 30,
+    MQTT_F_AS_DIAG        = 1UL << 31
 };
 
-static constexpr uint32_t MQTT_FIELDS_ALL = 0x0FFFFFFFUL;
+static constexpr uint32_t MQTT_FIELDS_ALL = 0xFFFFFFFFUL;
 
 struct MqttRuntimeConfig {
     bool enabled{true};

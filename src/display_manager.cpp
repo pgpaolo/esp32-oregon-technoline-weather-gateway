@@ -9,6 +9,7 @@
 #include "barometer_manager.h"
 #include "lacrosse_ws23xx.h"
 #include "oregon_receiver.h"
+#include "lightning_manager.h"
 
 namespace {
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
@@ -37,6 +38,7 @@ void normalize(DisplayRuntimeConfig &c) {
     c.technolineFields &= DISPLAY_TECH_ALL;
     c.pressureFields &= DISPLAY_PRESS_ALL;
     c.statusFields &= DISPLAY_STATUS_ALL;
+    c.lightningFields &= DISPLAY_AS_ALL;
     if (c.pageIntervalSec < 2U) c.pageIntervalSec = 2U;
     if (c.pageIntervalSec > 60U) c.pageIntervalSec = 60U;
     if (c.contrast < 8U) c.contrast = 8U;
@@ -49,6 +51,7 @@ bool sameConfig(const DisplayRuntimeConfig &a, const DisplayRuntimeConfig &b) {
            a.technolineFields == b.technolineFields &&
            a.pressureFields == b.pressureFields &&
            a.statusFields == b.statusFields &&
+           a.lightningFields == b.lightningFields &&
            a.pageIntervalSec == b.pageIntervalSec &&
            a.contrast == b.contrast;
 }
@@ -62,22 +65,23 @@ bool verifyStoredConfig(Preferences &p, const DisplayRuntimeConfig &c) {
            p.getUChar("tech", d.technolineFields) == c.technolineFields &&
            p.getUChar("press", d.pressureFields) == c.pressureFields &&
            p.getUChar("status", d.statusFields) == c.statusFields &&
+           p.getUChar("as3935", d.lightningFields) == c.lightningFields &&
            p.getUShort("page_s", d.pageIntervalSec) == c.pageIntervalSec &&
            p.getUChar("contrast", d.contrast) == c.contrast;
 }
 
 bool pageEnabled(uint8_t p) {
-    return p < 5U && (displayCfg.pageMask & static_cast<uint8_t>(1U << p)) != 0U;
+    return p < 6U && (displayCfg.pageMask & static_cast<uint8_t>(1U << p)) != 0U;
 }
 
 uint8_t firstEnabledPage() {
-    for (uint8_t p = 0; p < 5U; ++p) if (pageEnabled(p)) return p;
+    for (uint8_t p = 0; p < 6U; ++p) if (pageEnabled(p)) return p;
     return 0U;
 }
 
 uint8_t nextEnabledPage(uint8_t current) {
-    for (uint8_t step = 1; step <= 5U; ++step) {
-        const uint8_t p = static_cast<uint8_t>((current + step) % 5U);
+    for (uint8_t step = 1; step <= 6U; ++step) {
+        const uint8_t p = static_cast<uint8_t>((current + step) % 6U);
         if (pageEnabled(p)) return p;
     }
     return firstEnabledPage();
@@ -230,6 +234,46 @@ void renderPressure(const StationState &s, bool wifiOk, bool mqttOk) {
     if (y == 23) drawLine("Nessun campo selezionato", y);
 }
 
+
+void renderLightning(bool wifiOk, bool mqttOk) {
+    header("AS3935 FULMINI", wifiOk, mqttOk);
+    char line[56];
+    oled.setFont(u8g2_font_5x8_tf);
+    uint8_t y = 23;
+    const LightningState s = getLightningState();
+    const LightningConfig c = getLightningConfig();
+
+    if (displayCfg.lightningFields & DISPLAY_AS_STATUS) {
+        if (!s.enabled) snprintf(line, sizeof(line), "Sensore DISABILITATO");
+        else snprintf(line, sizeof(line), "Sens %s IRQ %s CAL %s",
+                      s.detected ? "OK" : "KO", s.irqOk ? "OK" : "KO", s.calibrationOk ? "OK" : "KO");
+        drawLine(line, y);
+    }
+    if (displayCfg.lightningFields & DISPLAY_AS_LAST_STRIKE) {
+        if (!s.lastLightningMs) snprintf(line, sizeof(line), "Ultimo fulmine --");
+        else if (s.distanceOutOfRange) snprintf(line, sizeof(line), "Ult >40km E%lu", static_cast<unsigned long>(s.lastEnergy));
+        else snprintf(line, sizeof(line), "Ult %ukm E%lu", s.lastDistanceKm, static_cast<unsigned long>(s.lastEnergy));
+        drawLine(line, y);
+    }
+    if (displayCfg.lightningFields & DISPLAY_AS_COUNTERS) {
+        snprintf(line, sizeof(line), "L%lu N%lu D%lu IRQ%lu",
+                 static_cast<unsigned long>(s.lightningTotal), static_cast<unsigned long>(s.noiseTotal),
+                 static_cast<unsigned long>(s.disturberTotal), static_cast<unsigned long>(s.irqTotal));
+        drawLine(line, y);
+    }
+    if (displayCfg.lightningFields & DISPLAY_AS_FILTERS) {
+        snprintf(line, sizeof(line), "%s NF%u WD%u SP%u M%u",
+                 c.indoor ? "IN" : "OUT", c.noiseFloor, c.watchdogThreshold, c.spikeRejection, c.minStrikes);
+        drawLine(line, y);
+    }
+    if (displayCfg.lightningFields & DISPLAY_AS_BUS_TUNING) {
+        snprintf(line, sizeof(line), "I2C%02X GPIO%d %ldkHz",
+                 c.i2cAddress, static_cast<int>(c.irqPin), static_cast<long>(s.resonanceHz / 1000L));
+        drawLine(line, y);
+    }
+    if (y == 23) drawLine("Nessun campo selezionato", y);
+}
+
 void renderStatus(const StationState &, const OregonRxStats &rx, const LaCrosseRxStats &lc, bool wifiOk, bool mqttOk) {
     const RfProtocolMode mode = getRfProtocolMode();
     header(mode==RfProtocolMode::Dual ? "RF DUAL" : (mode==RfProtocolMode::Oregon ? "RF OREGON" : "RF TECHNOLINE"), wifiOk, mqttOk);
@@ -301,6 +345,7 @@ void initDisplay() {
         displayCfg.technolineFields = displayPrefs.getUChar("tech", d.technolineFields);
         displayCfg.pressureFields = displayPrefs.getUChar("press", d.pressureFields);
         displayCfg.statusFields = displayPrefs.getUChar("status", d.statusFields);
+        displayCfg.lightningFields = displayPrefs.getUChar("as3935", d.lightningFields);
         displayCfg.pageIntervalSec = displayPrefs.getUShort("page_s", d.pageIntervalSec);
         displayCfg.contrast = displayPrefs.getUChar("contrast", d.contrast);
     } else {
@@ -419,6 +464,7 @@ bool validateDisplayConfig(const DisplayRuntimeConfig &cfg) {
     if ((cfg.technolineFields & ~DISPLAY_TECH_ALL) != 0U) return false;
     if ((cfg.pressureFields & ~DISPLAY_PRESS_ALL) != 0U) return false;
     if ((cfg.statusFields & ~DISPLAY_STATUS_ALL) != 0U) return false;
+    if ((cfg.lightningFields & ~DISPLAY_AS_ALL) != 0U) return false;
     if (cfg.pageIntervalSec < 2U || cfg.pageIntervalSec > 60U) return false;
     if (cfg.contrast < 8U) return false;
     return true;
@@ -441,6 +487,7 @@ bool saveDisplayConfig(const DisplayRuntimeConfig &cfg, bool &changed) {
     if (next.technolineFields != displayCfg.technolineFields) displayPrefs.putUChar("tech", next.technolineFields);
     if (next.pressureFields != displayCfg.pressureFields) displayPrefs.putUChar("press", next.pressureFields);
     if (next.statusFields != displayCfg.statusFields) displayPrefs.putUChar("status", next.statusFields);
+    if (next.lightningFields != displayCfg.lightningFields) displayPrefs.putUChar("as3935", next.lightningFields);
     if (next.pageIntervalSec != displayCfg.pageIntervalSec) displayPrefs.putUShort("page_s", next.pageIntervalSec);
     if (next.contrast != displayCfg.contrast) displayPrefs.putUChar("contrast", next.contrast);
 
@@ -488,6 +535,7 @@ void updateDisplay(const StationState &state, const OregonRxStats &rxStats, cons
     else if (page == 1) renderWindRain(state, wifiOk, mqttOk);
     else if (page == 2) renderLaCrosse(state, wifiOk, mqttOk);
     else if (page == 3) renderPressure(state, wifiOk, mqttOk);
-    else renderStatus(state, rxStats, lcStats, wifiOk, mqttOk);
+    else if (page == 4) renderStatus(state, rxStats, lcStats, wifiOk, mqttOk);
+    else renderLightning(wifiOk, mqttOk);
     oled.sendBuffer();
 }
