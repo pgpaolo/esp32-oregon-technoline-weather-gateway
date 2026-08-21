@@ -1,0 +1,32 @@
+name: AS3935 Phase2 Apply
+
+on:
+  push:
+    branches:
+      - feature/as3935-lightning
+    paths:
+      - scripts/apply_as3935_phase2.py
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feature/as3935-lightning
+          fetch-depth: 0
+      - name: Apply AS3935 OLED MQTT UI integration
+        run: python scripts/apply_as3935_phase2.py
+      - name: Remove one-shot files and commit
+        run: |
+          rm -f scripts/apply_as3935_phase2.py
+          rm -f .github/workflows/as3935-phase2-apply.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "feat: complete AS3935 OLED MQTT and guided config"
+          git push origin HEAD:feature/as3935-lightning
