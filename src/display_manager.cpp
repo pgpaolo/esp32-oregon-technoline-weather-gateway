@@ -2,7 +2,6 @@
 #include <Wire.h>
 #include <U8g2lib.h>
 #include <Preferences.h>
-#include <string.h>
 #include "board_config.h"
 #include "config.h"
 #include "network_manager.h"
@@ -28,9 +27,7 @@ uint32_t buttonLastChangeMs = 0;
 uint32_t buttonPressedAtMs = 0;
 #endif
 
-DisplayRuntimeConfig defaults() {
-    return DisplayRuntimeConfig{};
-}
+DisplayRuntimeConfig defaults() { return DisplayRuntimeConfig{}; }
 
 void normalize(DisplayRuntimeConfig &c) {
     c.pageMask &= DISPLAY_PAGE_ALL;
@@ -43,6 +40,28 @@ void normalize(DisplayRuntimeConfig &c) {
     if (c.pageIntervalSec < 2U) c.pageIntervalSec = 2U;
     if (c.pageIntervalSec > 60U) c.pageIntervalSec = 60U;
     if (c.contrast < 8U) c.contrast = 8U;
+}
+
+bool sameConfig(const DisplayRuntimeConfig &a, const DisplayRuntimeConfig &b) {
+    return a.pageMask == b.pageMask &&
+           a.environmentFields == b.environmentFields &&
+           a.windRainFields == b.windRainFields &&
+           a.technolineFields == b.technolineFields &&
+           a.pressureFields == b.pressureFields &&
+           a.statusFields == b.statusFields &&
+           a.pageIntervalSec == b.pageIntervalSec &&
+           a.contrast == b.contrast;
+}
+
+bool verifyStoredConfig(Preferences &p, const DisplayRuntimeConfig &c) {
+    return p.getUChar("pages", 0) == c.pageMask &&
+           p.getUChar("env", 0xFF) == c.environmentFields &&
+           p.getUChar("wind", 0xFF) == c.windRainFields &&
+           p.getUChar("tech", 0xFF) == c.technolineFields &&
+           p.getUChar("press", 0xFF) == c.pressureFields &&
+           p.getUChar("status", 0xFF) == c.statusFields &&
+           p.getUShort("page_s", 0) == c.pageIntervalSec &&
+           p.getUChar("contrast", 0) == c.contrast;
 }
 
 bool pageEnabled(uint8_t p) {
@@ -247,6 +266,20 @@ void renderStatus(const StationState &, const OregonRxStats &rx, const LaCrosseR
     }
     if (y == 23) drawLine("Nessun campo selezionato", y);
 }
+
+void applyDisplayPower() {
+    if (displayOn) {
+        oled.setPowerSave(0);
+        oled.setContrast(displayCfg.contrast);
+        lastRefreshMs = 0;
+        pageEpochMs = millis();
+        if (!pageEnabled(page)) page = firstEnabledPage();
+    } else {
+        oled.clearBuffer();
+        oled.sendBuffer();
+        oled.setPowerSave(1);
+    }
+}
 } // namespace
 
 void initDisplay() {
@@ -254,10 +287,12 @@ void initDisplay() {
     oled.setBusClock(400000);
     oled.begin();
 
-    displayPrefsReady = displayPrefs.begin("display", false);
     const DisplayRuntimeConfig d = defaults();
-    displayOn = displayPrefsReady ? displayPrefs.getBool("on", true) : true;
+    displayCfg = d;
+    displayOn = true;
+    displayPrefsReady = displayPrefs.begin("display", false);
     if (displayPrefsReady) {
+        displayOn = displayPrefs.getBool("on", true);
         displayCfg.pageMask = displayPrefs.getUChar("pages", d.pageMask);
         displayCfg.environmentFields = displayPrefs.getUChar("env", d.environmentFields);
         displayCfg.windRainFields = displayPrefs.getUChar("wind", d.windRainFields);
@@ -266,6 +301,8 @@ void initDisplay() {
         displayCfg.statusFields = displayPrefs.getUChar("status", d.statusFields);
         displayCfg.pageIntervalSec = displayPrefs.getUShort("page_s", d.pageIntervalSec);
         displayCfg.contrast = displayPrefs.getUChar("contrast", d.contrast);
+    } else {
+        Serial.println(F("[OLED] ATTENZIONE: NVS display non disponibile; uso default runtime"));
     }
     normalize(displayCfg);
     oled.setContrast(displayCfg.contrast);
@@ -318,9 +355,11 @@ void serviceDisplayButton() {
     const uint32_t heldMs = buttonPressedAtMs ? static_cast<uint32_t>(now - buttonPressedAtMs) : 0;
     buttonPressedAtMs = 0;
     if (heldMs >= OLED_BUTTON_MIN_PRESS_MS && heldMs <= OLED_BUTTON_MAX_PRESS_MS) {
-        setDisplayEnabled(!displayEnabled());
+        const bool persisted = setDisplayEnabled(!displayEnabled());
         Serial.print(F("[OLED] toggle da pulsante fisico, pressione ms="));
-        Serial.println(heldMs);
+        Serial.print(heldMs);
+        Serial.print(F(" NVS="));
+        Serial.println(persisted ? F("OK") : F("KO"));
     }
 #endif
 }
@@ -342,25 +381,23 @@ int displayButtonPin() {
 }
 
 bool displayEnabled() { return displayOn; }
+bool displayPersistenceAvailable() { return displayPrefsReady; }
 
-void setDisplayEnabled(bool enabled) {
-    if (displayOn == enabled) return;
-    displayOn = enabled;
-    if (displayPrefsReady && displayPrefs.getBool("on", true) != enabled) displayPrefs.putBool("on", enabled);
+bool setDisplayEnabled(bool enabled) {
+    if (displayOn == enabled) return displayPrefsReady;
 
-    if (enabled) {
-        oled.setPowerSave(0);
-        oled.setContrast(displayCfg.contrast);
-        lastRefreshMs = 0;
-        pageEpochMs = millis();
-        if (!pageEnabled(page)) page = firstEnabledPage();
-        Serial.println(F("[OLED] acceso"));
-    } else {
-        oled.clearBuffer();
-        oled.sendBuffer();
-        oled.setPowerSave(1);
-        Serial.println(F("[OLED] power save"));
+    bool persisted = false;
+    if (displayPrefsReady) {
+        displayPrefs.putBool("on", enabled);
+        persisted = displayPrefs.getBool("on", !enabled) == enabled;
     }
+
+    displayOn = enabled;
+    applyDisplayPower();
+    Serial.print(enabled ? F("[OLED] acceso") : F("[OLED] power save"));
+    Serial.print(F(" · NVS "));
+    Serial.println(persisted ? F("verificata") : F("NON verificata"));
+    return persisted;
 }
 
 DisplayRuntimeConfig getDisplayConfig() { return displayCfg; }
@@ -383,24 +420,33 @@ bool saveDisplayConfig(const DisplayRuntimeConfig &cfg, bool &changed) {
     if (!validateDisplayConfig(cfg)) return false;
     DisplayRuntimeConfig next = cfg;
     normalize(next);
-    if (memcmp(&next, &displayCfg, sizeof(DisplayRuntimeConfig)) == 0) return true;
-
-    if (displayPrefsReady) {
-        if (next.pageMask != displayCfg.pageMask) displayPrefs.putUChar("pages", next.pageMask);
-        if (next.environmentFields != displayCfg.environmentFields) displayPrefs.putUChar("env", next.environmentFields);
-        if (next.windRainFields != displayCfg.windRainFields) displayPrefs.putUChar("wind", next.windRainFields);
-        if (next.technolineFields != displayCfg.technolineFields) displayPrefs.putUChar("tech", next.technolineFields);
-        if (next.pressureFields != displayCfg.pressureFields) displayPrefs.putUChar("press", next.pressureFields);
-        if (next.statusFields != displayCfg.statusFields) displayPrefs.putUChar("status", next.statusFields);
-        if (next.pageIntervalSec != displayCfg.pageIntervalSec) displayPrefs.putUShort("page_s", next.pageIntervalSec);
-        if (next.contrast != displayCfg.contrast) displayPrefs.putUChar("contrast", next.contrast);
+    if (sameConfig(next, displayCfg)) return displayPrefsReady;
+    if (!displayPrefsReady) {
+        Serial.println(F("[OLED] ERRORE: configurazione modificata ma NVS display non disponibile"));
+        return false;
     }
+
+    if (next.pageMask != displayCfg.pageMask) displayPrefs.putUChar("pages", next.pageMask);
+    if (next.environmentFields != displayCfg.environmentFields) displayPrefs.putUChar("env", next.environmentFields);
+    if (next.windRainFields != displayCfg.windRainFields) displayPrefs.putUChar("wind", next.windRainFields);
+    if (next.technolineFields != displayCfg.technolineFields) displayPrefs.putUChar("tech", next.technolineFields);
+    if (next.pressureFields != displayCfg.pressureFields) displayPrefs.putUChar("press", next.pressureFields);
+    if (next.statusFields != displayCfg.statusFields) displayPrefs.putUChar("status", next.statusFields);
+    if (next.pageIntervalSec != displayCfg.pageIntervalSec) displayPrefs.putUShort("page_s", next.pageIntervalSec);
+    if (next.contrast != displayCfg.contrast) displayPrefs.putUChar("contrast", next.contrast);
+
+    if (!verifyStoredConfig(displayPrefs, next)) {
+        Serial.println(F("[OLED] ERRORE verifica NVS display: valori non confermati"));
+        return false;
+    }
+
     displayCfg = next;
     changed = true;
     if (!pageEnabled(page)) page = firstEnabledPage();
     pageEpochMs = millis();
     lastRefreshMs = 0;
     oled.setContrast(displayCfg.contrast);
+    Serial.println(F("[OLED] configurazione Web verificata in NVS"));
     return true;
 }
 
