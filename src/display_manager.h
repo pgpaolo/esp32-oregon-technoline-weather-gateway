@@ -56,6 +56,7 @@ struct DisplayRuntimeConfig {
 
 void initDisplay();
 void serviceDisplayButton();
+void prepareDisplayForDeepSleep();
 bool displayButtonEnabled();
 int displayButtonPin();
 bool displayEnabled();
