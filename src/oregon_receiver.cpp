@@ -23,23 +23,29 @@ Preferences rfPrefs;
 
 bool prefPutUCharIfChanged(Preferences &p, const char *key, uint8_t value) {
     const uint8_t old = p.getUChar(key, 0xFFU);
-    if (old == value) return false;
+    if (old == value) return true;
     p.putUChar(key, value);
-    return true;
+    const bool ok = p.getUChar(key, 0xFFU) == value;
+    if (!ok) Serial.printf("[RF] NVS verify KO key=%s\n", key);
+    return ok;
 }
 
 bool prefPutUShortIfChanged(Preferences &p, const char *key, uint16_t value) {
     const uint16_t old = p.getUShort(key, 0xFFFFU);
-    if (old == value) return false;
+    if (old == value) return true;
     p.putUShort(key, value);
-    return true;
+    const bool ok = p.getUShort(key, 0xFFFFU) == value;
+    if (!ok) Serial.printf("[RF] NVS verify KO key=%s\n", key);
+    return ok;
 }
 
 bool prefPutBoolIfChanged(Preferences &p, const char *key, bool value) {
     const bool old = p.getBool(key, false);
-    if (old == value) return false;
+    if (old == value) return true;
     p.putBool(key, value);
-    return true;
+    const bool ok = p.getBool(key, !value) == value;
+    if (!ok) Serial.printf("[RF] NVS verify KO key=%s\n", key);
+    return ok;
 }
 RfProtocolMode rfMode = RfProtocolMode::Oregon;
 bool burstExtraEnabled = false;
@@ -1379,16 +1385,31 @@ void frontendProfileSettings(RfFrontendProfile profile, float &bandwidthKhz, uin
     }
 }
 
-void persistOregonFrontend(RfFrontendProfile profile, float bandwidthKhz, uint8_t gain) {
+bool persistOregonFrontend(RfFrontendProfile profile, float bandwidthKhz, uint8_t gain) {
+    if (!rfPrefs.begin("rfrx", false)) {
+        Serial.println(F("[RF] ERRORE apertura NVS rfrx per profilo"));
+        return false;
+    }
+    bool ok = true;
+    ok = prefPutUCharIfChanged(rfPrefs, "gainO", gain) && ok;
+    ok = prefPutUShortIfChanged(rfPrefs, "bwO10", static_cast<uint16_t>(bandwidthKhz * 10.0f + 0.5f)) && ok;
+    ok = prefPutUCharIfChanged(rfPrefs, "profileO", static_cast<uint8_t>(profile)) && ok;
+    ok = prefPutUCharIfChanged(rfPrefs, "cfgVer", 59U) && ok;
+    if (rfMode == RfProtocolMode::Dual) {
+        ok = prefPutUCharIfChanged(rfPrefs, "gainL", gain) && ok;
+        ok = prefPutUShortIfChanged(rfPrefs, "bwL10", static_cast<uint16_t>(bandwidthKhz * 10.0f + 0.5f)) && ok;
+    }
+    rfPrefs.end();
+    if (!ok) return false;
+
     gainOregon = gain;
     bandwidthOregon = bandwidthKhz;
     currentFrontendProfile = profile;
-    rfPrefs.begin("rfrx", false);
-    prefPutUCharIfChanged(rfPrefs, "gainO", gainOregon);
-    prefPutUShortIfChanged(rfPrefs, "bwO10", static_cast<uint16_t>(bandwidthOregon * 10.0f + 0.5f));
-    prefPutUCharIfChanged(rfPrefs, "profileO", static_cast<uint8_t>(profile));
-    prefPutUCharIfChanged(rfPrefs, "cfgVer", 59U);
-    rfPrefs.end();
+    if (rfMode == RfProtocolMode::Dual) {
+        gainLaCrosse = gain;
+        bandwidthLaCrosse = bandwidthKhz;
+    }
+    return true;
 }
 
 void updateAutoScores() {
@@ -1432,7 +1453,9 @@ void serviceAutoCalibrationInternal() {
     float bw = 125.0f;
     uint8_t gain = 0;
     frontendProfileSettings(bestProfile, bw, gain);
-    persistOregonFrontend(bestProfile, bw, gain);
+    if (!persistOregonFrontend(bestProfile, bw, gain)) {
+        Serial.println(F("[RF-AUTO] ATTENZIONE: profilo migliore non persistito in NVS"));
+    }
     applyRadioFrontendRuntime(bw, gain);
 
     Serial.print(F("[RF-AUTO] completato, profilo migliore: "));
@@ -1495,34 +1518,46 @@ bool setRadioGainForMode(RfProtocolMode mode, uint8_t gain) {
     if (gain > 3U) return false;
     burstStats.autoActive = false;
 
-    // In DUAL il front-end e' unico: il guadagno viene applicato e persistito
-    // per entrambi i protocolli, evitando profili RF divergenti sullo stesso SX1278.
     if (mode == RfProtocolMode::Dual) {
         const bool already = gain == gainOregon && gain == gainLaCrosse &&
-                             currentFrontendProfile == RfFrontendProfile::Manual;
+                             currentFrontendProfile == RfFrontendProfile::Manual && gain == currentGain;
+        if (already) return true;
+        if (!rfPrefs.begin("rfrx", false)) {
+            Serial.println(F("[RF] ERRORE apertura NVS rfrx per gain DUAL"));
+            return false;
+        }
+        bool ok = true;
+        ok = prefPutUCharIfChanged(rfPrefs, "gainO", gain) && ok;
+        ok = prefPutUCharIfChanged(rfPrefs, "gainL", gain) && ok;
+        ok = prefPutUCharIfChanged(rfPrefs, "profileO", static_cast<uint8_t>(RfFrontendProfile::Manual)) && ok;
+        rfPrefs.end();
+        if (!ok) return false;
         gainOregon = gain;
         gainLaCrosse = gain;
         currentFrontendProfile = RfFrontendProfile::Manual;
-        if (already && gain == currentGain) return true;
-        rfPrefs.begin("rfrx", false);
-        prefPutUCharIfChanged(rfPrefs, "gainO", gain);
-        prefPutUCharIfChanged(rfPrefs, "gainL", gain);
-        prefPutUCharIfChanged(rfPrefs, "profileO", static_cast<uint8_t>(RfFrontendProfile::Manual));
-        rfPrefs.end();
         return applyRadioGainRuntime(gain);
     }
+
+    const bool already = (mode == RfProtocolMode::LaCrosse ? gainLaCrosse : gainOregon) == gain &&
+                         (mode != RfProtocolMode::Oregon || currentFrontendProfile == RfFrontendProfile::Manual);
+    if (already && mode != rfMode) return true;
+
+    if (!rfPrefs.begin("rfrx", false)) {
+        Serial.println(F("[RF] ERRORE apertura NVS rfrx per gain"));
+        return false;
+    }
+    bool ok = prefPutUCharIfChanged(rfPrefs, mode == RfProtocolMode::LaCrosse ? "gainL" : "gainO", gain);
+    if (mode == RfProtocolMode::Oregon) {
+        ok = prefPutUCharIfChanged(rfPrefs, "profileO", static_cast<uint8_t>(RfFrontendProfile::Manual)) && ok;
+    }
+    rfPrefs.end();
+    if (!ok) return false;
 
     if (mode == RfProtocolMode::LaCrosse) gainLaCrosse = gain;
     else {
         gainOregon = gain;
         if (mode == rfMode) currentFrontendProfile = RfFrontendProfile::Manual;
     }
-
-    rfPrefs.begin("rfrx", false);
-    prefPutUCharIfChanged(rfPrefs, mode == RfProtocolMode::LaCrosse ? "gainL" : "gainO", gain);
-    if (mode == RfProtocolMode::Oregon) prefPutUCharIfChanged(rfPrefs, "profileO", static_cast<uint8_t>(RfFrontendProfile::Manual));
-    rfPrefs.end();
-
     if (mode == rfMode) return applyRadioGainRuntime(gain);
     return true;
 }
@@ -1538,15 +1573,7 @@ bool setRadioFrontendProfile(RfFrontendProfile profile) {
     frontendProfileSettings(profile, bw, gain);
 
     if (rfMode == RfProtocolMode::Oregon || rfMode == RfProtocolMode::Dual) {
-        persistOregonFrontend(profile, bw, gain);
-        if (rfMode == RfProtocolMode::Dual) {
-            bandwidthLaCrosse = bw;
-            gainLaCrosse = gain;
-            rfPrefs.begin("rfrx", false);
-            prefPutUCharIfChanged(rfPrefs, "gainL", gainLaCrosse);
-            prefPutUShortIfChanged(rfPrefs, "bwL10", static_cast<uint16_t>(bandwidthLaCrosse * 10.0f + 0.5f));
-            rfPrefs.end();
-        }
+        if (!persistOregonFrontend(profile, bw, gain)) return false;
         return applyRadioFrontendRuntime(bw, gain);
     }
 
@@ -1614,13 +1641,18 @@ uint8_t getRfBurstHistory(RfBurstRecord *out, uint8_t maxRecords) {
 
 bool setBurstRecoveryEnabled(bool enabled) {
     if (burstExtraEnabled == enabled) return true;
+    if (!rfPrefs.begin("rfrx", false)) {
+        Serial.println(F("[RF] ERRORE apertura NVS rfrx per BURST EXTRA"));
+        return false;
+    }
+    const bool ok = prefPutBoolIfChanged(rfPrefs, "burstX", enabled);
+    rfPrefs.end();
+    if (!ok) return false;
+
     burstExtraEnabled = enabled;
     burstCurrent.reset();
     burstHistoryHead = 0;
     burstHistoryCount = 0;
-    rfPrefs.begin("rfrx", false);
-    prefPutBoolIfChanged(rfPrefs, "burstX", burstExtraEnabled);
-    rfPrefs.end();
     Serial.print(F("[RF] BURST EXTRA -> "));
     Serial.println(burstExtraEnabled ? F("ON") : F("OFF"));
     return true;
@@ -1630,8 +1662,16 @@ bool burstRecoveryEnabled() { return burstExtraEnabled; }
 
 RfProtocolMode getRfProtocolMode() { return rfMode; }
 
-void setRfProtocolMode(RfProtocolMode mode) {
-    if (rfMode == mode) return;
+bool setRfProtocolMode(RfProtocolMode mode) {
+    if (rfMode == mode) return true;
+    if (!rfPrefs.begin("rfmode", false)) {
+        Serial.println(F("[RF] ERRORE apertura NVS rfmode"));
+        return false;
+    }
+    const bool persisted = prefPutUCharIfChanged(rfPrefs, "mode", static_cast<uint8_t>(mode));
+    rfPrefs.end();
+    if (!persisted) return false;
+
     burstStats.autoActive = false;
     finalizeRfBurst();
     if (wgrProbeOn) resetWgrProbeStatsInternal();
@@ -1649,41 +1689,57 @@ void setRfProtocolMode(RfProtocolMode mode) {
 #endif
     packetHead = packetTail = 0;
     resetLaCrosseDecoderState();
-    rfPrefs.begin("rfmode", false);
-    prefPutUCharIfChanged(rfPrefs, "mode", static_cast<uint8_t>(mode));
-    rfPrefs.end();
 
     currentGain = mode == RfProtocolMode::LaCrosse ? gainLaCrosse : gainOregon;
     currentBandwidth = mode == RfProtocolMode::LaCrosse ? bandwidthLaCrosse : bandwidthOregon;
     if (mode == RfProtocolMode::Oregon || mode == RfProtocolMode::Dual) {
-        rfPrefs.begin("rfrx", true);
-        const uint8_t savedProfile = rfPrefs.getUChar("profileO", static_cast<uint8_t>(RfFrontendProfile::Stable));
-        rfPrefs.end();
+        uint8_t savedProfile = static_cast<uint8_t>(RfFrontendProfile::Stable);
+        if (rfPrefs.begin("rfrx", true)) {
+            savedProfile = rfPrefs.getUChar("profileO", savedProfile);
+            rfPrefs.end();
+        } else {
+            Serial.println(F("[RF] ATTENZIONE: impossibile leggere profileO da NVS"));
+        }
         currentFrontendProfile = savedProfile <= static_cast<uint8_t>(RfFrontendProfile::WideMaxGain)
             ? static_cast<RfFrontendProfile>(savedProfile) : RfFrontendProfile::Manual;
     } else {
         currentFrontendProfile = RfFrontendProfile::Manual;
     }
-    applyRadioFrontendRuntime(currentBandwidth, currentGain);
+    const bool applied = applyRadioFrontendRuntime(currentBandwidth, currentGain);
     Serial.print(F("[RF] modalita' ricezione -> "));
     Serial.println(rfProtocolModeName(mode));
+    return applied;
 }
 
 bool initOregonReceiver() {
-    rfPrefs.begin("rfmode", true);
-    const uint8_t savedMode = rfPrefs.getUChar("mode", 0);
-    rfPrefs.end();
+    uint8_t savedMode = 0;
+    if (rfPrefs.begin("rfmode", true)) {
+        savedMode = rfPrefs.getUChar("mode", 0);
+        rfPrefs.end();
+    } else {
+        Serial.println(F("[RF] NVS rfmode non disponibile: default OREGON"));
+    }
     rfMode = savedMode == 1 ? RfProtocolMode::LaCrosse : (savedMode == 2 ? RfProtocolMode::Dual : RfProtocolMode::Oregon);
 
-    rfPrefs.begin("rfrx", true);
-    gainOregon = rfPrefs.getUChar("gainO", OREGON_RX_GAIN);
-    gainLaCrosse = rfPrefs.getUChar("gainL", OREGON_RX_GAIN);
-    uint16_t bwO10 = rfPrefs.getUShort("bwO10", static_cast<uint16_t>(OREGON_RX_BW_KHZ * 10.0f + 0.5f));
-    uint16_t bwL10 = rfPrefs.getUShort("bwL10", static_cast<uint16_t>(OREGON_RX_BW_KHZ * 10.0f + 0.5f));
-    uint8_t savedProfile = rfPrefs.getUChar("profileO", static_cast<uint8_t>(RfFrontendProfile::Stable));
-    const uint8_t savedRfCfgVer = rfPrefs.getUChar("cfgVer", 0);
-    burstExtraEnabled = rfPrefs.getBool("burstX", false);
-    rfPrefs.end();
+    uint16_t bwO10 = static_cast<uint16_t>(OREGON_RX_BW_KHZ * 10.0f + 0.5f);
+    uint16_t bwL10 = bwO10;
+    uint8_t savedProfile = static_cast<uint8_t>(RfFrontendProfile::Stable);
+    uint8_t savedRfCfgVer = 0;
+    burstExtraEnabled = false;
+    gainOregon = OREGON_RX_GAIN;
+    gainLaCrosse = OREGON_RX_GAIN;
+    if (rfPrefs.begin("rfrx", true)) {
+        gainOregon = rfPrefs.getUChar("gainO", OREGON_RX_GAIN);
+        gainLaCrosse = rfPrefs.getUChar("gainL", OREGON_RX_GAIN);
+        bwO10 = rfPrefs.getUShort("bwO10", bwO10);
+        bwL10 = rfPrefs.getUShort("bwL10", bwL10);
+        savedProfile = rfPrefs.getUChar("profileO", savedProfile);
+        savedRfCfgVer = rfPrefs.getUChar("cfgVer", 0);
+        burstExtraEnabled = rfPrefs.getBool("burstX", false);
+        rfPrefs.end();
+    } else {
+        Serial.println(F("[RF] NVS rfrx non disponibile: uso baseline firmware"));
+    }
 
     if (gainOregon > 3U) gainOregon = 0;
     if (gainLaCrosse > 3U) gainLaCrosse = 0;

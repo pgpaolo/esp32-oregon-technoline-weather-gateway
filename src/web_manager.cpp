@@ -727,13 +727,16 @@ void handleRawText() {
 void handleRfMode() {
     if (!server.hasArg("mode")) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"mode missing\"}"); return; }
     const String m = server.arg("mode");
-    if (m == "oregon") setRfProtocolMode(RfProtocolMode::Oregon);
-    else if (m == "lacrosse" || m == "technoline") setRfProtocolMode(RfProtocolMode::LaCrosse);
-    else if (m == "dual") setRfProtocolMode(RfProtocolMode::Dual);
+    bool ok = false;
+    if (m == "oregon") ok = setRfProtocolMode(RfProtocolMode::Oregon);
+    else if (m == "lacrosse" || m == "technoline") ok = setRfProtocolMode(RfProtocolMode::LaCrosse);
+    else if (m == "dual") ok = setRfProtocolMode(RfProtocolMode::Dual);
     else { server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid mode\"}"); return; }
+    if (!ok) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"RF mode NVS/runtime apply failed\"}");
+        return;
+    }
 
-    // Nuova sessione: i valori storici restano nello StationState, mentre
-    // acquisizione/qualita' ripartono da zero e lo storico RAW viene pulito.
     resetRfSession(true);
     sendNoCache();
     server.send(200, "application/json", String("{\"ok\":true,\"mode\":\"") + rfProtocolModeName(getRfProtocolMode()) + "\"}");
@@ -1070,15 +1073,19 @@ void handleConfigImport() {
     // una sessione Technoline, applichiamo il profilo in Oregon e poi torniamo
     // alla modalita' RF richiesta. L'import e' un'operazione occasionale.
     const RfProtocolMode desiredMode = static_cast<RfProtocolMode>(rfMode);
-    setRfProtocolMode(RfProtocolMode::Oregon);
-    setRadioGainForMode(RfProtocolMode::LaCrosse, static_cast<uint8_t>(gainL));
+    bool rfSaved = setRfProtocolMode(RfProtocolMode::Oregon);
+    rfSaved = setRadioGainForMode(RfProtocolMode::LaCrosse, static_cast<uint8_t>(gainL)) && rfSaved;
     if (profile <= static_cast<uint8_t>(RfFrontendProfile::WideMaxGain)) {
-        setRadioFrontendProfile(static_cast<RfFrontendProfile>(profile));
+        rfSaved = setRadioFrontendProfile(static_cast<RfFrontendProfile>(profile)) && rfSaved;
     } else {
-        setRadioGainForMode(RfProtocolMode::Oregon, static_cast<uint8_t>(gainO));
+        rfSaved = setRadioGainForMode(RfProtocolMode::Oregon, static_cast<uint8_t>(gainO)) && rfSaved;
     }
-    setBurstRecoveryEnabled(burstExtra);
-    setRfProtocolMode(desiredMode);
+    rfSaved = setBurstRecoveryEnabled(burstExtra) && rfSaved;
+    rfSaved = setRfProtocolMode(desiredMode) && rfSaved;
+    if (!rfSaved) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"could not persist imported RF configuration\"}");
+        return;
+    }
     resetRfSession(true);
 
     rebootAtMs = millis() + 1500UL;

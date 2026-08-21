@@ -9,7 +9,7 @@ enum class RfProtocolMode : uint8_t {
     Dual = 2
 };
 
-void setRfProtocolMode(RfProtocolMode mode);
+bool setRfProtocolMode(RfProtocolMode mode);
 RfProtocolMode getRfProtocolMode();
 const char *rfProtocolModeName(RfProtocolMode mode);
 
