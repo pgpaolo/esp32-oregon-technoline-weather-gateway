@@ -71,7 +71,7 @@ bool mqttRuntimeConnected();
 MqttRuntimeConfig getMqttConfig();
 bool validateMqttConfig(const MqttRuntimeConfig &cfg, bool replacePassword, bool replaceCaCertificate);
 bool saveMqttConfig(const MqttRuntimeConfig &cfg, bool replacePassword, bool replaceCaCertificate);
-void resetMqttConfigToDefaults();
+bool resetMqttConfigToDefaults();
 const char *mqttTlsModeName(MqttTlsMode mode);
 
 void publishWeatherReading(PubSubClient &client, const WeatherReading &reading, const OregonPacket &packet);

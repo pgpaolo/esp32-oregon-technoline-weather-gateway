@@ -70,7 +70,12 @@ void normalize(MqttRuntimeConfig &c) {
 
 void loadConfig() {
     MqttRuntimeConfig d = defaults();
-    mqttPrefs.begin("mqttcfg", true);
+    if (!mqttPrefs.begin("mqttcfg", true)) {
+        mqttCfg = d;
+        normalize(mqttCfg);
+        Serial.println(F("[MQTT] NVS mqttcfg non disponibile: uso valori firmware"));
+        return;
+    }
     mqttCfg.enabled = mqttPrefs.getBool("enabled", d.enabled);
     mqttCfg.broker = mqttPrefs.getString("broker", d.broker);
     mqttCfg.port = mqttPrefs.getUShort("port", d.port);
@@ -83,6 +88,21 @@ void loadConfig() {
     mqttCfg.fieldsMask = mqttPrefs.getUInt("fields", d.fieldsMask);
     mqttPrefs.end();
     normalize(mqttCfg);
+}
+
+bool verifyStoredMqttConfig(Preferences &p, const MqttRuntimeConfig &expected) {
+    MqttRuntimeConfig d = defaults();
+    normalize(d);
+    return p.getBool("enabled", d.enabled) == expected.enabled &&
+           p.getString("broker", d.broker) == expected.broker &&
+           p.getUShort("port", d.port) == expected.port &&
+           p.getString("user", d.user) == expected.user &&
+           p.getString("pass", d.password) == expected.password &&
+           p.getString("client", d.clientId) == expected.clientId &&
+           p.getString("topic", d.baseTopic) == expected.baseTopic &&
+           p.getUChar("tlsmode", static_cast<uint8_t>(d.tlsMode)) == static_cast<uint8_t>(expected.tlsMode) &&
+           p.getString("cacert", d.caCertificate) == expected.caCertificate &&
+           p.getUInt("fields", d.fieldsMask) == expected.fieldsMask;
 }
 
 void applyClientConfig() {
@@ -196,7 +216,10 @@ bool saveMqttConfig(const MqttRuntimeConfig &cfg, bool replacePassword, bool rep
 
     // NVS e' gia' wear-levelled da ESP-IDF. In piu', V6.3 scrive soltanto le
     // chiavi realmente modificate e solo su azione esplicita dell'utente.
-    mqttPrefs.begin("mqttcfg", false);
+    if (!mqttPrefs.begin("mqttcfg", false)) {
+        Serial.println(F("[MQTT] ERRORE apertura NVS mqttcfg in scrittura"));
+        return false;
+    }
     if (next.enabled != old.enabled) mqttPrefs.putBool("enabled", next.enabled);
     if (next.broker != old.broker) mqttPrefs.putString("broker", next.broker);
     if (next.port != old.port) mqttPrefs.putUShort("port", next.port);
@@ -207,24 +230,41 @@ bool saveMqttConfig(const MqttRuntimeConfig &cfg, bool replacePassword, bool rep
     if (next.tlsMode != old.tlsMode) mqttPrefs.putUChar("tlsmode", static_cast<uint8_t>(next.tlsMode));
     if (next.caCertificate != old.caCertificate) mqttPrefs.putString("cacert", next.caCertificate);
     if (next.fieldsMask != old.fieldsMask) mqttPrefs.putUInt("fields", next.fieldsMask);
+    const bool verified = verifyStoredMqttConfig(mqttPrefs, next);
     mqttPrefs.end();
+    if (!verified) {
+        Serial.println(F("[MQTT] ERRORE verifica NVS mqttcfg: configurazione non confermata"));
+        return false;
+    }
     mqttCfg = next;
     applyClientConfig();
+    Serial.println(F("[MQTT] configurazione Web verificata in NVS"));
     return true;
 }
 
-void resetMqttConfigToDefaults() {
+bool resetMqttConfigToDefaults() {
     MqttRuntimeConfig d = defaults();
     normalize(d);
-    if (mqttCfg.enabled == d.enabled && mqttCfg.broker == d.broker && mqttCfg.port == d.port &&
+    const bool already = mqttCfg.enabled == d.enabled && mqttCfg.broker == d.broker && mqttCfg.port == d.port &&
         mqttCfg.user == d.user && mqttCfg.password == d.password && mqttCfg.clientId == d.clientId &&
         mqttCfg.baseTopic == d.baseTopic && mqttCfg.tlsMode == d.tlsMode &&
-        mqttCfg.caCertificate == d.caCertificate && mqttCfg.fieldsMask == d.fieldsMask) return; // gia' ai default: zero scritture
-    mqttPrefs.begin("mqttcfg", false);
-    mqttPrefs.clear(); // reset esplicito dell'utente: una sola operazione occasionale
+        mqttCfg.caCertificate == d.caCertificate && mqttCfg.fieldsMask == d.fieldsMask;
+    if (already) return true;
+    if (!mqttPrefs.begin("mqttcfg", false)) {
+        Serial.println(F("[MQTT] ERRORE apertura NVS mqttcfg per reset"));
+        return false;
+    }
+    const bool cleared = mqttPrefs.clear();
+    const bool verified = cleared && verifyStoredMqttConfig(mqttPrefs, d);
     mqttPrefs.end();
+    if (!verified) {
+        Serial.println(F("[MQTT] ERRORE reset/verifica NVS mqttcfg"));
+        return false;
+    }
     mqttCfg = d;
     applyClientConfig();
+    Serial.println(F("[MQTT] default firmware verificati dopo reset NVS"));
+    return true;
 }
 
 void serviceMQTT(PubSubClient &client) {
