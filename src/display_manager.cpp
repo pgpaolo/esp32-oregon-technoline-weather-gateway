@@ -54,14 +54,16 @@ bool sameConfig(const DisplayRuntimeConfig &a, const DisplayRuntimeConfig &b) {
 }
 
 bool verifyStoredConfig(Preferences &p, const DisplayRuntimeConfig &c) {
-    return p.getUChar("pages", 0) == c.pageMask &&
-           p.getUChar("env", 0xFF) == c.environmentFields &&
-           p.getUChar("wind", 0xFF) == c.windRainFields &&
-           p.getUChar("tech", 0xFF) == c.technolineFields &&
-           p.getUChar("press", 0xFF) == c.pressureFields &&
-           p.getUChar("status", 0xFF) == c.statusFields &&
-           p.getUShort("page_s", 0) == c.pageIntervalSec &&
-           p.getUChar("contrast", 0) == c.contrast;
+    DisplayRuntimeConfig d = defaults();
+    normalize(d);
+    return p.getUChar("pages", d.pageMask) == c.pageMask &&
+           p.getUChar("env", d.environmentFields) == c.environmentFields &&
+           p.getUChar("wind", d.windRainFields) == c.windRainFields &&
+           p.getUChar("tech", d.technolineFields) == c.technolineFields &&
+           p.getUChar("press", d.pressureFields) == c.pressureFields &&
+           p.getUChar("status", d.statusFields) == c.statusFields &&
+           p.getUShort("page_s", d.pageIntervalSec) == c.pageIntervalSec &&
+           p.getUChar("contrast", d.contrast) == c.contrast;
 }
 
 bool pageEnabled(uint8_t p) {

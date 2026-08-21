@@ -65,12 +65,14 @@ bool sameConfig(const NetworkRuntimeConfig &a, const NetworkRuntimeConfig &b) {
 }
 
 bool verifyStoredConfig(Preferences &p, const NetworkRuntimeConfig &expected) {
-    return p.getString("host", "") == expected.hostname &&
-           p.getBool("static", !expected.useStatic) == expected.useStatic &&
-           p.getString("ip", "") == expected.ip &&
-           p.getString("gw", "") == expected.gateway &&
-           p.getString("mask", "") == expected.subnet &&
-           p.getString("dns", "") == expected.dns;
+    NetworkRuntimeConfig d = defaults();
+    normalize(d);
+    return p.getString("host", d.hostname) == expected.hostname &&
+           p.getBool("static", d.useStatic) == expected.useStatic &&
+           p.getString("ip", d.ip) == expected.ip &&
+           p.getString("gw", d.gateway) == expected.gateway &&
+           p.getString("mask", d.subnet) == expected.subnet &&
+           p.getString("dns", d.dns) == expected.dns;
 }
 
 void loadConfig() {
