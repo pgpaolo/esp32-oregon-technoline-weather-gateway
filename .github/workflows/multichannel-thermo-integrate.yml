@@ -29,6 +29,34 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
+      - name: Normalize HTML anchors in transformation helper
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/apply_multichannel_thermo.py')
+          s = p.read_text(encoding='utf-8')
+          old = '''def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{label}: expected exactly one anchor, found {count}")
+              return text.replace(old, new, 1)
+          '''
+          new = '''def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1 and '\\\"' in old:
+                  old_plain = old.replace('\\\"', '"')
+                  new_plain = new.replace('\\\"', '"')
+                  count = text.count(old_plain)
+                  if count == 1:
+                      return text.replace(old_plain, new_plain, 1)
+              if count != 1:
+                  raise RuntimeError(f"{label}: expected exactly one anchor, found {count}")
+              return text.replace(old, new, 1)
+          '''
+          if old not in s:
+              raise SystemExit('replace_once helper anchor not found')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
       - name: Apply multichannel thermo changes
         run: python scripts/apply_multichannel_thermo.py
       - name: Commit generated integration
