@@ -1,0 +1,65 @@
+name: Fix Multichannel MQTT JSON
+
+on:
+  push:
+    branches:
+      - feature/oregon-multichannel-thermo
+    paths:
+      - .github/workflows/fix-multichannel-mqtt.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feature/oregon-multichannel-thermo
+          fetch-depth: 0
+      - name: Repair channel-state JSON literals
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/mqtt_publisher.cpp')
+          s = p.read_text(encoding='utf-8')
+          old = '''            String j;
+              j.reserve(190);
+              j = "{"channel":" + String(reading.channel);
+              j += ","temperature_c":" + String(reading.temperatureC, 1);
+              j += ","humidity_pct":" + String(reading.humidityPct, 0);
+              j += ","sensor_code":"" + String(reading.sensorCode, HEX) + """;
+              j += ","rolling_code":" + String(reading.rollingCode);
+              j += ","battery":"" + String(batteryStatusName(reading)) + """;
+              j += ","rssi":" + String(reading.rssi, 1) + "}";
+          '''
+          new = r'''            String j;
+              j.reserve(200);
+              char sensorCode[5];
+              snprintf(sensorCode, sizeof(sensorCode), "%04X", reading.sensorCode);
+              j = "{\"channel\":" + String(reading.channel);
+              j += ",\"temperature_c\":" + String(reading.temperatureC, 1);
+              j += ",\"humidity_pct\":" + String(reading.humidityPct, 0);
+              j += ",\"sensor_code\":\"" + String(sensorCode) + "\"";
+              j += ",\"rolling_code\":" + String(reading.rollingCode);
+              j += ",\"battery\":\"" + String(batteryStatusName(reading)) + "\"";
+              j += ",\"rssi\":";
+              if (isnan(reading.rssi)) j += "null";
+              else j += String(reading.rssi, 1);
+              j += "}";
+          '''
+          if s.count(old) != 1:
+              raise SystemExit(f'bad MQTT block count={s.count(old)}')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          Path('.github/workflows/fix-multichannel-mqtt.yml').unlink()
+          PY
+      - name: Commit fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: repair multichannel MQTT JSON encoding"
+          git push origin HEAD:feature/oregon-multichannel-thermo
