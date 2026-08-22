@@ -3,9 +3,9 @@
 #include <math.h>
 
 namespace {
-Preferences prefs;
 ThermoChannelConfig cfg{};
 ThermoChannelState channels[3]{};
+bool cfgLoaded = false;
 
 ThermoChannelConfig defaults() { return ThermoChannelConfig{}; }
 
@@ -35,17 +35,36 @@ void copySensor(OregonSensorStatus &dst, const WeatherReading &r) {
 } // namespace
 
 void initThermoChannels() {
-    const ThermoChannelConfig d = defaults();
-    if (!prefs.begin("thermoch", true)) {
-        cfg = d;
-        normalize(cfg);
+    // Fail-safe boot policy: defaults are valid before touching NVS.
+    // If the namespace is missing/unreadable, the gateway still boots with
+    // CH1 primary + auto-discovery and RF decoding remains unaffected.
+    cfg = defaults();
+    normalize(cfg);
+    cfgLoaded = false;
+
+    Preferences p;
+    if (!p.begin("thermoch", true)) {
+        Serial.println(F("[THERMO] NVS unavailable; defaults CH1 + auto"));
+        cfgLoaded = true;
         return;
     }
-    cfg.enabledMask = prefs.getUChar("enabled", d.enabledMask);
-    cfg.primaryChannel = prefs.getUChar("primary", d.primaryChannel);
-    cfg.autoDiscover = prefs.getBool("auto", d.autoDiscover);
-    prefs.end();
-    normalize(cfg);
+
+    ThermoChannelConfig loaded = cfg;
+    loaded.enabledMask = p.getUChar("enabled", cfg.enabledMask);
+    loaded.primaryChannel = p.getUChar("primary", cfg.primaryChannel);
+    loaded.autoDiscover = p.getBool("auto", cfg.autoDiscover);
+    p.end();
+
+    normalize(loaded);
+    cfg = loaded;
+    cfgLoaded = true;
+
+    Serial.print(F("[THERMO] ready primary=CH"));
+    Serial.print(cfg.primaryChannel);
+    Serial.print(F(" enabled=0x"));
+    Serial.print(cfg.enabledMask, HEX);
+    Serial.print(F(" auto="));
+    Serial.println(cfg.autoDiscover ? F("ON") : F("OFF"));
 }
 
 void noteThermoChannelReading(const WeatherReading &r) {
@@ -60,7 +79,14 @@ void noteThermoChannelReading(const WeatherReading &r) {
     s.valid = r.temperatureValid || r.humidityValid;
 }
 
-ThermoChannelConfig getThermoChannelConfig() { return cfg; }
+ThermoChannelConfig getThermoChannelConfig() {
+    if (!cfgLoaded) {
+        ThermoChannelConfig d = defaults();
+        normalize(d);
+        return d;
+    }
+    return cfg;
+}
 
 ThermoChannelState getThermoChannelState(uint8_t channel) {
     if (channel < 1U || channel > 3U) return ThermoChannelState{};
@@ -74,7 +100,8 @@ uint8_t thermoDetectedMask() {
 }
 
 uint8_t thermoEffectiveMask() {
-    return static_cast<uint8_t>((cfg.enabledMask | (cfg.autoDiscover ? thermoDetectedMask() : 0U)) & 0x07U);
+    const ThermoChannelConfig c = getThermoChannelConfig();
+    return static_cast<uint8_t>((c.enabledMask | (c.autoDiscover ? thermoDetectedMask() : 0U)) & 0x07U);
 }
 
 bool thermoChannelVisible(uint8_t channel) {
@@ -83,39 +110,49 @@ bool thermoChannelVisible(uint8_t channel) {
 }
 
 bool thermoChannelIsPrimary(uint8_t channel) {
-    // Canale 0 = header non decodificabile: mantiene la compatibilita' legacy.
-    return channel == 0U || channel == cfg.primaryChannel;
+    // Channel 0 means no decoded channel: preserve legacy behavior.
+    const ThermoChannelConfig c = getThermoChannelConfig();
+    return channel == 0U || channel == c.primaryChannel;
 }
 
 bool saveThermoChannelConfig(const ThermoChannelConfig &input) {
     ThermoChannelConfig next = input;
     normalize(next);
-    if (next.enabledMask == cfg.enabledMask && next.primaryChannel == cfg.primaryChannel && next.autoDiscover == cfg.autoDiscover) return true;
-    if (!prefs.begin("thermoch", false)) return false;
-    if (next.enabledMask != cfg.enabledMask) prefs.putUChar("enabled", next.enabledMask);
-    if (next.primaryChannel != cfg.primaryChannel) prefs.putUChar("primary", next.primaryChannel);
-    if (next.autoDiscover != cfg.autoDiscover) prefs.putBool("auto", next.autoDiscover);
-    const bool ok = verifyStored(prefs, next);
-    prefs.end();
+    const ThermoChannelConfig old = getThermoChannelConfig();
+    if (next.enabledMask == old.enabledMask && next.primaryChannel == old.primaryChannel && next.autoDiscover == old.autoDiscover) return true;
+
+    Preferences p;
+    if (!p.begin("thermoch", false)) return false;
+    if (next.enabledMask != old.enabledMask) p.putUChar("enabled", next.enabledMask);
+    if (next.primaryChannel != old.primaryChannel) p.putUChar("primary", next.primaryChannel);
+    if (next.autoDiscover != old.autoDiscover) p.putBool("auto", next.autoDiscover);
+    const bool ok = verifyStored(p, next);
+    p.end();
     if (!ok) return false;
+
     cfg = next;
+    cfgLoaded = true;
     return true;
 }
 
 bool resetThermoChannelConfig() {
     ThermoChannelConfig d = defaults();
     normalize(d);
-    if (!prefs.begin("thermoch", false)) return false;
-    const bool cleared = prefs.clear();
-    const bool ok = cleared && verifyStored(prefs, d);
-    prefs.end();
-    if (!ok) return false;
+
+    Preferences p;
+    if (!p.begin("thermoch", false)) return false;
+    const bool cleared = p.clear();
+    p.end();
+    if (!cleared) return false;
+
     cfg = d;
+    cfgLoaded = true;
     return true;
 }
 
 void syncPrimaryThermoState(StationState &station) {
-    const ThermoChannelState &s = channels[cfg.primaryChannel - 1U];
+    const ThermoChannelConfig c = getThermoChannelConfig();
+    const ThermoChannelState &s = channels[c.primaryChannel - 1U];
     if (!s.valid) {
         station.temperatureC = NAN;
         station.humidityPct = NAN;
