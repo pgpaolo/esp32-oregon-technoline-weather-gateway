@@ -39,7 +39,6 @@ void initThermoChannels() {
     if (!prefs.begin("thermoch", true)) {
         cfg = d;
         normalize(cfg);
-        Serial.println(F("[THERMO] NVS non disponibile: CH1 principale"));
         return;
     }
     cfg.enabledMask = prefs.getUChar("enabled", d.enabledMask);
@@ -47,16 +46,12 @@ void initThermoChannels() {
     cfg.autoDiscover = prefs.getBool("auto", d.autoDiscover);
     prefs.end();
     normalize(cfg);
-    Serial.print(F("[THERMO] primary=CH")); Serial.print(cfg.primaryChannel);
-    Serial.print(F(" enabled=0x")); Serial.print(cfg.enabledMask, HEX);
-    Serial.print(F(" auto=")); Serial.println(cfg.autoDiscover ? F("ON") : F("OFF"));
 }
 
 void noteThermoChannelReading(const WeatherReading &r) {
     if (r.type != SensorType::ThermoHygro || r.channel < 1U || r.channel > 3U) return;
     ThermoChannelState &s = channels[r.channel - 1U];
     s.detected = true;
-    s.packetCount++;
     s.updatedMs = r.receivedAtMs;
     s.lastRssi = r.rssi;
     copySensor(s.sensor, r);

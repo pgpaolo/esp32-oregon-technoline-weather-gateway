@@ -18,7 +18,6 @@ struct ThermoChannelState {
     float temperatureC{NAN};
     float humidityPct{NAN};
     uint32_t updatedMs{0};
-    uint32_t packetCount{0};
     float lastRssi{NAN};
     OregonSensorStatus sensor{};
 };
