@@ -5,10 +5,9 @@
 
 // Routing CH1/CH2/CH3 applicato dopo il parser OSV3: il decoder RF resta
 // invariato. Solo primaryChannel alimenta i campi meteo/topic legacy.
-// Il manager e' inizializzato dopo il core RF: errori/default NVS non devono
-// impedire il boot del gateway o la ricezione Oregon/Technoline.
 // enabledMask + autoDiscover determinano i tab Web e i topic MQTT CHx attivi.
 // Lo stato Web usa un payload compatto; la configurazione completa resta in /api/thermo/config.
+// Il manager e' opzionale rispetto al boot RF: default validi anche senza NVS.
 struct ThermoChannelConfig {
     uint8_t enabledMask{0x01};       // bit0=CH1, bit1=CH2, bit2=CH3
     uint8_t primaryChannel{1};       // feeds legacy weather fields/topics
