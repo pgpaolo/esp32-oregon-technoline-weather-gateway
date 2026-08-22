@@ -13,6 +13,7 @@
 #include "web_manager.h"
 #include "lacrosse_ws23xx.h"
 #include "lightning_manager.h"
+#include "thermo_channel_manager.h"
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -186,6 +187,7 @@ void setup() {
     pinMode(BOARD_LED_PIN, OUTPUT);
     digitalWrite(BOARD_LED_PIN, BOARD_LED_OFF);
 
+    initThermoChannels();
     initDisplay();
     initBarometer();
     initLightning();
@@ -211,7 +213,12 @@ void loop() {
         WeatherReading reading;
         if (parseWeatherPacket(packet, reading)) {
             noteAcceptedOregonFrameForCalibration();
-            applyWeatherReading(station, reading);
+            bool applyThermoPrimary = true;
+            if (reading.type == SensorType::ThermoHygro) {
+                noteThermoChannelReading(reading);
+                applyThermoPrimary = thermoChannelIsPrimary(reading.channel);
+            }
+            applyWeatherReading(station, reading, applyThermoPrimary);
             printPacket(packet, &reading, true);
             recordWebPacket(packet, &reading, true);
             publishWeatherReading(mqttClient, reading, packet);
