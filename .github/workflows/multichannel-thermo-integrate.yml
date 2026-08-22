@@ -43,9 +43,9 @@ jobs:
           '''
           new = '''def replace_once(text, old, new, label):
               count = text.count(old)
-              if count != 1 and '\\\"' in old:
-                  old_plain = old.replace('\\\"', '"')
-                  new_plain = new.replace('\\\"', '"')
+              if count != 1 and '\\\\' in old:
+                  old_plain = old.replace('\\\\', '')
+                  new_plain = new.replace('\\\\', '')
                   count = text.count(old_plain)
                   if count == 1:
                       return text.replace(old_plain, new_plain, 1)
