@@ -1,0 +1,82 @@
+name: Optimize Multichannel Size 2
+
+on:
+  pull_request:
+    branches:
+      - feature/as3935-lightning
+    paths:
+      - .github/workflows/optimize-multichannel-size2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  optimize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feature/oregon-multichannel-thermo
+          fetch-depth: 0
+      - name: Further compact Web and MQTT routing
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/web_manager.cpp')
+          s = p.read_text(encoding='utf-8')
+
+          start = s.index('    const ThermoChannelConfig thermoCfg = getThermoChannelConfig();')
+          end = s.index(r'    out += ",\"rf\":{";', start)
+          compact = r'''    const ThermoChannelConfig thermoCfg = getThermoChannelConfig();
+              out += ",\"oregon_thermo\":{\"m\":" + String(thermoEffectiveMask());
+              out += ",\"p\":" + String(thermoCfg.primaryChannel) + ",\"c\":[";
+              for (uint8_t ch = 1; ch <= 3; ++ch) {
+                  if (ch > 1) out += ",";
+                  const ThermoChannelState ts = getThermoChannelState(ch);
+                  out += "[" + jsonFloat(ts.temperatureC, 1) + "," + jsonFloat(ts.humidityPct, 0);
+                  out += "," + String(ageSeconds(ts.updatedMs, now)) + "," + jsonFloat(ts.lastRssi, 1);
+                  out += ",\"" + hex4(ts.sensor.code) + "\",\"" + String(sensorBatteryName(ts.sensor)) + "\"]";
+              }
+              out += "]}";
+
+          '''
+          s = s[:start] + compact + s[end:]
+
+          js_start = s.index('const thMask=Number(th.m||0)')
+          js_end_token = "setFresh('ageT',tv.a,tvOk);"
+          js_end = s.index(js_end_token, js_start) + len(js_end_token)
+          compact_js = r'''const thMask=Number(th.m||0),thPrimary=Number(th.p||1);if(!(thMask&(1<<(thermoViewChannel-1))))thermoViewChannel=thPrimary;for(let ch=1;ch<=3;ch++){const bt=E('tch'+ch),vis=(thMask&(1<<(ch-1)))!==0;if(bt){bt.classList.toggle('show',vis);bt.classList.toggle('active',ch===thermoViewChannel);bt.textContent='CH'+ch+(ch===thPrimary?'*':'')}}const tv=((th.c||[])[thermoViewChannel-1])||[],primaryView=thermoViewChannel===thPrimary,ta=tv[2]??4294967295,tvOk=isO&&tv[0]!=null&&tv[1]!=null&&Number(ta)<=Number(sess.age_s||0);E('thermoDerivedHeat').style.display=primaryView?'flex':'none';E('thermoDerivedDew').style.display=primaryView?'flex':'none';E('spTemp').style.display=primaryView?'block':'none';if(!tvOk){showOrWait(temp,false,'');showOrWait(hum,false,'');if(primaryView){showOrWait(hi,false,'');showOrWait(dew,false,'')}ageT.textContent='ultimo dato '+age(ta)}else{showOrWait(temp,true,f(tv[0],1,' °C'));showOrWait(hum,true,f(tv[1],0,' %'));if(primaryView){showOrWait(hi,true,w.heat_index_c==null?'N/A':f(w.heat_index_c,1,' °C'));showOrWait(dew,true,f(w.dew_point_c,1,' °C'))}ageT.textContent=age(ta)}footT.innerHTML='CH'+thermoViewChannel+(primaryView?' principale':'')+' · '+(tv[4]||'----')+' · BAT '+(tv[5]||'N/D')+' · '+f(tv[3],1,' dBm');setFresh('ageT',ta,tvOk);'''
+          s = s[:js_start] + compact_js + s[js_end:]
+          p.write_text(s, encoding='utf-8')
+
+          p = Path('src/mqtt_publisher.cpp')
+          s = p.read_text(encoding='utf-8')
+          scope = s.index('    if (thermo && reading.channel >= 1U && reading.channel <= 3U && thermoChannelVisible(reading.channel)) {')
+          start = s.index('        if (fieldEnabled(MQTT_F_RF_META)) {', scope)
+          end_marker = '            client.publish(topic(suffix).c_str(), j.c_str(), true);\n        }'
+          end = s.index(end_marker, start) + len(end_marker)
+          replacement = r'''        if (fieldEnabled(MQTT_F_RF_META)) {
+                  if (reading.batteryStatusValid) {
+                      snprintf(suffix, sizeof(suffix), "oregon/thermo/ch%u/battery", reading.channel);
+                      client.publish(topic(suffix).c_str(), reading.batteryLow ? "LOW" : "OK", true);
+                  }
+                  if (!isnan(reading.rssi)) {
+                      snprintf(suffix, sizeof(suffix), "oregon/thermo/ch%u/rssi", reading.channel);
+                      publishFloat(client, suffix, reading.rssi, 1);
+                  }
+              }'''
+          s = s[:start] + replacement + s[end:]
+          p.write_text(s, encoding='utf-8')
+
+          Path('.github/workflows/optimize-multichannel-size2.yml').unlink(missing_ok=True)
+          PY
+      - name: Commit optimization
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "optimize: compact thermo channel Web and MQTT state"
+          git push origin HEAD:feature/oregon-multichannel-thermo
