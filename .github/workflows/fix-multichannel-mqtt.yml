@@ -30,16 +30,9 @@ jobs:
           from pathlib import Path
           p = Path('src/mqtt_publisher.cpp')
           s = p.read_text(encoding='utf-8')
-          old = '''            String j;
-              j.reserve(190);
-              j = "{"channel":" + String(reading.channel);
-              j += ","temperature_c":" + String(reading.temperatureC, 1);
-              j += ","humidity_pct":" + String(reading.humidityPct, 0);
-              j += ","sensor_code":"" + String(reading.sensorCode, HEX) + """;
-              j += ","rolling_code":" + String(reading.rollingCode);
-              j += ","battery":"" + String(batteryStatusName(reading)) + """;
-              j += ","rssi":" + String(reading.rssi, 1) + "}";
-          '''
+          scope = s.index('        if (fieldEnabled(MQTT_F_RF_META)) {')
+          start = s.index('            String j;', scope)
+          end = s.index('            snprintf(suffix, sizeof(suffix), "oregon/thermo/ch%u/state", reading.channel);', start)
           new = r'''            String j;
               j.reserve(200);
               char sensorCode[5];
@@ -55,9 +48,7 @@ jobs:
               else j += String(reading.rssi, 1);
               j += "}";
           '''
-          if s.count(old) != 1:
-              raise SystemExit(f'bad MQTT block count={s.count(old)}')
-          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          p.write_text(s[:start] + new + s[end:], encoding='utf-8')
           Path('.github/workflows/fix-multichannel-mqtt.yml').unlink()
           PY
       - name: Commit fix
