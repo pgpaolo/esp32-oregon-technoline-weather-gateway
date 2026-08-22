@@ -187,7 +187,9 @@ void setup() {
     pinMode(BOARD_LED_PIN, OUTPUT);
     digitalWrite(BOARD_LED_PIN, BOARD_LED_OFF);
 
-    initThermoChannels();
+    // Core hardware/services first. Multichannel thermo is deliberately not
+    // part of the critical boot path: the gateway and RF must start even if
+    // its optional NVS namespace is unavailable or contains invalid values.
     initDisplay();
     initBarometer();
     initLightning();
@@ -202,6 +204,10 @@ void setup() {
     } else {
         Serial.println(F("[RF] SX1278 pronto: OOK raw edge RX, BitSync OFF"));
     }
+
+    // Optional routing/configuration layer, after RF is already alive.
+    initThermoChannels();
+    Serial.println(F("[BOOT] thermo multichannel initialized"));
 }
 
 void loop() {
