@@ -1,4 +1,5 @@
 name: PlatformIO Build
+# Branch CI: verifies the physical firmware.bin size before publishing artifacts.
 
 on:
   push:
