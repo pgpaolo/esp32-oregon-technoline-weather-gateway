@@ -37,9 +37,8 @@ uint8_t checksumPositionForSensor(uint8_t sensorId) {
 uint8_t decodeChannel(uint8_t raw) {
     // Oregon OS v2.1/v3 does not use one single channel coding across all
     // thermo families. Legacy 3-channel sensors commonly use one-hot coding
-    // 1,2,4 -> CH1,CH2,CH3, while real F824/THGR810-family frames have also
-    // been observed with direct numeric coding 1,2,3. Accept both forms for
-    // the three channels supported by this gateway.
+    // 1,2,4 -> CH1,CH2,CH3. F824 hardware in this project was also observed
+    // on-air using raw=3 for CH3, so accept direct numeric 1,2,3 as well.
     if (raw == 1) return 1;
     if (raw == 2) return 2;
     if (raw == 3 || raw == 4) return 3;
