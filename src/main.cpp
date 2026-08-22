@@ -13,6 +13,7 @@
 #include "web_manager.h"
 #include "lacrosse_ws23xx.h"
 #include "lightning_manager.h"
+#include "thermo_channel_manager.h"
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -186,6 +187,9 @@ void setup() {
     pinMode(BOARD_LED_PIN, OUTPUT);
     digitalWrite(BOARD_LED_PIN, BOARD_LED_OFF);
 
+    // Core hardware/services first. Multichannel thermo is deliberately not
+    // part of the critical boot path: the gateway and RF must start even if
+    // its optional NVS namespace is unavailable or contains invalid values.
     initDisplay();
     initBarometer();
     initLightning();
@@ -200,6 +204,10 @@ void setup() {
     } else {
         Serial.println(F("[RF] SX1278 pronto: OOK raw edge RX, BitSync OFF"));
     }
+
+    // Optional routing/configuration layer, after RF is already alive.
+    initThermoChannels();
+    Serial.println(F("[BOOT] thermo multichannel initialized"));
 }
 
 void loop() {
@@ -211,7 +219,12 @@ void loop() {
         WeatherReading reading;
         if (parseWeatherPacket(packet, reading)) {
             noteAcceptedOregonFrameForCalibration();
-            applyWeatherReading(station, reading);
+            bool applyThermoPrimary = true;
+            if (reading.type == SensorType::ThermoHygro) {
+                noteThermoChannelReading(reading);
+                applyThermoPrimary = thermoChannelIsPrimary(reading.channel);
+            }
+            applyWeatherReading(station, reading, applyThermoPrimary);
             printPacket(packet, &reading, true);
             recordWebPacket(packet, &reading, true);
             publishWeatherReading(mqttClient, reading, packet);

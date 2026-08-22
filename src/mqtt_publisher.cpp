@@ -7,6 +7,7 @@
 #include "network_manager.h"
 #include "weather_parser.h"
 #include "lacrosse_ws23xx.h"
+#include "thermo_channel_manager.h"
 
 namespace {
 uint32_t lastAttemptMs = 0;
@@ -319,8 +320,32 @@ bool mqttConnected(PubSubClient &client) { return mqttCfg.enabled && client.conn
 void publishWeatherReading(PubSubClient &client, const WeatherReading &reading, const OregonPacket &packet) {
     if (!mqttCfg.enabled || !client.connected()) return;
 
-    if (reading.temperatureValid && fieldEnabled(MQTT_F_OR_TEMP)) publishFloat(client, "oregon/temperature", reading.temperatureC, 1);
-    if (reading.humidityValid && fieldEnabled(MQTT_F_OR_HUM)) publishFloat(client, "oregon/humidity", reading.humidityPct, 0);
+    const bool thermo = reading.type == SensorType::ThermoHygro;
+    const bool primaryThermo = !thermo || thermoChannelIsPrimary(reading.channel);
+    if (reading.temperatureValid && primaryThermo && fieldEnabled(MQTT_F_OR_TEMP)) publishFloat(client, "oregon/temperature", reading.temperatureC, 1);
+    if (reading.humidityValid && primaryThermo && fieldEnabled(MQTT_F_OR_HUM)) publishFloat(client, "oregon/humidity", reading.humidityPct, 0);
+
+    if (thermo && reading.channel >= 1U && reading.channel <= 3U && thermoChannelVisible(reading.channel)) {
+        char suffix[48];
+        if (reading.temperatureValid && fieldEnabled(MQTT_F_OR_TEMP)) {
+            snprintf(suffix, sizeof(suffix), "oregon/thermo/ch%u/temperature", reading.channel);
+            publishFloat(client, suffix, reading.temperatureC, 1);
+        }
+        if (reading.humidityValid && fieldEnabled(MQTT_F_OR_HUM)) {
+            snprintf(suffix, sizeof(suffix), "oregon/thermo/ch%u/humidity", reading.channel);
+            publishFloat(client, suffix, reading.humidityPct, 0);
+        }
+        if (fieldEnabled(MQTT_F_RF_META)) {
+        if (reading.batteryStatusValid) {
+            snprintf(suffix, sizeof(suffix), "oregon/thermo/ch%u/battery", reading.channel);
+            client.publish(topic(suffix).c_str(), reading.batteryLow ? "LOW" : "OK", true);
+        }
+        if (!isnan(reading.rssi)) {
+            snprintf(suffix, sizeof(suffix), "oregon/thermo/ch%u/rssi", reading.channel);
+            publishFloat(client, suffix, reading.rssi, 1);
+        }
+    }
+    }
     if (reading.windAverageValid && fieldEnabled(MQTT_F_OR_WIND_AVG)) publishFloat(client, "oregon/wind/average", reading.windAverageKmh, 1);
     if (reading.windGustValid && fieldEnabled(MQTT_F_OR_WIND_GUST)) {
         // Il campo Oregon viene mantenuto come "gust/current" per compatibilita' storica.
