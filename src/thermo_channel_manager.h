@@ -4,7 +4,8 @@
 #include "station_state.h"
 
 // Routing CH1/CH2/CH3 applicato dopo il parser OSV3: il decoder RF resta
-// invariato. Solo primaryChannel alimenta i campi meteo/topic legacy.
+// invariato salvo la normalizzazione compatibile del campo canale (1/2/3 o 1/2/4).
+// Solo primaryChannel alimenta i campi meteo/topic legacy.
 // enabledMask + autoDiscover determinano i tab Web e i topic MQTT CHx attivi.
 // Lo stato Web usa un payload compatto; la configurazione completa resta in /api/thermo/config.
 // Il manager e' opzionale rispetto al boot RF: default validi anche senza NVS.
