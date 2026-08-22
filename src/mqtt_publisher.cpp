@@ -337,14 +337,19 @@ void publishWeatherReading(PubSubClient &client, const WeatherReading &reading, 
         }
         if (fieldEnabled(MQTT_F_RF_META)) {
             String j;
-            j.reserve(190);
-            j = "{"channel":" + String(reading.channel);
-            j += ","temperature_c":" + String(reading.temperatureC, 1);
-            j += ","humidity_pct":" + String(reading.humidityPct, 0);
-            j += ","sensor_code":"" + String(reading.sensorCode, HEX) + """;
-            j += ","rolling_code":" + String(reading.rollingCode);
-            j += ","battery":"" + String(batteryStatusName(reading)) + """;
-            j += ","rssi":" + String(reading.rssi, 1) + "}";
+    j.reserve(200);
+    char sensorCode[5];
+    snprintf(sensorCode, sizeof(sensorCode), "%04X", reading.sensorCode);
+    j = "{\"channel\":" + String(reading.channel);
+    j += ",\"temperature_c\":" + String(reading.temperatureC, 1);
+    j += ",\"humidity_pct\":" + String(reading.humidityPct, 0);
+    j += ",\"sensor_code\":\"" + String(sensorCode) + "\"";
+    j += ",\"rolling_code\":" + String(reading.rollingCode);
+    j += ",\"battery\":\"" + String(batteryStatusName(reading)) + "\"";
+    j += ",\"rssi\":";
+    if (isnan(reading.rssi)) j += "null";
+    else j += String(reading.rssi, 1);
+    j += "}";
             snprintf(suffix, sizeof(suffix), "oregon/thermo/ch%u/state", reading.channel);
             client.publish(topic(suffix).c_str(), j.c_str(), true);
         }
