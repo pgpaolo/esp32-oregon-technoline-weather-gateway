@@ -10,6 +10,7 @@
 // Il manager e' opzionale rispetto al boot RF: default validi anche senza NVS.
 // Build classica T3: tenere il firmware.bin sotto la partizione applicativa reale.
 // Le modifiche al routing non devono alterare il timing del decoder Oregon.
+// La CI deve controllare anche la dimensione fisica del firmware.bin.
 struct ThermoChannelConfig {
     uint8_t enabledMask{0x01};       // bit0=CH1, bit1=CH2, bit2=CH3
     uint8_t primaryChannel{1};       // feeds legacy weather fields/topics
