@@ -1,0 +1,35 @@
+name: Multichannel Thermo Integrate
+
+on:
+  push:
+    branches:
+      - feature/oregon-multichannel-thermo
+    paths:
+      - scripts/apply_multichannel_thermo.py
+      - .github/workflows/multichannel-thermo-integrate.yml
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feature/oregon-multichannel-thermo
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Apply multichannel thermo changes
+        run: python scripts/apply_multichannel_thermo.py
+      - name: Commit generated integration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "feat: add Oregon multichannel thermo routing" || exit 0
+          git push origin HEAD:feature/oregon-multichannel-thermo
