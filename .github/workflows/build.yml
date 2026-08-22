@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - feature/oregon-3ch-thermohygro
   pull_request:
     branches:
       - main
@@ -56,6 +57,23 @@ jobs:
 
       - name: Build firmware
         run: pio run -e "${{ matrix.environment }}"
+
+      - name: Verify real firmware.bin size
+        shell: bash
+        run: |
+          BIN=".pio/build/${{ matrix.environment }}/firmware.bin"
+          SIZE=$(stat -c%s "$BIN")
+          echo "firmware.bin size: ${SIZE} bytes"
+          if [ "${{ matrix.environment }}" = "t3-v161-433" ]; then
+            MAX=1310720
+            MARGIN=$((MAX - SIZE))
+            echo "T3 V1.6.1 app partition: ${MAX} bytes"
+            echo "Real margin: ${MARGIN} bytes"
+            if [ "$SIZE" -gt "$MAX" ]; then
+              echo "ERROR: firmware.bin exceeds the application partition by $((SIZE - MAX)) bytes"
+              exit 1
+            fi
+          fi
 
       - name: Upload firmware artifacts
         if: success()
