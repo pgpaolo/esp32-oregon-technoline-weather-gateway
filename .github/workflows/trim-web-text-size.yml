@@ -1,0 +1,59 @@
+name: Trim Web Text Size
+
+on:
+  push:
+    branches:
+      - feature/oregon-multichannel-thermo
+    paths:
+      - .github/workflows/trim-web-text-size.yml
+
+permissions:
+  contents: write
+
+jobs:
+  trim:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feature/oregon-multichannel-thermo
+          fetch-depth: 0
+      - name: Trim non-functional Web strings
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/web_manager.cpp')
+          s = p.read_text(encoding='utf-8')
+          repl = {
+            ' title="Accende o spegne il display OLED; RF, Wi-Fi, Web e MQTT restano attivi"': '',
+            ' title="Arresta servizi e periferiche e mette ESP32 in deep sleep"': '',
+            ' title="Riavvia ESP32 senza cancellare la configurazione"': '',
+            "<div class=\"cfgNote\">Hostname: 1-32 caratteri, solo a-z, 0-9 e trattino; viene convertito in minuscolo. Le modifiche di rete diventano attive dopo il riavvio. mDNS consente l'accesso come <code>http://hostname.local/</code> sui client che supportano Bonjour/mDNS. I dati meteo non vengono mai scritti in flash.</div>": "<div class=\"cfgNote\">Le modifiche di rete richiedono il riavvio. mDNS: <code>http://hostname.local/</code>.</div>",
+            '<div class="cfgNote"><b>Principale:</b> alimenta meteo e MQTT legacy. I canali manuali restano visibili offline; Auto aggiunge quelli rilevati.</div>': '<div class="cfgNote">Principale = meteo/MQTT legacy. Auto aggiunge i canali rilevati.</div>',
+            '<div class="cfgNote">TLS verificato usa la CA PEM inserita qui. La modalita TLS senza verifica cifra il traffico ma non autentica il broker: usala solo per test. I canali THGN CH1-CH3 seguono CONFIGURAZIONE &gt; OREGON. Password, CA e mask campi vengono scritti in NVS soltanto se cambiano.</div>': '<div class="cfgNote">TLS verificato usa la CA PEM. CH1-CH3 seguono OREGON. NVS solo su modifica.</div>',
+            '<div class="cfgNote">Il monitor usa i dati gia presenti in <code>/api/state</code>. Non aggiunge polling, storage o scritture NVS.</div>': '<div class="cfgNote">Monitor da <code>/api/state</code>, senza scritture NVS.</div>',
+            "if(!confirm('Spegnere il controller? Entrera in DEEP SLEEP: RF, Wi-Fi, Web, MQTT, OLED e BME280 verranno arrestati.'))return;": "if(!confirm('Spegnere il controller in deep sleep?'))return;",
+            "alert('Controller in spegnimento. Per riaccenderlo: '+(j.wake_hint||'usa RESET/EN.'));": "alert('Spegnimento. Riaccensione: '+(j.wake_hint||'RESET/EN'));",
+            "if(!confirm('Riavviare ora la scheda ESP32?'))return;": "if(!confirm('Riavviare ESP32?'))return;",
+            "if(r.ok)alert('Riavvio ESP32 avviato. La pagina tornera disponibile tra pochi secondi.');else alert('Riavvio fallito');": "if(r.ok)alert('Riavvio avviato');else alert('Riavvio fallito');"
+          }
+          saved = 0
+          for old, new in repl.items():
+              n = s.count(old)
+              if n != 1:
+                  raise SystemExit(f'anchor count {n}: {old[:80]}')
+              saved += len(old.encode()) - len(new.encode())
+              s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+          Path('.github/workflows/trim-web-text-size.yml').unlink()
+          print(f'Trimmed {saved} source bytes of non-functional Web text')
+          PY
+      - name: Commit trim
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "opt: trim Web text for T3 flash margin"
+          git push origin HEAD:feature/oregon-multichannel-thermo
