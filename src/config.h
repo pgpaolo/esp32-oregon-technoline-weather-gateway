@@ -213,10 +213,11 @@
 
 // OS V2.1 trasmette i 16 bit di preambolo come 32 bit fisici alternati.
 // Nel decoder a intervalli questo appare come una sequenza di long. Una
-// soglia leggermente inferiore a 31 tollera l'avvio tardivo del data slicer;
-// coppie, Sensor ID, lunghezza e checksum restano tutti obbligatori.
+// rtl_433 usa 16 bit fisici stabili prima della ricerca del sync: la stessa
+// soglia tollera il preambolo UVR128 troncato dall'avvio tardivo del data
+// slicer. Coppie, Sensor ID, lunghezza completa e checksum restano obbligatori.
 #ifndef OREGON_V21_PREAMBLE_MIN_LONGS
-#define OREGON_V21_PREAMBLE_MIN_LONGS     24
+#define OREGON_V21_PREAMBLE_MIN_LONGS     15
 #endif
 #ifndef OREGON_STATE_ON_SHORT_MIN_US
 #define OREGON_STATE_ON_SHORT_MIN_US       200

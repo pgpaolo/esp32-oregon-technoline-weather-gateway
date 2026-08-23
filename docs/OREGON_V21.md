@@ -20,6 +20,8 @@ already-supported direct values `1`, `2`, `3` remain accepted.
 ## Decoder boundaries
 
 - recognizes the alternating 32-bit physical preamble;
+- accepts a 16-bit stable tail of that preamble, matching rtl_433 tolerance for
+  data-slicer startup clipping, while retaining all downstream validation;
 - reconstructs and validates every Manchester inverse/original pair;
 - accepts only the listed sensor IDs and their bounded payload through checksum;
 - verifies the nibble-sum checksum before placing a frame in the RF queue;

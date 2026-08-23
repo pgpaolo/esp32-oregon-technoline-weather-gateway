@@ -1065,6 +1065,7 @@ void processV21Candidate(IntervalKind kind) {
         }
         if (kind == IntervalKind::Short && d.preambleLongs >= OREGON_V21_PREAMBLE_MIN_LONGS) {
             stats.v21Preambles++;
+            if (d.preambleLongs < 24U) stats.v21ShortPreambles++;
             d.decoding = true;
             d.clearFrame();
             // L'ultimo bit fisico del preambolo V2.1 e' 1. Il primo bit del

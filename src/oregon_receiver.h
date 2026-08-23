@@ -134,6 +134,7 @@ struct OregonRxStats {
     // Oregon Protocol 2.1: preambolo alternato, coppie invertito/originale
     // validate e checksum del payload prima dell'accodamento.
     uint32_t v21Preambles{0};
+    uint32_t v21ShortPreambles{0};
     uint32_t v21Candidates{0};
     uint32_t v21Frames{0};
     uint32_t v21UvCandidates{0};

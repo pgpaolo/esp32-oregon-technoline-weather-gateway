@@ -38,8 +38,8 @@ def logical_nibble_bits(nibbles):
             yield 1 if value & mask else 0
 
 
-def physical_intervals_from_bits(bits):
-    physical = [index & 1 for index in range(32)]
+def physical_intervals_from_bits(bits, preamble_physical_bits=32):
+    physical = [index & 1 for index in range(preamble_physical_bits)]
     for bit in bits:
         physical.extend((1 - bit, bit))
     intervals = []
@@ -64,7 +64,7 @@ def decode_intervals_bits(intervals, expected_bits: int, stored_bytes: int) -> b
             if kind == "L":
                 preamble_longs += 1
                 continue
-            if kind == "S" and preamble_longs >= 24:
+            if kind == "S" and preamble_longs >= 15:
                 decoding = True
             else:
                 preamble_longs = 0
@@ -179,7 +179,9 @@ def main() -> None:
             nibble(rgr968, 14) * 100 + nibble(rgr968, 13) * 10 + nibble(rgr968, 12)) / 10 == 123.4
     uvr128, uvr_bits = uvr128_double_message()
     decoded_uvr128 = decode_intervals_bits(
-        physical_intervals_from_bits(uvr_bits), 152, len(uvr128)
+        physical_intervals_from_bits(uvr_bits, preamble_physical_bits=16),
+        152,
+        len(uvr128),
     )
     assert decoded_uvr128 == uvr128
     assert checksum_ok(decoded_uvr128, 13)
@@ -188,7 +190,9 @@ def main() -> None:
     corrupt_uvr_bits = uvr_bits.copy()
     corrupt_uvr_bits[40] ^= 1
     corrupt_uvr128 = decode_intervals_bits(
-        physical_intervals_from_bits(corrupt_uvr_bits), 152, len(uvr128)
+        physical_intervals_from_bits(corrupt_uvr_bits, preamble_physical_bits=16),
+        152,
+        len(uvr128),
     )
     assert not checksum_ok(corrupt_uvr128, 13)
     print("Oregon V2.1 vectors: 6 valid, 6 corrupt rejected, UVR128 double-message OK")

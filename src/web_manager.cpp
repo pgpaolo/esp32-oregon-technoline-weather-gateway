@@ -665,6 +665,7 @@ void handleState() {
     out += ",\"wind_recovery_success\":" + String(rx.windRecoverySuccess);
     out += ",\"strong_frames\":" + String(rx.edgeFrames);
     out += ",\"v21_preambles\":" + String(rx.v21Preambles);
+    out += ",\"v21_short_preambles\":" + String(rx.v21ShortPreambles);
     out += ",\"v21_candidates\":" + String(rx.v21Candidates);
     out += ",\"v21_frames\":" + String(rx.v21Frames);
     out += ",\"v21_uv_candidates\":" + String(rx.v21UvCandidates);
