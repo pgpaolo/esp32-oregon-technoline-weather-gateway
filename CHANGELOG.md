@@ -1,30 +1,107 @@
 # Changelog
 
-## Unreleased - Oregon V2.1 / compact Web asset
+All notable project changes are documented here.
+
+## Unreleased - consolidated UVR128 recovery branch
+
+This development line is consolidated in:
+
+```text
+feature/uvr128-v21-recovery
+```
+
+It supersedes the intermediate AS3935, Oregon multichannel and legacy V2.1 feature branches. PR #15 now targets `main` directly.
+
+### Oregon RF / UVR128
 
 - Added bounded Oregon Scientific V2.1 decoding for EC40/1D20/1D30 thermo sensors, WGR968 wind, RGR968 rain and UVR128 UV.
-- Corrected UVR128 framing by recognizing its no-pause double transmission while accepting the checksum-valid first copy, as in the initial working EC70 decoder; dedicated candidate/valid diagnostics remain available without enlarging the RF packet buffer.
-- Tolerated UVR128 preamble startup clipping down to 16 stable physical bits and exposed the reduced-preamble count for live verification.
-- Reused the existing dashboard cards and MQTT fields for legacy sensor families, without adding graphical components.
-- Made Oregon session quality transmitter-aware: each sensor code/channel/rolling ID has a separate received, expected, lost, quality and latest-RSSI row; documented nominal cadences and a guarded adaptive calibration prevent mixed or invented percentages.
-- Reduced BME280 and AS3935 dashboard height with scoped compact spacing while preserving every value, state and explanatory note.
-- Added V2.1 diagnostics and host-side protocol vectors.
-- Moved the full dashboard source to `web/dashboard.html` and gzip-compress it at build time.
-- Corrected temperature-only channel rendering, backup range validation and MQTT retained cleanup.
+- Added dedicated UVR128/EC70 recovery for real SX1278 captures with clipped short preamble or uncertain initial phase.
+- Recovery scans bounded burst intervals across candidate starts and both physical polarities, but still requires EC70 identity, valid Manchester pairs and normal V2.1 checksum.
+- Confirmed real UVR128 reception on target hardware.
+- Preserved separate OSV3, Technoline and normal V2.1 decoder paths.
+- Added/kept V2.1 diagnostics and host-side protocol vectors; Build #92 reported 6 valid vectors accepted and 6 corrupt vectors rejected.
+
+### Oregon CH1-CH3
+
+- Added separate live state for Oregon thermo/hygro CH1, CH2 and CH3.
+- Added configurable primary channel for legacy temperature/humidity and derived station values.
+- Added channel auto-discovery and persistent manual enable mask.
+- Accepted both observed channel conventions: one-hot `1/2/4` and direct `1/2/3`.
+- Added per-channel MQTT topics while preserving legacy primary-channel aliases.
+- Added backup/restore of thermo-channel configuration.
+
+### Multi-sensor Dashboard
+
+- Added compact simultaneous UV display for UVN800 (`D874`), UVR128 (`EC70`) and future supported UV transmitters.
+- Made Oregon session quality transmitter-aware using sensor type/code/channel/rolling ID.
+- Unified RSSI presentation across Oregon thermo, wind, rain, UV and Technoline:
+  - green >= -100 dBm;
+  - yellow -115..-101 dBm;
+  - red < -115 dBm;
+  - grey when unavailable.
+- Unified battery presentation where available: `BAT OK`, `BAT LOW`, `BAT N/D`.
+- Technoline reports real RSSI but intentionally shows battery as unavailable because WS23xx does not transmit battery state.
+- Reorganized the Technoline Dashboard to temperature/humidity, wind and rain; removed the invalid Technoline UV card.
+
+### MQTT
+
+- Kept existing legacy topics for compatibility.
+- Added generic per-transmitter Oregon namespaces:
+  `oregon/sensor/<CODE>/ch<CHANNEL>/id<ROLLING>/...`.
+- Added separate UV compatibility namespaces for supported UV codes such as D874 and EC70.
+- Reorganized Web MQTT selection by Oregon thermo/hygro, wind, rain, UV, Technoline, BME280, AS3935 and gateway/system.
+- Preserved the existing 32-bit persistent field mask; no extra per-rolling-ID enable bits were added.
+- RF metadata can publish model/type/protocol/RSSI/battery in per-transmitter namespaces.
+
+### AS3935
+
+- Integrated optional local AS3935 lightning detector on the shared I2C bus.
+- Classic T3 V1.6.1 defaults: address `0x03`, IRQ GPIO34.
+- Added Web state/config/reinit/reset, calibration/resonance diagnostics, lightning distance/energy and counters.
+- Added selectable AS3935 OLED page.
+- Added four selectable MQTT groups using the remaining upper bits of the existing 32-bit mask: state, event, last strike and diagnostics.
+- Added AS3935 configuration to backup/restore and deep-sleep power-down behavior.
+
+### OLED
+
+- Added configurable **Sensori RF / RSSI / batterie** page.
+- Added compact live registry for up to ten recent Oregon transmitters; displays five rows and rotates automatically when required.
+- Added common G/Y/R RSSI and B+/B!/B- battery notation.
+- Kept a compact UV summary on the normal external page.
+- Added the same RSSI notation to the Technoline OLED page; battery remains B- because it is not transmitted.
+
+### Web / flash
+
+- Moved the full Dashboard source to `web/dashboard.html` and gzip-compresses it during build.
+- Reused compact live/session structures instead of adding telemetry history for the new sensor-status views.
+- Preserved the existing partition table.
+
+### Validation reference
+
+Functional code was validated by PlatformIO Build #92 before the final documentation-only cleanup commits:
+
+- Validate: PASS;
+- AS3935 Integration Guard: PASS;
+- `t3-v161-433`: PASS;
+- `t3-s3-433`: PASS.
+
+T3 V1.6.1 Build #92:
+
+- RAM: 92,560 / 327,680 B = 28.2%;
+- application ELF: 1,226,765 / 1,310,720 B = 93.6%;
+- real firmware.bin: 1,233,472 B;
+- real app-partition margin: 77,248 B;
+- artifact ID: 9498796327.
 
 ## 6.4.0-rc2
 
-- Aggiunto pulsante Web `SPEGNI` con arresto controllato in ESP32 deep sleep.
-- Prima del deep sleep vengono arrestati MQTT, OLED, BME280 e SX1278; Wi-Fi viene disabilitato.
-- T3-S3: wake opzionale di default dal pulsante BOOT/User GPIO0 oppure RESET/EN.
-- T3 V1.6.1: wake di default tramite RESET/EN, senza assumere un pulsante utente non garantito dal pinout.
-- Lo spegnimento software non sostituisce un vero sezionatore/load-switch: la scheda resta elettricamente alimentata.
-
-
-All notable project changes are documented here.
+- Added Web `SPEGNI` control with controlled ESP32 deep sleep.
+- Before deep sleep MQTT, OLED, BME280 and SX1278 are stopped/parked and Wi-Fi is disabled.
+- T3-S3: optional default wake from BOOT/User GPIO0 or RESET/EN.
+- T3 V1.6.1: default wake through RESET/EN without assuming a user button not guaranteed by the pinout.
+- Soft power-off is not an electrical disconnect; a load switch/latch is needed for near-zero current.
 
 ## [6.4.0-rc1] - 2026-08-19
-- Physical OLED button default made board-aware: enabled on T3-S3, conservative OFF on T3 V1.6.1 until hardware verification.
 
 ### Added
 
@@ -37,8 +114,9 @@ All notable project changes are documented here.
 
 ### Changed
 
-- OLED boot splash now reports the firmware version from `FIRMWARE_VERSION`.
-- PlatformIO builds inject the short Git commit into the firmware when built from a Git checkout.
+- OLED boot splash reports firmware version from `FIRMWARE_VERSION`.
+- PlatformIO builds inject the short Git commit into firmware when built from a Git checkout.
+- Physical OLED button default made board-aware: enabled on T3-S3, conservative OFF on T3 V1.6.1 until hardware verification.
 
 ### Security
 
@@ -65,11 +143,11 @@ All notable project changes are documented here.
 
 ### Changed
 
-- RF diagnostics moved away from the main dashboard to reduce visual clutter.
+- RF diagnostics moved away from the main Dashboard to reduce visual clutter.
 - RAW/burst diagnostic requests are performed only while Diagnostics is open.
 - Hardware monitor moved to its own main tab.
 - Restart control moved to the header.
-- Dashboard reorganized into responsive four-column weather cards.
+- Dashboard reorganized into responsive weather cards.
 
 ### Security
 
