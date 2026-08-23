@@ -1,0 +1,63 @@
+name: Cleanup intermediate branches
+
+on:
+  push:
+    branches:
+      - feature/uvr128-v21-recovery
+    paths:
+      - .github/workflows/cleanup-intermediate-branches.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete superseded branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branches=(
+            "ci/uvr128-recovery-runner"
+            "feature/as3935-lightning"
+            "feature/controller-soft-poweroff"
+            "feature/display-web-config"
+            "feature/oregon-3ch-thermohygro"
+            "feature/oregon-v2-compact-web"
+            "feature/oregon-v21-legacy-sensors"
+          )
+
+          echo "Repository: ${GH_REPO}"
+          echo "Protected by policy: main, feature/uvr128-v21-recovery"
+
+          for branch in "${branches[@]}"; do
+            echo "Deleting ${branch} ..."
+            if gh api -X DELETE "repos/${GH_REPO}/git/refs/heads/${branch}"; then
+              echo "Deleted ${branch}"
+            else
+              echo "Could not delete ${branch}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Verify only intended branches remain
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t branches < <(gh api --paginate "repos/${GH_REPO}/branches?per_page=100" --jq '.[].name' | sort)
+          printf 'Remaining branches:\n'
+          printf ' - %s\n' "${branches[@]}"
+
+          expected=("feature/uvr128-v21-recovery" "main")
+          if [[ "${#branches[@]}" -ne 2 ]] || [[ "${branches[0]}" != "${expected[0]}" ]] || [[ "${branches[1]}" != "${expected[1]}" ]]; then
+            echo "Unexpected branch set after cleanup" >&2
+            exit 1
+          fi
