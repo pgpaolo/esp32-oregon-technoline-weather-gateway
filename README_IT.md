@@ -1,92 +1,264 @@
 # Gateway meteo ESP32 Oregon Scientific + Technoline 433 MHz
 
-Firmware standalone per **ESP32 / LILYGO T3 + SX1278 433.92 MHz** capace di ricevere contemporaneamente sensori **Oregon Scientific OSV2.1/OSV3** e **Technoline / La Crosse WS23xx**, mostrare i dati tramite interfaccia Web e pubblicarli via MQTT.
+Firmware standalone per **ESP32 / LILYGO T3 + SX1278 433.92 MHz** capace di ricevere sensori **Oregon Scientific OSV2.1/OSV3** e **Technoline / La Crosse WS23xx**, mostrare i dati tramite interfaccia Web e pubblicarli via MQTT con TLS opzionale.
 
-Firmware release candidate: **V6.4.0-rc1** (release stabile: **V6.3.0**)
+Branch di sviluppo consolidato attuale:
 
-## Funzioni principali
+```text
+feature/uvr128-v21-recovery
+```
 
-- ricezione RF simultanea Oregon + Technoline sullo stesso SX1278;
-- decoder Oregon V2.1 limitato e validato per termo/igro, vento, pioggia e UV (`EC40`, `1D20`, `1D30`, `3D00`, `2D10`, `EC70`), oltre a OSV3;
-- dashboard Web responsive;
-- dashboard completa compressa in gzip durante la build per ridurre lo spazio firmware;
-- bussole vento compatte per entrambe le stazioni;
-- indicatori di freschezza dei dati;
-- tab Hardware con CPU, RAM/heap, flash, spazio OTA, RSSI Wi-Fi e uptime;
-- diagnostica RF, RAW frame e burst analyzer;
-- BME280 locale opzionale;
-- MQTT con selezione dei singoli campi da pubblicare;
-- MQTT TLS configurabile da Web;
-- hostname configurabile e mDNS (`hostname.local`) persistenti in NVS;
-- configurazione rete/MQTT persistente in NVS;
-- backup e ripristino JSON della configurazione;
-- pulsante di riavvio ESP32;
-- **OLED ON/OFF** da Web con power-save persistente;
-- pressione breve del pulsante PRG/BOOT configurato per OLED ON/OFF;
-- versione firmware, Git commit, data build, board e motivo ultimo reset nel tab Hardware.
+Il macro firmware resta **6.4.0-rc2**; questo branch contiene ulteriori funzioni in collaudo hardware non ancora integrate in `main`.
+
+## Funzioni principali attuali
+
+- ricezione RF Oregon + Technoline sullo stesso SX1278 a 433.92 MHz;
+- Oregon OSV3 e supporto Oregon V2.1 delimitato/validato;
+- recovery dedicato **UVR128 / EC70** per preambolo tagliato o fase iniziale incerta;
+- termoigrometri Oregon **CH1-CH2-CH3** con canale principale configurabile e auto-rilevamento;
+- più trasmettitori UV contemporanei, inclusi UVN800 (`D874`) e UVR128 (`EC70`);
+- stato RSSI uniforme sui sensori Oregon e Technoline:
+  - verde >= -100 dBm;
+  - giallo da -115 a -101 dBm;
+  - rosso < -115 dBm;
+  - grigio se non disponibile;
+- stato batteria uniforme dove previsto dal protocollo: `BAT OK`, `BAT LOW`, `BAT N/D`;
+- Technoline WS23xx mostra correttamente `BAT N/D`, perché il protocollo non trasmette lo stato batteria;
+- namespace MQTT indipendente per ogni trasmettitore Oregon, basato su codice sensore + canale + rolling ID;
+- configurazione MQTT organizzata per famiglia/stazione e funzione;
+- MQTT TLS: disabilitato, verificato con CA oppure insecure solo per diagnostica;
+- display OLED configurabile da Web, con pagina dedicata **SENSORI RF / RSSI / BATTERIE**;
+- sensore locale BME280 opzionale;
+- sensore fulmini AS3935 opzionale con Web, MQTT e OLED;
+- hostname configurabile e mDNS;
+- backup/ripristino JSON della configurazione;
+- riavvio e spegnimento software/deep sleep del controller;
+- asset Web gzip generato durante la build per ridurre l'occupazione flash.
+
+Documentazione consolidata del branch: [docs/UVR128_RECOVERY.md](docs/UVR128_RECOVERY.md).
 
 ## Hardware principale
 
-- LILYGO T3 / LoRa32 V1.6.1
-- ESP32
-- SX1278 433 MHz
-- OLED SSD1306 128×64
+### LILYGO T3 / LoRa32 V1.6.1
 
-È presente anche un ambiente PlatformIO opzionale per LILYGO T3-S3 + SX1278.
+- ESP32;
+- SX1278 433 MHz;
+- OLED SSD1306 128x64;
+- ambiente PlatformIO `t3-v161-433`.
+
+### Variante opzionale
+
+LILYGO T3-S3 V1.2/V1.3 + SX1278, ambiente PlatformIO `t3-s3-433`.
+
+### Sensori locali opzionali
+
+- BME280 su I2C, indirizzo `0x76` o `0x77`;
+- AS3935. Sul T3 V1.6.1 i default sono I2C `0x03` e IRQ GPIO34.
+
+Pinout e note: [docs/HARDWARE.md](docs/HARDWARE.md).
+
+## Oregon Scientific
+
+A seconda del modello vengono gestiti:
+
+- temperatura e umidità;
+- punto di rugiada e heat index;
+- vento medio, current/gust, direzione e wind chill;
+- pioggia totale, intensità/rate, valori locali 1h/24h e incremento frame;
+- indice UV;
+- canale, rolling code, modello e protocollo;
+- RSSI RF e batteria quando disponibili.
+
+Dettagli Oregon V2.1: [docs/OREGON_V21.md](docs/OREGON_V21.md).
+
+## Termoigrometri CH1-CH3
+
+Il firmware mantiene stato separato per CH1, CH2 e CH3.
+
+- Un solo canale configurabile come **principale** alimenta i valori temperatura/umidità legacy e gli indici derivati.
+- L'auto-discovery può rendere visibili automaticamente i canali ricevuti.
+- I canali abilitati manualmente restano visibili anche se temporaneamente offline.
+- Il parser accetta sia la codifica one-hot storica `1/2/4` sia la codifica diretta osservata `1/2/3`.
+- I topic legacy seguono il canale principale.
+- I topic specifici restano sotto `oregon/thermo/chN/...`.
+
+## Dashboard e stato sensori
+
+La grafica usa lo stesso criterio per tutti i sensori compatibili:
+
+- pallino RSSI verde/giallo/rosso;
+- batteria verde `BAT OK`;
+- batteria rossa `BAT LOW`;
+- grigio `BAT N/D` quando il dato non esiste.
+
+Per Technoline il valore RSSI è reale, mentre la batteria resta `N/D` per limite del protocollo WS23xx.
+
+I trasmettitori Oregon sono distinti per codice sensore, canale e rolling ID anche nella qualità di sessione, evitando che sensori diversi condividano i contatori.
+
+## UV multipli
+
+UVN800 (`D874`), UVR128 (`EC70`) e futuri UV supportati possono essere visualizzati contemporaneamente nella Dashboard. Il valore UV aggregato legacy resta disponibile per compatibilità.
+
+## MQTT
+
+I topic legacy restano compatibili. In aggiunta, ogni trasmettitore Oregon valido può pubblicare sotto:
+
+```text
+<base>/oregon/sensor/<CODE>/ch<CHANNEL>/id<ROLLING>/...
+```
+
+Esempi:
+
+```text
+weatherstation/oregon/sensor/F824/ch1/id165/temperature
+weatherstation/oregon/sensor/1D20/ch3/id114/humidity
+weatherstation/oregon/sensor/D874/ch1/id245/uv
+weatherstation/oregon/sensor/EC70/ch1/id158/uv
+weatherstation/oregon/sensor/1984/ch0/id170/wind_average
+weatherstation/oregon/sensor/2914/ch0/id189/rain_total
+```
+
+La configurazione Web MQTT è divisa in:
+
+- Oregon Termo/igro;
+- Oregon Vento;
+- Oregon Pioggia;
+- Oregon UV;
+- Technoline;
+- BME280 locale;
+- AS3935 fulmini;
+- Gateway/sistema.
+
+La maschera MQTT esistente resta a 32 bit. La selezione è per funzione/famiglia, mentre i singoli trasmettitori sono separati dal namespace; non viene aggiunto un ulteriore bit persistente per ogni rolling ID.
+
+Con `Metadati RF` attivi vengono pubblicati anche tipo, modello, protocollo, RSSI e batteria dei trasmettitori Oregon.
+
+Riferimento completo: [docs/MQTT.md](docs/MQTT.md).
+
+## Display OLED
+
+Le pagine e i campi OLED sono selezionabili dalla Web UI.
+
+È disponibile la pagina opzionale:
+
+```text
+SENSORI RF / RSSI / BATTERIE
+```
+
+Tiene uno stato live compatto fino a 10 trasmettitori Oregon, senza storico, mostra 5 righe alla volta e ruota automaticamente se i sensori recenti sono più di 5.
+
+Esempio:
+
+```text
+T1 F824 -116R B+
+T3 1D20  -94G B+
+U1 D874  -88G B+
+U1 EC70 -122R B+
+W0 1984  -92G B+
+```
+
+Legenda:
+
+- `G/Y/R`: classe RSSI;
+- `B+`: batteria OK;
+- `B!`: batteria bassa;
+- `B-`: batteria non disponibile.
+
+Anche la pagina Technoline usa la stessa convenzione, ad esempio:
+
+```text
+ID79 -113dBm Y B-
+```
+
+## AS3935 fulmini
+
+AS3935 è integrato come sensore locale I2C/IRQ opzionale e dispone di:
+
+- stato e configurazione guidata Web;
+- diagnostica IRQ, calibrazione e risonanza;
+- distanza ed energia dell'ultimo fulmine;
+- MQTT selezionabile per stato, evento, ultimo fulmine e diagnostica;
+- pagina OLED selezionabile;
+- configurazione inclusa nel backup/ripristino.
 
 ## Compilazione rapida
 
 ```bash
+git clone https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway.git
+cd esp32-oregon-technoline-weather-gateway
+git checkout feature/uvr128-v21-recovery
 cp src/config_private.example.h src/config_private.h
 pio run -e t3-v161-433
 pio run -e t3-v161-433 -t upload
 pio device monitor -b 115200
 ```
 
-`src/config_private.h` contiene le credenziali locali ed è escluso da Git tramite `.gitignore`.
+`src/config_private.h` è escluso da Git: non pubblicare credenziali Wi-Fi/MQTT o CA private.
 
-## Interfaccia Web
+## Profilo RF consigliato
 
-La UI è divisa in:
+| Impostazione | Valore |
+|---|---|
+| Modalità RF | `DUAL` |
+| Frequenza | `433.92 MHz` |
+| Gain | `AGC` |
+| Profilo RF | `STABILE` |
+| Burst Extra | OFF in uso normale |
+| WGR Probe | OFF in uso normale |
 
-- **Dashboard** — Oregon, Technoline e BME280;
-- **Hardware** — risorse ESP32, firmware/build/reset e stato display;
-- **Configurazione** — hostname/rete, MQTT/TLS e backup/restore;
-- **Diagnostica** — RF, gain, profili, RAW e burst.
+Il recovery UVR128 conserva comunque il minimo necessario di intervalli RAW quando Oregon è attivo, anche con Burst Extra disabilitato.
 
-Il display OLED può essere spento dalla Web oppure commutato con una pressione breve del pulsante PRG/BOOT configurato. In questo stato U8g2 usa il power-save e il firmware sospende i refresh del display; RF, MQTT, Wi-Fi e Web continuano a funzionare. L'hostname è modificabile dalla Web e, se mDNS è disponibile sulla rete client, il gateway è raggiungibile anche come `http://<hostname>.local/`.
+## Build e CI
+
+Il codice funzionale è stato validato con **PlatformIO Build #92** prima dei commit finali di sola documentazione:
+
+- Validate: PASS;
+- AS3935 Integration Guard: PASS;
+- `t3-v161-433`: PASS;
+- `t3-s3-433`: PASS;
+- vettori host Oregon V2.1: PASS.
+
+T3 V1.6.1, Build #92:
+
+- RAM: `92.560 / 327.680 B` = 28,2%;
+- ELF applicazione: `1.226.765 / 1.310.720 B` = 93,6%;
+- `firmware.bin` reale: `1.233.472 B`;
+- margine reale partizione applicazione: `77.248 B`.
+
+Artifact ID: `9498796327`.
+
+Poiché nel firmware viene incorporato il Git commit, anche un commit di sola documentazione cambia l'identificativo binario generato pur senza modificare la logica applicativa.
 
 ## Backup configurazione
 
-La Web UI può esportare e reimportare un file JSON con hostname/IP, MQTT/TLS, maschera campi MQTT, stato OLED e configurazione RF persistente. La password MQTT è esclusa per default e viene inclusa solo su scelta esplicita; SSID e password Wi-Fi non vengono esportati perché restano nel firmware/configurazione privata. L'import valida i valori e riavvia il gateway. Dettagli: [docs/CONFIG_BACKUP.md](docs/CONFIG_BACKUP.md).
+Il backup JSON comprende rete, MQTT/TLS, maschera campi MQTT, configurazione canali Oregon, display, AS3935 e impostazioni RF persistenti. Le credenziali Wi-Fi non vengono mai esportate; la password MQTT viene esclusa salvo richiesta esplicita.
 
-## MQTT
+Dettagli: [docs/CONFIG_BACKUP.md](docs/CONFIG_BACKUP.md).
 
-Il firmware supporta pubblicazione selettiva dei campi Oregon, Technoline, BME280, stato JSON, metadati RF e risorse ESP32.
+## Spegnimento software
 
-Dettagli: [docs/MQTT.md](docs/MQTT.md).
+Il pulsante Web **SPEGNI** esegue un arresto controllato e porta l'ESP32 in deep sleep. Prima dello sleep vengono arrestati MQTT, OLED, BME280, SX1278 e Wi-Fi.
 
-Protocollo e limiti del decoder V2.1: [docs/OREGON_V21.md](docs/OREGON_V21.md).
-
-## Consumo energetico
-
-La scheda dispone di un ingresso ADC per la tensione batteria, ma **non possiede un monitor di corrente integrato** utilizzato dal firmware. Per misurare realmente mA e W è consigliabile un INA219/INA226 su I²C.
+Sul T3 V1.6.1 il risveglio predefinito resta RESET/EN. Sul T3-S3 è disponibile anche il BOOT/User button GPIO0. Il deep sleep non equivale a un sezionamento elettrico reale.
 
 ## Sicurezza
 
-Non pubblicare mai `src/config_private.h`. La modalità MQTT TLS senza verifica deve essere usata solo per prove. La pagina Web deve restare su rete fidata o essere protetta da VPN/reverse proxy autenticato.
+- Non pubblicare `src/config_private.h`.
+- Preferire TLS MQTT con verifica CA fuori da una LAN fidata.
+- `TLS insecure` è solo diagnostico.
+- Non esporre direttamente la Web UI a Internet senza VPN/reverse proxy autenticato/firewall.
+
+Vedere [SECURITY.md](SECURITY.md).
 
 ## Licenza e attribuzioni
 
-Il progetto viene distribuito sotto **GNU GPL v3 o successiva**. Il decoder WS23xx utilizza conoscenze e logica derivate da `rtl_433` e `PracticalArduino WeatherStationReceiver`; vedere [NOTICE](NOTICE).
+GNU GPL v3 o successiva. Il decoder Technoline/WS23xx usa conoscenze e logica compatibile derivate da `rtl_433` e `PracticalArduino WeatherStationReceiver`; vedere [NOTICE](NOTICE).
 
-### Nota pulsante OLED e board
+## Politica branch
 
-Il controllo OLED dalla Web UI e' disponibile su entrambe le board. Il toggle fisico e' abilitato di default solo su T3-S3, dove LILYGO dichiara `BUTTON_PIN = 0`. Sul T3 V1.6.1 resta disabilitato per default e puo' essere abilitato esplicitamente in `config_private.h` dopo verifica della revisione hardware.
+La struttura prevista dopo la pulizia del repository è volutamente ridotta a:
 
-## Spegnimento software del controller
+- `main` - linea integrata/stabile;
+- `feature/uvr128-v21-recovery` - linea di sviluppo/collaudo hardware corrente.
 
-La Web UI espone il pulsante **SPEGNI**. Il comando esegue un arresto controllato e porta l'ESP32 in **deep sleep** senza scollegare il cavo di alimentazione. Prima dello sleep il firmware pubblica MQTT `offline`, spegne l'OLED, porta il BME280 e l'SX1278 in sleep e disabilita il Wi-Fi.
-
-Sul **T3 V1.6.1** il risveglio predefinito avviene con **RESET/EN**; il progetto non presume l'esistenza di un pulsante utente applicativo su quella revisione. Sul **T3-S3** il BOOT/User button GPIO0 puo' essere usato come sorgente di wake oltre a RESET/EN. Lo stato deep sleep riduce fortemente i consumi ma non equivale a un'interruzione fisica dell'alimentazione; per consumo praticamente nullo serve un load-switch/latch hardware esterno.
-
+Le vecchie PR restano disponibili come storico anche dopo la rimozione dei branch intermedi.
