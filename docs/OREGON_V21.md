@@ -43,9 +43,11 @@ to sensor code `EC70` and still requires valid inverse/original pairs and the
 V2.1 checksum before a packet can enter the normal RF queue. OSV3, Technoline
 and the normal V2.1 streaming decoder are not changed by this recovery path.
 
-Hardware validation with a real UVR128 remains required before this recovery is
-merged into the legacy V2.1 branch. The isolated CI runner is used only to apply
-and compile the recovery without changing the legacy branch itself.
+The hardware-validation branch applies this recovery as an idempotent PlatformIO
+pre-build step. Raw burst capture needed by EC70 is active whenever Oregon is
+active, even if optional `BURST EXTRA` is off; the Technoline burst decoder
+remains gated by the existing setting. Hardware validation with a real UVR128 is
+still required before folding the recovery directly into the legacy source.
 
 ## Reference vectors
 
