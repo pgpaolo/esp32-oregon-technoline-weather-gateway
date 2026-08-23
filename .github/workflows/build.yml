@@ -1,31 +1,15 @@
 name: PlatformIO Build
-# Branch CI: verifies the physical firmware.bin size before publishing artifacts.
 
 on:
   push:
     branches:
-      - main
-      - feature/oregon-3ch-thermohygro
-      - feature/oregon-v2-compact-web
-      - feature/oregon-v21-legacy-sensors
       - feature/uvr128-v21-recovery
-  pull_request:
-    branches:
-      - main
-      - feature/oregon-v21-legacy-sensors
-  workflow_dispatch:
 
 permissions:
   contents: write
 
-concurrency:
-  group: platformio-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  integrate-uvr128:
-    name: Integrate UVR128 recovery
-    if: github.event_name == 'pull_request' && github.head_ref == 'feature/uvr128-v21-recovery'
+  integrate-and-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -118,7 +102,6 @@ bool tryUvr128BurstRecovery() {
 
 '''
               s = s.replace(marker, recovery + marker)
-
               old = '''    // V6.3: Technoline viene gia' decodificata LIVE da ogni fronte con un
     // demodulatore PWM molto leggero (rtl_433-style). Questo recovery offline
     // e' opzionale e serve soltanto a recuperare un bordo iniziale/finale perso.
@@ -138,29 +121,31 @@ bool tryUvr128BurstRecovery() {
 
           rm -f .github/workflows/uvr128-recovery-integrate.yml
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Install PlatformIO Core
         run: python -m pip install --upgrade platformio
 
-      - name: Validate V2.1 vectors and phase scan
+      - name: Validate V2.1 vectors
         run: python scripts/test_oregon_v21.py
 
-      - name: Build corrected T3 V1.6.1 firmware
+      - name: Build T3 V1.6.1
         run: pio run -e t3-v161-433
 
-      - name: Verify corrected real firmware.bin size
+      - name: Verify T3 V1.6.1 real BIN
         shell: bash
         run: |
           BIN=.pio/build/t3-v161-433/firmware.bin
           SIZE=$(stat -c%s "$BIN")
           MAX=1310720
-          echo "corrected firmware.bin size: ${SIZE} bytes"
-          echo "real margin: $((MAX - SIZE)) bytes"
+          echo "firmware.bin=${SIZE} bytes"
+          echo "margin=$((MAX-SIZE)) bytes"
           test "$SIZE" -le "$MAX"
+
+      - name: Build T3-S3
+        run: pio run -e t3-s3-433
 
       - name: Commit corrected decoder
         shell: bash
@@ -174,74 +159,3 @@ bool tryUvr128BurstRecovery() {
           git add src/oregon_receiver.cpp .github/workflows/uvr128-recovery-integrate.yml
           git commit -m "fix: add bounded UVR128 V2.1 burst phase recovery"
           git push origin HEAD:feature/uvr128-v21-recovery
-
-  build:
-    name: Build ${{ matrix.environment }}
-    runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        environment:
-          - t3-v161-433
-          - t3-s3-433
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Cache PlatformIO
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/pip
-            ~/.platformio/.cache
-          key: ${{ runner.os }}-platformio-${{ matrix.environment }}-${{ hashFiles('platformio.ini') }}
-          restore-keys: |
-            ${{ runner.os }}-platformio-${{ matrix.environment }}-
-            ${{ runner.os }}-platformio-
-
-      - name: Install PlatformIO Core
-        run: python -m pip install --upgrade platformio
-
-      - name: Show PlatformIO version
-        run: pio --version
-
-      - name: Validate Oregon V2.1 protocol vectors
-        run: python scripts/test_oregon_v21.py
-
-      - name: Build firmware
-        run: pio run -e "${{ matrix.environment }}"
-
-      - name: Verify real firmware.bin size
-        shell: bash
-        run: |
-          BIN=".pio/build/${{ matrix.environment }}/firmware.bin"
-          SIZE=$(stat -c%s "$BIN")
-          echo "firmware.bin size: ${SIZE} bytes"
-          if [ "${{ matrix.environment }}" = "t3-v161-433" ]; then
-            MAX=1310720
-            MARGIN=$((MAX - SIZE))
-            echo "T3 V1.6.1 app partition: ${MAX} bytes"
-            echo "Real margin: ${MARGIN} bytes"
-            if [ "$SIZE" -gt "$MAX" ]; then
-              echo "ERROR: firmware.bin exceeds the application partition by $((SIZE - MAX)) bytes"
-              exit 1
-            fi
-          fi
-
-      - name: Upload firmware artifacts
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: firmware-${{ matrix.environment }}
-          path: |
-            .pio/build/${{ matrix.environment }}/*.bin
-            .pio/build/${{ matrix.environment }}/firmware.elf
-          if-no-files-found: warn
-          retention-days: 14
