@@ -43,6 +43,9 @@ to sensor code `EC70` and still requires valid inverse/original pairs and the
 V2.1 checksum before a packet can enter the normal RF queue. OSV3, Technoline
 and the normal V2.1 streaming decoder are not changed by this recovery path.
 
+Hardware validation with a real UVR128 remains required before this recovery is
+merged into the legacy V2.1 branch.
+
 ## Reference vectors
 
 - `AEC4015F07300D30`: EC40, CH1, 3.7 °C, checksum `3D`;
