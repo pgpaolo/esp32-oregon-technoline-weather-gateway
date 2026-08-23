@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased - Oregon V2.1 / compact Web asset
+
+- Added bounded Oregon Scientific V2.1 decoding for EC40 and 1D20 thermo sensors.
+- Added V2.1 diagnostics and host-side protocol vectors.
+- Moved the full dashboard source to `web/dashboard.html` and gzip-compress it at build time.
+- Corrected temperature-only channel rendering, backup range validation and MQTT retained cleanup.
+
 ## 6.4.0-rc2
 
 - Aggiunto pulsante Web `SPEGNI` con arresto controllato in ESP32 deep sleep.

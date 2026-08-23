@@ -3,7 +3,7 @@
 #include "oregon_types.h"
 #include "station_state.h"
 
-// Routing CH1/CH2/CH3 applicato dopo il parser OSV3: il decoder RF resta
+// Routing CH1/CH2/CH3 applicato dopo il parser Oregon V2.1/OSV3: il decoder RF resta
 // invariato salvo la normalizzazione compatibile del campo canale (1/2/3 o 1/2/4).
 // Solo primaryChannel alimenta i campi meteo/topic legacy.
 // enabledMask + autoDiscover determinano i tab Web e i topic MQTT CHx attivi.

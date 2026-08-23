@@ -6,7 +6,7 @@
 ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-green)
 
 A standalone **433.92 MHz weather-sensor gateway** for ESP32/LILYGO T3 boards with an SX1278 radio.
-It receives **Oregon Scientific OSV3** and **Technoline / La Crosse WS23xx** sensors simultaneously, exposes a responsive Web UI, publishes selected values to MQTT, supports configurable MQTT TLS, and can use a local BME280 sensor.
+It receives **Oregon Scientific OSV2.1/OSV3** and **Technoline / La Crosse WS23xx** sensors simultaneously, exposes a responsive Web UI, publishes selected values to MQTT, supports configurable MQTT TLS, and can use a local BME280 sensor.
 
 > Release candidate firmware line: **V6.4.0-rc1** (stable release: **V6.3.0**)
 
@@ -15,7 +15,7 @@ It receives **Oregon Scientific OSV3** and **Technoline / La Crosse WS23xx** sen
 ## Highlights
 
 - Dual RF reception on a single SX1278 at **433.92 MHz**
-- Oregon Scientific OSV3 sensor decoding
+- Oregon Scientific OSV3 plus V2.1 EC40 (THN132N/THR228N) and 1D20 (THGR122NX/THGR228N) decoding
 - Technoline / La Crosse WS230x / WS-2310 compatible decoder
 - Responsive embedded Web UI with:
   - Oregon and Technoline dashboards
@@ -27,6 +27,7 @@ It receives **Oregon Scientific OSV3** and **Technoline / La Crosse WS23xx** sen
   - OLED ON/OFF power-save control
   - configurable hostname + mDNS (`hostname.local`)
   - JSON configuration backup / restore
+- Deterministic gzip Web asset generated during the build to reduce application flash usage
 - Local BME280 temperature / humidity / pressure support
 - MQTT with per-field publishing selection
 - MQTT TLS modes:
@@ -60,7 +61,7 @@ See [docs/HARDWARE.md](docs/HARDWARE.md) for pinout and notes.
 
 ## Supported weather data
 
-### Oregon Scientific OSV3
+### Oregon Scientific OSV2.1 / OSV3
 
 Depending on the sensor model:
 

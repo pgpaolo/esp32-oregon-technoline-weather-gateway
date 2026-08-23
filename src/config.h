@@ -124,8 +124,8 @@
 #define MQTT_FIELDS_MASK        0x0FFFFFFFUL
 #endif
 
-#define OREGON_PROTOCOL_NAME    "OSV3"
-#define OREGON_PROTOCOL_VERSION "3.0"
+#define OREGON_PROTOCOL_NAME    "OSV2.1+OSV3"
+#define OREGON_PROTOCOL_VERSION "2.1/3.0"
 #ifndef OREGON_FREQUENCY_MHZ
 #define OREGON_FREQUENCY_MHZ    433.92f
 #endif
@@ -209,6 +209,14 @@
 // Per OSV3 i valori ideali sono ON 349/837 us e OFF 628/1116 us.
 #ifndef OREGON_STATE_PREAMBLE_MIN_SHORTS
 #define OREGON_STATE_PREAMBLE_MIN_SHORTS  28
+#endif
+
+// OS V2.1 trasmette i 16 bit di preambolo come 32 bit fisici alternati.
+// Nel decoder a intervalli questo appare come una sequenza di long. Una
+// soglia leggermente inferiore a 31 tollera l'avvio tardivo del data slicer;
+// coppie, Sensor ID, lunghezza e checksum restano tutti obbligatori.
+#ifndef OREGON_V21_PREAMBLE_MIN_LONGS
+#define OREGON_V21_PREAMBLE_MIN_LONGS     24
 #endif
 #ifndef OREGON_STATE_ON_SHORT_MIN_US
 #define OREGON_STATE_ON_SHORT_MIN_US       200

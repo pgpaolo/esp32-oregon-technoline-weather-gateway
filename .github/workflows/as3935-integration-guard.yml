@@ -20,8 +20,8 @@ jobs:
           ! grep -R "initLightningWeb\|serviceLightningWeb\|WebServer server(81)\|LIGHTNING_WEB_PORT" src
           grep -q 'server.on("/api/as3935/state"' src/web_manager.cpp
           grep -q 'server.on("/api/as3935/config"' src/web_manager.cpp
-          grep -q 'id="lightningPanel"' src/web_manager.cpp
-          grep -q 'id="cfgLightning"' src/web_manager.cpp
+          grep -q 'id="lightningPanel"' web/dashboard.html
+          grep -q 'id="cfgLightning"' web/dashboard.html
       - name: Verify OLED AS3935 integration
         shell: bash
         run: |
@@ -30,8 +30,8 @@ jobs:
           grep -q 'DISPLAY_AS_LAST_STRIKE' src/display_manager.h
           grep -q 'lightningFields' src/display_manager.h
           grep -q 'renderLightning' src/display_manager.cpp
-          grep -q 'data-dpagebit="5"' src/web_manager.cpp
-          grep -q 'data-dasbit="4"' src/web_manager.cpp
+          grep -q 'data-dpagebit="5"' web/dashboard.html
+          grep -q 'data-dasbit="4"' web/dashboard.html
           grep -q 'lightning_fields' src/web_manager.cpp
       - name: Verify selectable AS3935 MQTT fields
         shell: bash
@@ -44,4 +44,4 @@ jobs:
           grep -q 'MQTT_FIELDS_ALL = 0xFFFFFFFFUL' src/mqtt_publisher.h
           grep -q 'as3935/last_strike' src/lightning_manager.cpp
           grep -q 'as3935/diagnostics' src/lightning_manager.cpp
-          grep -q 'data-mqbit="31"' src/web_manager.cpp
+          grep -q 'data-mqbit="31"' web/dashboard.html

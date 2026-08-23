@@ -1,13 +1,15 @@
 # Gateway meteo ESP32 Oregon Scientific + Technoline 433 MHz
 
-Firmware standalone per **ESP32 / LILYGO T3 + SX1278 433.92 MHz** capace di ricevere contemporaneamente sensori **Oregon Scientific OSV3** e **Technoline / La Crosse WS23xx**, mostrare i dati tramite interfaccia Web e pubblicarli via MQTT.
+Firmware standalone per **ESP32 / LILYGO T3 + SX1278 433.92 MHz** capace di ricevere contemporaneamente sensori **Oregon Scientific OSV2.1/OSV3** e **Technoline / La Crosse WS23xx**, mostrare i dati tramite interfaccia Web e pubblicarli via MQTT.
 
 Firmware release candidate: **V6.4.0-rc1** (release stabile: **V6.3.0**)
 
 ## Funzioni principali
 
 - ricezione RF simultanea Oregon + Technoline sullo stesso SX1278;
+- decoder Oregon V2.1 per EC40 (THN132N/THR228N) e 1D20 (THGR122NX/THGR228N), oltre a OSV3;
 - dashboard Web responsive;
+- dashboard completa compressa in gzip durante la build per ridurre lo spazio firmware;
 - bussole vento compatte per entrambe le stazioni;
 - indicatori di freschezza dei dati;
 - tab Hardware con CPU, RAM/heap, flash, spazio OTA, RSSI Wi-Fi e uptime;
@@ -63,6 +65,8 @@ La Web UI può esportare e reimportare un file JSON con hostname/IP, MQTT/TLS, m
 Il firmware supporta pubblicazione selettiva dei campi Oregon, Technoline, BME280, stato JSON, metadati RF e risorse ESP32.
 
 Dettagli: [docs/MQTT.md](docs/MQTT.md).
+
+Protocollo e limiti del decoder V2.1: [docs/OREGON_V21.md](docs/OREGON_V21.md).
 
 ## Consumo energetico
 

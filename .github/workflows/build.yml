@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - feature/oregon-3ch-thermohygro
+      - feature/oregon-v2-compact-web
   pull_request:
     branches:
       - main
@@ -55,6 +56,9 @@ jobs:
 
       - name: Show PlatformIO version
         run: pio --version
+
+      - name: Validate Oregon V2.1 protocol vectors
+        run: python scripts/test_oregon_v21.py
 
       - name: Build firmware
         run: pio run -e "${{ matrix.environment }}"

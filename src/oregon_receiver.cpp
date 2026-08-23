@@ -217,13 +217,18 @@ bool queuePacket(const uint8_t *data, uint8_t len, OregonDecodeSource source) {
     if (source == OregonDecodeSource::EdgeTimingState) stats.stateEdgeFrames++;
     if (source == OregonDecodeSource::BurstAdaptive) stats.burstAdaptiveFrames++;
     if (source == OregonDecodeSource::ClockSync) stats.clockFrames++;
+    if (source == OregonDecodeSource::EdgeTimingV21) stats.v21Frames++;
 
-    switch (data[0]) {
-        case 0xAF: stats.rawThermoFrames++; break;
-        case 0xA1: stats.rawWindFrames++; break;
-        case 0xA2: stats.rawRainFrames++; break;
-        case 0xAD: stats.rawUvFrames++; break;
-        default: break;
+    if (source == OregonDecodeSource::EdgeTimingV21) {
+        stats.rawThermoFrames++;
+    } else {
+        switch (data[0]) {
+            case 0xAF: stats.rawThermoFrames++; break;
+            case 0xA1: stats.rawWindFrames++; break;
+            case 0xA2: stats.rawRainFrames++; break;
+            case 0xAD: stats.rawUvFrames++; break;
+            default: break;
+        }
     }
     return true;
 }
@@ -360,6 +365,42 @@ struct StateAwareDecoder {
 
 StateAwareDecoder stateDecoder[2];
 
+// OS V2.1 usa gli stessi timing di base di V3 ma un framing differente:
+// 16 bit logici di preambolo diventano 32 bit fisici alternati e ogni bit
+// successivo e' inviato come coppia [inverso, originale]. Il decoder valida
+// ogni coppia prima di conservare il secondo bit.
+struct Osv21Decoder {
+    bool decoding{false};
+    uint16_t preambleLongs{0};
+    bool shortPending{false};
+    uint8_t lastPhysicalBit{1};
+    bool havePairFirst{false};
+    uint8_t pairFirst{0};
+    uint8_t bytes[OREGON_MAX_PACKET_BYTES]{};
+    uint8_t byteIndex{0};
+    uint8_t bitIndex{0};
+    uint8_t expectedBytes{0};
+
+    void clearFrame() {
+        shortPending = false;
+        lastPhysicalBit = 1;
+        havePairFirst = false;
+        pairFirst = 0;
+        byteIndex = 0;
+        bitIndex = 0;
+        expectedBytes = 0;
+        memset(bytes, 0, sizeof(bytes));
+    }
+
+    void resetSearch() {
+        decoding = false;
+        preambleLongs = 0;
+        clearFrame();
+    }
+};
+
+Osv21Decoder osv21Decoder;
+
 uint16_t diff16(uint16_t a, uint16_t b) {
     return (a > b) ? static_cast<uint16_t>(a - b) : static_cast<uint16_t>(b - a);
 }
@@ -414,6 +455,33 @@ bool validateFrameChecksumRaw(const uint8_t *bytes, uint8_t len) {
     for (uint8_t i = 1; i < csPos; ++i) calculated = static_cast<uint8_t>(calculated + rawNybble(bytes, i));
     const uint8_t received = static_cast<uint8_t>((rawNybble(bytes, csPos + 1U) << 4U) | rawNybble(bytes, csPos));
     return calculated == received;
+}
+
+bool validateFrameChecksumAt(const uint8_t *bytes, uint8_t len, uint8_t csPos) {
+    if (!bytes || len == 0 || csPos == 0 || static_cast<uint8_t>(csPos + 2U) > len * 2U) return false;
+    uint8_t calculated = 0;
+    for (uint8_t i = 1; i < csPos; ++i) calculated = static_cast<uint8_t>(calculated + rawNybble(bytes, i));
+    const uint8_t received = static_cast<uint8_t>((rawNybble(bytes, csPos + 1U) << 4U) | rawNybble(bytes, csPos));
+    return calculated == received;
+}
+
+uint16_t rawSensorCode(const uint8_t *bytes) {
+    return static_cast<uint16_t>((rawNybble(bytes, 1) << 12U) |
+                                 (rawNybble(bytes, 2) << 8U) |
+                                 (rawNybble(bytes, 3) << 4U) |
+                                  rawNybble(bytes, 4));
+}
+
+uint8_t expectedLengthForV21(uint8_t header) {
+    if (header == 0xAEU) return 8U; // EC40 THN132N: sync + payload fino al checksum/postamble parziale
+    if (header == 0xA1U) return 9U; // 1D20 THGR122NX/THGR228N: sync + 17 nibble
+    return 0U;
+}
+
+uint8_t checksumPositionForV21(uint16_t sensorCode) {
+    if (sensorCode == 0xEC40U) return 13U;
+    if (sensorCode == 0x1D20U) return 16U;
+    return 0U;
 }
 
 IntervalKind classifyStateInterval(uint16_t dtUs, uint8_t rfLevel) {
@@ -888,6 +956,104 @@ void processStateAwareCandidate(StateAwareDecoder &d, uint16_t durationUs, uint8
     addBitStateAware(d, rfLevel);
 }
 
+void addDecodedV21Bit(Osv21Decoder &d, uint8_t bit) {
+    if (d.byteIndex >= OREGON_MAX_PACKET_BYTES) {
+        d.resetSearch();
+        return;
+    }
+    if (bit) d.bytes[d.byteIndex] |= OREGON_BIT_MASK[d.bitIndex];
+    d.bitIndex++;
+
+    if (d.byteIndex == 0U && d.bitIndex == 4U && (d.bytes[0] & 0xF0U) != 0xA0U) {
+        stats.v21PairErrors++;
+        d.resetSearch();
+        return;
+    }
+    if (d.bitIndex < 8U) return;
+
+    d.bitIndex = 0;
+    d.byteIndex++;
+    if (d.byteIndex == 1U) {
+        d.expectedBytes = expectedLengthForV21(d.bytes[0]);
+        if (d.expectedBytes == 0U || d.expectedBytes > OREGON_MAX_PACKET_BYTES) {
+            d.resetSearch();
+            return;
+        }
+    }
+
+    if (d.expectedBytes != 0U && d.byteIndex >= d.expectedBytes) {
+        stats.v21Candidates++;
+        const uint16_t code = rawSensorCode(d.bytes);
+        const uint8_t csPos = checksumPositionForV21(code);
+        if (csPos != 0U && validateFrameChecksumAt(d.bytes, d.expectedBytes, csPos)) {
+            queuePacket(d.bytes, d.expectedBytes, OregonDecodeSource::EdgeTimingV21);
+        } else {
+            stats.v21ChecksumFail++;
+        }
+        d.resetSearch();
+    }
+}
+
+void addPhysicalV21Bit(Osv21Decoder &d, uint8_t bit) {
+    if (!d.havePairFirst) {
+        d.pairFirst = bit;
+        d.havePairFirst = true;
+        return;
+    }
+    if (d.pairFirst == bit) {
+        stats.v21PairErrors++;
+        d.resetSearch();
+        return;
+    }
+    d.havePairFirst = false;
+    addDecodedV21Bit(d, bit); // secondo bit = dato originale, il primo e' invertito
+}
+
+void feedV21Interval(Osv21Decoder &d, IntervalKind kind) {
+    if (kind == IntervalKind::Long) {
+        if (d.shortPending) {
+            stats.v21PairErrors++;
+            d.resetSearch();
+            return;
+        }
+        d.lastPhysicalBit ^= 1U;
+        addPhysicalV21Bit(d, d.lastPhysicalBit);
+        return;
+    }
+    if (kind == IntervalKind::Short) {
+        if (!d.shortPending) {
+            d.shortPending = true;
+        } else {
+            d.shortPending = false;
+            addPhysicalV21Bit(d, d.lastPhysicalBit);
+        }
+        return;
+    }
+    d.resetSearch();
+}
+
+void processV21Candidate(IntervalKind kind) {
+    Osv21Decoder &d = osv21Decoder;
+    if (!d.decoding) {
+        if (kind == IntervalKind::Long) {
+            if (d.preambleLongs < 0xFFFFU) d.preambleLongs++;
+            return;
+        }
+        if (kind == IntervalKind::Short && d.preambleLongs >= OREGON_V21_PREAMBLE_MIN_LONGS) {
+            stats.v21Preambles++;
+            d.decoding = true;
+            d.clearFrame();
+            // L'ultimo bit fisico del preambolo V2.1 e' 1. Il primo bit del
+            // sync e' ancora 1, quindi il primo intervallo osservato e' short.
+            feedV21Interval(d, kind);
+            return;
+        }
+        d.preambleLongs = 0;
+        return;
+    }
+    feedV21Interval(d, kind);
+}
+
 void updateStateTimingAverages(uint16_t durationUs, uint8_t level) {
     const IntervalKind k = classifyStateInterval(durationUs, level);
     if (k == IntervalKind::Short) {
@@ -1179,7 +1345,11 @@ void processEdgeInterval(uint16_t durationUs, uint8_t level) {
     processStateAwareCandidate(stateDecoder[0], durationUs, level);
     processStateAwareCandidate(stateDecoder[1], durationUs, level);
 
-    // 3) Scanner A1 scorrevole: fallback dedicato WGR800 1984. Non richiede
+    // 3) Decoder Oregon V2.1: cerca il preambolo alternato (long consecutivi),
+    // valida ogni coppia inverso/originale e accoda solo EC40/1D20 checksum OK.
+    processV21Candidate(kind);
+
+    // 4) Scanner A1 scorrevole: fallback dedicato WGR800 1984. Non richiede
     // un preambolo speciale e accetta soltanto A1 con checksum valido.
     feedWindScanners(kind);
 }
@@ -1323,6 +1493,7 @@ void resetRawReceptionState() {
     strongDecoder.resetSearch();
     stateDecoder[0].resetSearch();
     stateDecoder[1].resetSearch();
+    osv21Decoder.resetSearch();
     for (auto &w : windScan) w.reset();
     burstCurrent.reset();
     resetLaCrosseDecoderState();
@@ -1680,6 +1851,7 @@ bool setRfProtocolMode(RfProtocolMode mode) {
     strongDecoder.resetSearch();
     stateDecoder[0].resetSearch();
     stateDecoder[1].resetSearch();
+    osv21Decoder.resetSearch();
     for (auto &w : windScan) w.reset();
     noInterrupts();
     edgeTail = edgeHead;
@@ -1842,6 +2014,7 @@ bool initOregonReceiver() {
     stateDecoder[1].invertLevel = true;
     stateDecoder[0].resetSearch();
     stateDecoder[1].resetSearch();
+    osv21Decoder.resetSearch();
     windScan[0].phaseShift = false;
     windScan[1].phaseShift = true;
     for (auto &s : windScan) s.reset();
@@ -2026,6 +2199,7 @@ const char *oregonDecodeSourceName(OregonDecodeSource source) {
         case OregonDecodeSource::EdgeTimingWeak: return "edge-weak";
         case OregonDecodeSource::EdgeTimingState: return "edge-state";
         case OregonDecodeSource::BurstAdaptive: return "burst-adapt";
+        case OregonDecodeSource::EdgeTimingV21: return "edge-v2.1";
         default: return "unknown";
     }
 }

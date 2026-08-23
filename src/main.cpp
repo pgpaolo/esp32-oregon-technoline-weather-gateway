@@ -178,7 +178,7 @@ void setup() {
     Serial.print(F(" Oregon + Technoline 433 Gateway ")); Serial.println(FIRMWARE_VERSION);
     Serial.print(F(" Board: ")); Serial.println(BOARD_NAME);
     Serial.println(F(" RF: SX1278 OOK direct RAW EDGE"));
-    Serial.println(F(" Oregon: OSV3 V4.8 multi-decoder"));
+    Serial.println(F(" Oregon: OSV2.1 + OSV3 multi-decoder"));
     Serial.println(F(" Technoline: WS230x / WS-2310 rtl_433-compatible OOK/PWM 52-bit"));
     Serial.println(F(" RF mode: DUAL simultaneo + modalita singole diagnostiche"));
     Serial.println(F(" Web: HTTP + hostname/mDNS configurabile"));

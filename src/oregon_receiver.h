@@ -90,7 +90,8 @@ enum class OregonDecodeSource : uint8_t {
     EdgeTiming,
     EdgeTimingWeak,
     EdgeTimingState,
-    BurstAdaptive
+    BurstAdaptive,
+    EdgeTimingV21
 };
 
 struct OregonRxStats {
@@ -129,6 +130,14 @@ struct OregonRxStats {
     uint32_t stateChecksumFail{0};
     uint32_t stateTimingErrors{0};
     uint32_t stateManchesterErrors{0};
+
+    // Oregon Protocol 2.1: preambolo alternato, coppie invertito/originale
+    // validate e checksum del payload prima dell'accodamento.
+    uint32_t v21Preambles{0};
+    uint32_t v21Candidates{0};
+    uint32_t v21Frames{0};
+    uint32_t v21ChecksumFail{0};
+    uint32_t v21PairErrors{0};
 
     // V5.6: decoder offline per-burst, adattivo sui timing reali del singolo
     // trasmettitore. Non sostituisce i decoder V4.8; aggiunge solo frame con

@@ -23,8 +23,18 @@ bool plausibleHumidity(float value)    { return value >= 0.0f && value <= 100.0f
 bool plausibleWind(float value)        { return value >= 0.0f && value <= 300.0f; }
 bool plausibleRain(float value)        { return value >= 0.0f && value <= 100000.0f; }
 
-uint8_t checksumPositionForSensor(uint8_t sensorId) {
-    switch (sensorId) {
+uint16_t packetSensorCode(const OregonPacket &packet) {
+    uint8_t n1, n2, n3, n4;
+    if (!getNybble(packet, 1, n1) || !getNybble(packet, 2, n2) ||
+        !getNybble(packet, 3, n3) || !getNybble(packet, 4, n4)) return 0;
+    return static_cast<uint16_t>((n1 << 12U) | (n2 << 8U) | (n3 << 4U) | n4);
+}
+
+uint8_t checksumPositionForPacket(const OregonPacket &packet) {
+    const uint16_t code = packetSensorCode(packet);
+    if (code == 0xEC40U) return 13; // THN132N V2.1 temperatura
+    if (code == 0x1D20U) return 16; // THGR122NX/THGR228N V2.1 termo/igro
+    switch (packet.bytes[0]) {
         case 0xAF: return 16; // THGN800/THGN801 family
         case 0xA1: return 18; // WGR800
         case 0xA2: return 19; // PCR800, checksum attraversa il byte
@@ -32,6 +42,29 @@ uint8_t checksumPositionForSensor(uint8_t sensorId) {
         case 0xA3: return 18;
         default: return 0;
     }
+}
+
+bool parseThermoPayload(const OregonPacket &packet, WeatherReading &reading, bool withHumidity) {
+    uint8_t tens, ones, tenths, sign;
+    if (!decimalNybble(packet, 11, tens) || !decimalNybble(packet, 10, ones) ||
+        !decimalNybble(packet, 9, tenths) || !getNybble(packet, 12, sign)) return false;
+
+    float temp = static_cast<float>(tens * 10U + ones) + static_cast<float>(tenths) / 10.0f;
+    if (sign == 8U) temp = -temp;
+    else if (sign != 0U) return false;
+    if (!plausibleTemperature(temp)) return false;
+
+    reading.temperatureC = temp;
+    reading.temperatureValid = true;
+    if (!withHumidity) return true;
+
+    uint8_t humTens, humOnes;
+    if (!decimalNybble(packet, 14, humTens) || !decimalNybble(packet, 13, humOnes)) return false;
+    const float humidity = static_cast<float>(humTens * 10U + humOnes);
+    if (!plausibleHumidity(humidity)) return false;
+    reading.humidityPct = humidity;
+    reading.humidityValid = true;
+    return true;
 }
 
 uint8_t decodeChannel(uint8_t raw) {
@@ -70,7 +103,7 @@ bool parseCommonFields(const OregonPacket &packet, WeatherReading &reading) {
 bool sensorCodeMatchesType(SensorType type, uint16_t code) {
     switch (type) {
         case SensorType::ThermoHygro:
-            return code == 0xF824 || code == 0xF8B4 || code == 0x1D20;
+            return code == 0xF824 || code == 0xF8B4 || code == 0x1D20 || code == 0xEC40;
         case SensorType::Wind:
             return code == 0x1984 || code == 0x1994;
         case SensorType::Rain:
@@ -87,7 +120,7 @@ bool sensorCodeMatchesType(SensorType type, uint16_t code) {
 bool validateOregonChecksum(const OregonPacket &packet) {
     if (packet.length == 0) return false;
 
-    const uint8_t csPos = checksumPositionForSensor(packet.bytes[0]);
+    const uint8_t csPos = checksumPositionForPacket(packet);
     if (csPos == 0) return false;
 
     const uint8_t requiredNibbles = static_cast<uint8_t>(csPos + 2U);
@@ -117,28 +150,24 @@ bool parseWeatherPacket(const OregonPacket &packet, WeatherReading &reading) {
     reading.rssi = packet.rssi;
     if (!parseCommonFields(packet, reading)) return false;
 
+    // I codici completi disambiguano i sensori V2.1. In particolare 1D20
+    // condivide il byte legacy A1 con il WGR800 V3 e non deve finire nel ramo vento.
+    if (reading.sensorCode == 0xEC40U) {
+        reading.type = SensorType::ThermoHygro;
+        return parseThermoPayload(packet, reading, false);
+    }
+    if (reading.sensorCode == 0x1D20U) {
+        reading.type = SensorType::ThermoHygro;
+        return parseThermoPayload(packet, reading, true);
+    }
+
     uint8_t a, b, c, d, e;
 
     switch (reading.sensorId) {
         case 0xAF: { // Thermo/Hygro
             reading.type = SensorType::ThermoHygro;
             if (!sensorCodeMatchesType(reading.type, reading.sensorCode)) return false;
-            uint8_t sign;
-            if (!decimalNybble(packet, 11, a) || !decimalNybble(packet, 10, b) ||
-                !decimalNybble(packet, 9, c) || !getNybble(packet, 12, sign) ||
-                !decimalNybble(packet, 14, d) || !decimalNybble(packet, 13, e)) return false;
-
-            float temp = static_cast<float>(a * 10U + b) + static_cast<float>(c) / 10.0f;
-            if (sign == 8) temp = -temp;
-            else if (sign != 0) return false;
-            const float hum = static_cast<float>(d * 10U + e);
-            if (!plausibleTemperature(temp) || !plausibleHumidity(hum)) return false;
-
-            reading.temperatureC = temp;
-            reading.temperatureValid = true;
-            reading.humidityPct = hum;
-            reading.humidityValid = true;
-            return true;
+            return parseThermoPayload(packet, reading, true);
         }
 
         case 0xA1: { // WGR800 Protocol 3.0, ID 1984/1994
@@ -227,7 +256,8 @@ const char *sensorModelName(uint16_t sensorCode) {
     switch (sensorCode) {
         case 0xF824: return "THGN801/THGR810";
         case 0xF8B4: return "THGR810";
-        case 0x1D20: return "THGN123N/THGR122NX";
+        case 0x1D20: return "THGR122NX/THGR228N";
+        case 0xEC40: return "THN132N/THR228N";
         case 0x1984: return "WGR800";
         case 0x1994: return "WGR800";
         case 0x2914: return "PCR800";

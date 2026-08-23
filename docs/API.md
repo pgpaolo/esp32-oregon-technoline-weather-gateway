@@ -17,6 +17,9 @@ The embedded Web UI communicates with these endpoints.
 | GET | `/api/mqtt` | read MQTT configuration (password excluded) |
 | POST | `/api/mqtt` | update MQTT/TLS configuration |
 | POST | `/api/mqtt/reset` | restore MQTT defaults |
+| GET | `/api/thermo/config` | read visible/detected channels and primary channel |
+| POST | `/api/thermo/config` | configure enabled channels, primary channel and auto-discovery |
+| POST | `/api/thermo/reset` | restore thermo-channel defaults |
 | GET | `/api/network` | read network configuration |
 | POST | `/api/network` | update network configuration |
 | POST | `/api/network/reset` | restore network defaults |
@@ -30,3 +33,7 @@ The embedded Web UI communicates with these endpoints.
 This API is designed to support the embedded UI and is not currently versioned.
 If you build external integrations against it, pin the firmware release and
 expect diagnostic fields to evolve. Configuration backups use schema `1`; Wi-Fi credentials are never exported by the current firmware and the MQTT password is omitted unless explicitly requested.
+
+The `rf` object returned by `/api/state` includes dedicated `v21_*` counters for
+preambles, candidates, accepted frames, checksum failures and invalid Manchester
+pairs.

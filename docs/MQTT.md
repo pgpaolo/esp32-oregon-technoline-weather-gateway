@@ -46,6 +46,13 @@ All paths below are relative to the configured base topic.
 | `oregon/rf/rssi` | dBm |
 | `oregon/rf/raw` | hexadecimal RAW frame |
 
+Three-channel thermo/hygro sensors also publish retained values below
+`oregon/thermo/ch1`, `ch2` and `ch3` (`temperature`, `humidity`, `battery`,
+`rssi`). When a channel is disabled, its retained values are deleted. Changing
+the primary channel refreshes the legacy `oregon/temperature` and
+`oregon/humidity` topics. Temperature-only EC40 sensors explicitly delete a
+previous humidity retained value instead of exposing stale data.
+
 ## Technoline / La Crosse WS23xx
 
 | Topic | Unit / value |

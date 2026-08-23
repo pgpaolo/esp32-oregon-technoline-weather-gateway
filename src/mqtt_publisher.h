@@ -84,6 +84,7 @@ bool validateMqttConfig(const MqttRuntimeConfig &cfg, bool replacePassword, bool
 bool saveMqttConfig(const MqttRuntimeConfig &cfg, bool replacePassword, bool replaceCaCertificate);
 bool resetMqttConfigToDefaults();
 const char *mqttTlsModeName(MqttTlsMode mode);
+void reconcileThermoMqttRetained(uint8_t previousVisibleMask, uint8_t previousPrimaryChannel);
 
 void publishWeatherReading(PubSubClient &client, const WeatherReading &reading, const OregonPacket &packet);
 void publishLaCrosseReading(PubSubClient &client, const LaCrosseReading &reading, const LaCrossePacket &packet);
