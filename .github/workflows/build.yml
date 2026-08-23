@@ -12,6 +12,7 @@ on:
   pull_request:
     branches:
       - main
+      - feature/oregon-v21-legacy-sensors
   workflow_dispatch:
 
 permissions:
