@@ -37,9 +37,13 @@ shortest observed interval then becomes its adaptive session cadence. This keeps
 packet-loss percentages explicit without inventing a cadence before evidence is
 available.
 
-The UVR128 transmission is longer than its useful measurement payload. The decoder
-stops after the validated checksum, so supporting it does not enlarge the 12-byte
-RF packet buffer. Barometric V2.1 families are deliberately not decoded yet: they
+The UVR128 transmission is longer than its useful measurement payload and sends
+two copies without an inter-message pause. The decoder follows all 152 bits from
+the first sync (148 after sync in the rtl_433 convention), then validates the
+checksum stored in the first copy. Only its first 8 useful bytes are retained, so
+supporting it does not enlarge the 12-byte RF packet buffer. Dedicated candidate
+and valid-frame counters make truncated UVR128 receptions visible in `/api/state`
+and Diagnostics. Barometric V2.1 families are deliberately not decoded yet: they
 need a pressure data path and real RF captures before being exposed by the UI/API.
 
 ## Reference vectors
@@ -48,7 +52,8 @@ need a pressure data path and real RF captures before being exposed by the UI/AP
 - `A1D20485C480882835`: 1D20, CH3, battery low, -8.4 °C, 28%, checksum `53`.
 
 The test script also builds deterministic checksum-valid vectors for `1D30`,
-`3D00`, `2D10` and `EC70`, then corrupts each one to exercise rejection.
+`3D00` and `2D10`. Its `EC70` vector includes the complete no-pause UVR128
+double message; every vector is also corrupted to exercise checksum rejection.
 
 Run `python scripts/test_oregon_v21.py` to validate framing, checksum and field
 positions. These host-side tests do not substitute for reception tests with real
@@ -57,6 +62,7 @@ positions. These host-side tests do not substitute for reception tests with real
 ## Sources
 
 - Oregon Scientific RF Protocols IV: <https://www.osengr.org/Articles/OS-RF-Protocols-IV.pdf>
+- Oregon Scientific RF Protocols II: <https://www.osengr.org/WxShield/Downloads/OregonScientific-RF-Protocols-II.pdf>
 - rtl_433 Oregon decoder: <https://github.com/merbanan/rtl_433/blob/master/src/devices/oregon_scientific.c>
 - HEYU Oregon sensor interval notes: <https://www.gsp.com/cgi-bin/man.cgi?section=5&topic=X10OREGON>
 - Oregon UVR128 user manual: <https://usermanual.wiki/Oregon-Scientific/OregonScientificUvr128UsersManual374420.769016158.pdf>

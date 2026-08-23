@@ -2,6 +2,7 @@
 """Static protocol-vector tests for the embedded Oregon Scientific V2.1 decoder."""
 
 BIT_MASK = (0x10, 0x20, 0x40, 0x80, 0x01, 0x02, 0x04, 0x08)
+NIBBLE_MASK = (0x01, 0x02, 0x04, 0x08)
 
 
 def nibble(frame: bytes, index: int) -> int:
@@ -31,9 +32,15 @@ def logical_bits(frame: bytes):
             yield 1 if value & mask else 0
 
 
-def physical_intervals(frame: bytes):
+def logical_nibble_bits(nibbles):
+    for value in nibbles:
+        for mask in NIBBLE_MASK:
+            yield 1 if value & mask else 0
+
+
+def physical_intervals_from_bits(bits):
     physical = [index & 1 for index in range(32)]
-    for bit in logical_bits(frame):
+    for bit in bits:
         physical.extend((1 - bit, bit))
     intervals = []
     for previous, current in zip(physical, physical[1:]):
@@ -41,7 +48,11 @@ def physical_intervals(frame: bytes):
     return intervals
 
 
-def decode_intervals(intervals, expected_bytes: int) -> bytes:
+def physical_intervals(frame: bytes):
+    return physical_intervals_from_bits(logical_bits(frame))
+
+
+def decode_intervals_bits(intervals, expected_bits: int, stored_bytes: int) -> bytes:
     preamble_longs = 0
     decoding = False
     short_pending = False
@@ -74,14 +85,40 @@ def decode_intervals(intervals, expected_bytes: int) -> bytes:
         assert pair_first != bit
         pair_first = None
         decoded.append(bit)
-        if len(decoded) == expected_bytes * 8:
+        if len(decoded) == expected_bits:
             break
-    assert len(decoded) == expected_bytes * 8
-    result = bytearray(expected_bytes)
-    for index, bit in enumerate(decoded):
+    assert len(decoded) == expected_bits
+    result = bytearray(stored_bytes)
+    for index, bit in enumerate(decoded[:stored_bytes * 8]):
         if bit:
             result[index // 8] |= BIT_MASK[index % 8]
     return bytes(result)
+
+
+def decode_intervals(intervals, expected_bytes: int) -> bytes:
+    return decode_intervals_bits(intervals, expected_bytes * 8, expected_bytes)
+
+
+def uvr128_double_message() -> tuple[bytes, list[int]]:
+    """Build sync+payload, second preamble and immediate duplicate (152 bits)."""
+    first_nibbles = [
+        0xA, 0xE, 0xC, 0x7, 0x0, 0x1, 0x2, 0x3, 0x0,
+        0x2, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    ]
+    checksum = sum(first_nibbles[1:13]) & 0xFF
+    first_nibbles[13] = checksum & 0x0F
+    first_nibbles[14] = checksum >> 4
+    first_copy = bytes(
+        (first_nibbles[i] << 4) | first_nibbles[i + 1]
+        for i in range(0, 16, 2)
+    )
+    first_bits = list(logical_nibble_bits(first_nibbles))
+    # Il secondo preambolo OSV2.1 e' composto da 16 bit logici a 1 e non e'
+    # separato da una pausa. La seconda copia include nuovamente il sync 0xA.
+    decoded_bits = first_bits + [1] * 16 + first_bits
+    assert len(decoded_bits) == 152
+    assert len(decoded_bits) - 4 == 148
+    return first_copy, decoded_bits
 
 
 def temperature(frame: bytes) -> float:
@@ -105,12 +142,7 @@ def synthetic_vectors():
          0x2, 0x1, 0x3, 0x4, 0x3, 0x2, 0x1, 0x0, 0x0, 0x0, 0x0],
         17,
     )
-    uvr128 = make_frame(
-        [0xA, 0xE, 0xC, 0x7, 0x0, 0x1, 0x2, 0x3, 0x0,
-         0x2, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0],
-        13,
-    )
-    return thgr968, wgr968, rgr968, uvr128
+    return thgr968, wgr968, rgr968
 
 
 def main() -> None:
@@ -128,8 +160,8 @@ def main() -> None:
         corrupted[5] ^= 0x10
         assert not checksum_ok(corrupted, checksum_position)
 
-    thgr968, wgr968, rgr968, uvr128 = synthetic_vectors()
-    legacy_vectors = ((thgr968, 16), (wgr968, 18), (rgr968, 17), (uvr128, 13))
+    thgr968, wgr968, rgr968 = synthetic_vectors()
+    legacy_vectors = ((thgr968, 16), (wgr968, 18), (rgr968, 17))
     for frame, checksum_position in legacy_vectors:
         assert checksum_ok(frame, checksum_position)
         assert decode_intervals(physical_intervals(frame), len(frame)) == frame
@@ -145,8 +177,21 @@ def main() -> None:
     assert (nibble(rgr968, 10) * 100 + nibble(rgr968, 9) * 10 + nibble(rgr968, 11)) / 10 == 12.3
     assert (nibble(rgr968, 16) * 10000 + nibble(rgr968, 15) * 1000 +
             nibble(rgr968, 14) * 100 + nibble(rgr968, 13) * 10 + nibble(rgr968, 12)) / 10 == 123.4
-    assert nibble(uvr128, 10) * 10 + nibble(uvr128, 9) == 12
-    print("Oregon V2.1 vectors: 6 valid, 6 corrupt rejected, Manchester round-trip OK")
+    uvr128, uvr_bits = uvr128_double_message()
+    decoded_uvr128 = decode_intervals_bits(
+        physical_intervals_from_bits(uvr_bits), 152, len(uvr128)
+    )
+    assert decoded_uvr128 == uvr128
+    assert checksum_ok(decoded_uvr128, 13)
+    assert nibble(decoded_uvr128, 10) * 10 + nibble(decoded_uvr128, 9) == 12
+
+    corrupt_uvr_bits = uvr_bits.copy()
+    corrupt_uvr_bits[40] ^= 1
+    corrupt_uvr128 = decode_intervals_bits(
+        physical_intervals_from_bits(corrupt_uvr_bits), 152, len(uvr128)
+    )
+    assert not checksum_ok(corrupt_uvr128, 13)
+    print("Oregon V2.1 vectors: 6 valid, 6 corrupt rejected, UVR128 double-message OK")
 
 
 if __name__ == "__main__":

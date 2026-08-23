@@ -224,7 +224,10 @@ bool queuePacket(const uint8_t *data, uint8_t len, OregonDecodeSource source) {
         switch (rawSensorCode(data)) {
             case 0x3D00U: stats.rawWindFrames++; break;
             case 0x2D10U: stats.rawRainFrames++; break;
-            case 0xEC70U: stats.rawUvFrames++; break;
+            case 0xEC70U:
+                stats.rawUvFrames++;
+                stats.v21UvFrames++;
+                break;
             default: stats.rawThermoFrames++; break;
         }
     } else {
@@ -383,8 +386,8 @@ struct Osv21Decoder {
     bool havePairFirst{false};
     uint8_t pairFirst{0};
     uint8_t bytes[OREGON_MAX_PACKET_BYTES]{};
-    uint8_t byteIndex{0};
-    uint8_t bitIndex{0};
+    uint16_t decodedBits{0};
+    uint16_t expectedBits{0};
     uint8_t expectedBytes{0};
 
     void clearFrame() {
@@ -392,8 +395,8 @@ struct Osv21Decoder {
         lastPhysicalBit = 1;
         havePairFirst = false;
         pairFirst = 0;
-        byteIndex = 0;
-        bitIndex = 0;
+        decodedBits = 0;
+        expectedBits = 0;
         expectedBytes = 0;
         memset(bytes, 0, sizeof(bytes));
     }
@@ -971,31 +974,38 @@ void processStateAwareCandidate(StateAwareDecoder &d, uint16_t durationUs, uint8
 }
 
 void addDecodedV21Bit(Osv21Decoder &d, uint8_t bit) {
-    if (d.byteIndex >= OREGON_MAX_PACKET_BYTES) {
-        d.resetSearch();
-        return;
+    // UVR128 e' l'eccezione OSV2.1: trasmette due copie consecutive senza
+    // pausa. Consuma quindi 152 bit dal primo sync (148 dopo il sync secondo
+    // la convenzione rtl_433), ma conserva soltanto gli 8 byte utili iniziali.
+    if (d.decodedBits < OREGON_MAX_PACKET_BYTES * 8U && bit) {
+        const uint8_t byteIndex = static_cast<uint8_t>(d.decodedBits / 8U);
+        const uint8_t bitIndex = static_cast<uint8_t>(d.decodedBits % 8U);
+        d.bytes[byteIndex] |= OREGON_BIT_MASK[bitIndex];
     }
-    if (bit) d.bytes[d.byteIndex] |= OREGON_BIT_MASK[d.bitIndex];
-    d.bitIndex++;
+    d.decodedBits++;
 
-    if (d.byteIndex == 0U && d.bitIndex == 4U && (d.bytes[0] & 0xF0U) != 0xA0U) {
+    if (d.decodedBits == 4U && (d.bytes[0] & 0xF0U) != 0xA0U) {
         stats.v21PairErrors++;
         d.resetSearch();
         return;
     }
-    if (d.bitIndex < 8U) return;
-
-    d.bitIndex = 0;
-    d.byteIndex++;
-    if (d.byteIndex == 1U) {
+    if (d.decodedBits == 8U) {
         d.expectedBytes = expectedLengthForV21(d.bytes[0]);
         if (d.expectedBytes == 0U || d.expectedBytes > OREGON_MAX_PACKET_BYTES) {
             d.resetSearch();
             return;
         }
+        d.expectedBits = static_cast<uint16_t>(d.expectedBytes) * 8U;
     }
 
-    if (d.expectedBytes != 0U && d.byteIndex >= d.expectedBytes) {
+    // L'ID EC70 e' completo al ventesimo bit. Aspettiamo la seconda copia
+    // prevista dal protocollo prima di accettare il candidato UVR128.
+    if (d.decodedBits == 20U && rawSensorCode(d.bytes) == 0xEC70U) {
+        d.expectedBits = 152U;
+        stats.v21UvCandidates++;
+    }
+
+    if (d.expectedBits != 0U && d.decodedBits >= d.expectedBits) {
         stats.v21Candidates++;
         const uint16_t code = rawSensorCode(d.bytes);
         const uint8_t csPos = checksumPositionForV21(code);

@@ -667,6 +667,8 @@ void handleState() {
     out += ",\"v21_preambles\":" + String(rx.v21Preambles);
     out += ",\"v21_candidates\":" + String(rx.v21Candidates);
     out += ",\"v21_frames\":" + String(rx.v21Frames);
+    out += ",\"v21_uv_candidates\":" + String(rx.v21UvCandidates);
+    out += ",\"v21_uv_frames\":" + String(rx.v21UvFrames);
     out += ",\"v21_checksum_fail\":" + String(rx.v21ChecksumFail);
     out += ",\"v21_pair_errors\":" + String(rx.v21PairErrors);
     out += ",\"weak_frames\":" + String(rx.weakEdgeFrames);

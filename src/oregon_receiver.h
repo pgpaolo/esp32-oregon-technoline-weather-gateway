@@ -136,6 +136,8 @@ struct OregonRxStats {
     uint32_t v21Preambles{0};
     uint32_t v21Candidates{0};
     uint32_t v21Frames{0};
+    uint32_t v21UvCandidates{0};
+    uint32_t v21UvFrames{0};
     uint32_t v21ChecksumFail{0};
     uint32_t v21PairErrors{0};
 
