@@ -52,8 +52,7 @@ def physical_intervals(frame: bytes):
     return physical_intervals_from_bits(logical_bits(frame))
 
 
-def decode_intervals_bits(intervals, expected_bits: int, stored_bytes: int,
-                          min_preamble_longs: int = 15) -> bytes:
+def decode_intervals_bits(intervals, expected_bits: int, stored_bytes: int) -> bytes:
     preamble_longs = 0
     decoding = False
     short_pending = False
@@ -65,7 +64,7 @@ def decode_intervals_bits(intervals, expected_bits: int, stored_bytes: int,
             if kind == "L":
                 preamble_longs += 1
                 continue
-            if kind == "S" and preamble_longs >= min_preamble_longs:
+            if kind == "S" and preamble_longs >= 10:
                 decoding = True
             else:
                 preamble_longs = 0
@@ -100,6 +99,55 @@ def decode_intervals(intervals, expected_bytes: int) -> bytes:
     return decode_intervals_bits(intervals, expected_bytes * 8, expected_bytes)
 
 
+def recover_uvr128_from_intervals(intervals):
+    """Mimic the embedded recovery: arbitrary edge start + both polarities."""
+    for start in range(len(intervals)):
+        for initial in (0, 1):
+            last = initial
+            have_first = False
+            pair_first = 0
+            decoded = []
+            i = start
+            while i < len(intervals) and len(decoded) < 64:
+                kind = intervals[i]
+                if kind == "L":
+                    last ^= 1
+                    physical = last
+                    i += 1
+                elif kind == "S" and i + 1 < len(intervals) and intervals[i + 1] == "S":
+                    physical = last
+                    i += 2
+                else:
+                    break
+
+                if not have_first:
+                    pair_first = physical
+                    have_first = True
+                    continue
+                if pair_first == physical:
+                    break
+                have_first = False
+                decoded.append(physical)
+
+                if len(decoded) == 4:
+                    first_nibble = sum(bit << k for k, bit in enumerate(decoded))
+                    if first_nibble != 0xA:
+                        break
+
+            if len(decoded) < 64:
+                continue
+            frame = bytearray(8)
+            for index, bit in enumerate(decoded[:64]):
+                if bit:
+                    frame[index // 8] |= BIT_MASK[index % 8]
+            frame = bytes(frame)
+            code = ((nibble(frame, 1) << 12) | (nibble(frame, 2) << 8) |
+                    (nibble(frame, 3) << 4) | nibble(frame, 4))
+            if code == 0xEC70 and checksum_ok(frame, 13):
+                return frame
+    return None
+
+
 def uvr128_double_message() -> tuple[bytes, list[int]]:
     """Build sync+payload, second preamble and immediate duplicate (152 bits)."""
     first_nibbles = [
@@ -114,8 +162,6 @@ def uvr128_double_message() -> tuple[bytes, list[int]]:
         for i in range(0, 16, 2)
     )
     first_bits = list(logical_nibble_bits(first_nibbles))
-    # Il secondo preambolo OSV2.1 e' composto da 16 bit logici a 1 e non e'
-    # separato da una pausa. La seconda copia include nuovamente il sync 0xA.
     decoded_bits = first_bits + [1] * 16 + first_bits
     assert len(decoded_bits) == 152
     assert len(decoded_bits) - 4 == 148
@@ -180,31 +226,26 @@ def main() -> None:
             nibble(rgr968, 14) * 100 + nibble(rgr968, 13) * 10 + nibble(rgr968, 12)) / 10 == 123.4
 
     uvr128, uvr_bits = uvr128_double_message()
-    # UVR128 e' il caso piu' critico: il data slicer puo' iniziare tardi e
-    # consegnare solo la coda del preambolo. Simuliamo 12 bit fisici alternati
-    # (11 LONG teorici) e richiediamo la nuova soglia recovery di 10 LONG.
-    # La sicurezza non dipende dal preambolo: coppie Manchester, EC70 e checksum
-    # devono comunque risultare validi prima dell'accettazione.
-    decoded_uvr128 = decode_intervals_bits(
-        physical_intervals_from_bits(uvr_bits, preamble_physical_bits=12),
-        64,
-        len(uvr128),
-        min_preamble_longs=10,
-    )
+    clipped = physical_intervals_from_bits(uvr_bits, preamble_physical_bits=12)
+    decoded_uvr128 = decode_intervals_bits(clipped, 64, len(uvr128))
     assert decoded_uvr128 == uvr128
     assert checksum_ok(decoded_uvr128, 13)
     assert nibble(decoded_uvr128, 10) * 10 + nibble(decoded_uvr128, 9) == 12
 
+    # Phase/polarity recovery: junk in front + partial preamble removed.
+    raw = physical_intervals_from_bits(uvr_bits, preamble_physical_bits=16)
+    noisy = ["S", "S", "L", "S", "S"] + raw[9:]
+    assert recover_uvr128_from_intervals(noisy) == uvr128
+
     corrupt_uvr_bits = uvr_bits.copy()
     corrupt_uvr_bits[40] ^= 1
     corrupt_uvr128 = decode_intervals_bits(
-        physical_intervals_from_bits(corrupt_uvr_bits, preamble_physical_bits=12),
+        physical_intervals_from_bits(corrupt_uvr_bits, preamble_physical_bits=16),
         64,
         len(uvr128),
-        min_preamble_longs=10,
     )
     assert not checksum_ok(corrupt_uvr128, 13)
-    print("Oregon V2.1 vectors: 6 valid, 6 corrupt rejected, UVR128 clipped-preamble recovery OK")
+    print("Oregon V2.1 vectors: 6 valid, 6 corrupt rejected, UVR128 clipped-preamble + phase-scan recovery OK")
 
 
 if __name__ == "__main__":
