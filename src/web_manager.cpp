@@ -67,6 +67,14 @@ struct RfSessionState {
     uint32_t baseLcGust{0};
     uint32_t baseLcValid{0};
     uint32_t lcFirstValidMs{0};
+    uint32_t thermoFirstMs[3]{};
+    uint16_t thermoCode[3]{};
+    uint32_t windFirstMs{0};
+    uint32_t rainFirstMs{0};
+    uint32_t uvFirstMs{0};
+    uint16_t windCode{0};
+    uint16_t rainCode{0};
+    uint16_t uvCode{0};
 };
 RfSessionState rfSession{};
 
@@ -75,9 +83,24 @@ bool timestampInSession(uint32_t updatedMs, uint32_t startMs) {
     return static_cast<int32_t>(updatedMs - startMs) >= 0;
 }
 
-uint32_t expectedPackets(uint32_t elapsedMs, uint32_t cadenceMs) {
-    if (cadenceMs == 0 || elapsedMs < cadenceMs) return 0;
-    return elapsedMs / cadenceMs;
+uint32_t expectedPacketsSinceFirst(uint32_t nowMs, uint32_t firstMs, uint32_t cadenceMs) {
+    if (firstMs == 0 || cadenceMs == 0) return 0;
+    return 1UL + static_cast<uint32_t>(nowMs - firstMs) / cadenceMs;
+}
+
+uint32_t knownOsv3CadenceMs(SensorType type, uint16_t code) {
+    switch (type) {
+        case SensorType::ThermoHygro:
+            return (code == 0xF824U || code == 0xF8B4U) ? 53000UL : 0UL;
+        case SensorType::Wind:
+            return (code == 0x1984U || code == 0x1994U) ? 14000UL : 0UL;
+        case SensorType::Rain:
+            return code == 0x2914U ? 47000UL : 0UL;
+        case SensorType::UV:
+            return code == 0xD874U ? 73000UL : 0UL;
+        default:
+            return 0UL;
+    }
 }
 
 int qualityPct(uint32_t received, uint32_t expected) {
@@ -102,6 +125,16 @@ void resetRfSession(bool clearRawHistory = false) {
     rfSession.baseLcGust = station->lacrosse.gustPacketCount;
     rfSession.baseLcValid = station->lacrosse.validPacketCount;
     rfSession.lcFirstValidMs = 0;
+    for (uint8_t i = 0; i < 3U; ++i) {
+        rfSession.thermoFirstMs[i] = 0;
+        rfSession.thermoCode[i] = 0;
+    }
+    rfSession.windFirstMs = 0;
+    rfSession.rainFirstMs = 0;
+    rfSession.uvFirstMs = 0;
+    rfSession.windCode = 0;
+    rfSession.rainCode = 0;
+    rfSession.uvCode = 0;
     if (clearRawHistory) {
         historyHead = 0;
         historyCount = 0;
@@ -177,17 +210,32 @@ void handleState() {
     const uint32_t sessionLcGust = lcState.gustPacketCount - rfSession.baseLcGust;
     const uint32_t sessionLcValid = lcState.validPacketCount - rfSession.baseLcValid;
 
-    // Cadenze osservate/nominali dei sensori Oregon usate solo per stimare la
-    // qualita' di acquisizione della sessione corrente.
-    constexpr uint32_t THERMO_CADENCE_MS = 53000UL;
-    constexpr uint32_t WIND_CADENCE_MS = 14000UL;
-    constexpr uint32_t RAIN_CADENCE_MS = 47000UL;
-    constexpr uint32_t UV_CADENCE_MS = 73000UL;
-
-    const uint32_t expThermo = oregonActive ? expectedPackets(sessionElapsedMs, THERMO_CADENCE_MS) : 0;
-    const uint32_t expWind = oregonActive ? expectedPackets(sessionElapsedMs, WIND_CADENCE_MS) : 0;
-    const uint32_t expRain = oregonActive ? expectedPackets(sessionElapsedMs, RAIN_CADENCE_MS) : 0;
-    const uint32_t expUv = oregonActive ? expectedPackets(sessionElapsedMs, UV_CADENCE_MS) : 0;
+    // La percentuale e' calcolata solo per le famiglie OSV3 con cadenza nominale
+    // gia' nota. I sensori V2.1 legacy restano osservabili come LINK senza
+    // attribuire loro una periodicita' inventata. Ogni canale termo ha inoltre
+    // il proprio istante iniziale, evitando di confrontare piu' sensori con una
+    // singola attesa.
+    uint32_t expThermo = 0;
+    uint8_t thermoSeenCount = 0;
+    bool thermoQualityAvailable = false;
+    bool thermoHasUnknownCadence = false;
+    for (uint8_t i = 0; i < 3U; ++i) {
+        if (rfSession.thermoFirstMs[i] == 0) continue;
+        thermoSeenCount++;
+        const uint32_t cadence = knownOsv3CadenceMs(SensorType::ThermoHygro, rfSession.thermoCode[i]);
+        if (cadence == 0) thermoHasUnknownCadence = true;
+        else expThermo += expectedPacketsSinceFirst(now, rfSession.thermoFirstMs[i], cadence);
+    }
+    thermoQualityAvailable = thermoSeenCount > 0 && !thermoHasUnknownCadence && expThermo > 0;
+    const uint32_t windCadence = knownOsv3CadenceMs(SensorType::Wind, rfSession.windCode);
+    const uint32_t rainCadence = knownOsv3CadenceMs(SensorType::Rain, rfSession.rainCode);
+    const uint32_t uvCadence = knownOsv3CadenceMs(SensorType::UV, rfSession.uvCode);
+    const uint32_t expWind = oregonActive ? expectedPacketsSinceFirst(now, rfSession.windFirstMs, windCadence) : 0;
+    const uint32_t expRain = oregonActive ? expectedPacketsSinceFirst(now, rfSession.rainFirstMs, rainCadence) : 0;
+    const uint32_t expUv = oregonActive ? expectedPacketsSinceFirst(now, rfSession.uvFirstMs, uvCadence) : 0;
+    const bool windSeen = rfSession.windFirstMs != 0;
+    const bool rainSeen = rfSession.rainFirstMs != 0;
+    const bool uvSeen = rfSession.uvFirstMs != 0;
 
     const bool acqThermo = oregonActive && timestampInSession(station->thermoUpdatedMs, rfSession.startedMs);
     const bool acqWind = oregonActive && timestampInSession(station->windUpdatedMs, rfSession.startedMs);
@@ -262,10 +310,19 @@ void handleState() {
     out += ",\"wind_received\":" + String(sessionWind);
     out += ",\"rain_received\":" + String(sessionRain);
     out += ",\"uv_received\":" + String(sessionUv);
+    out += ",\"thermo_seen\":"; out += thermoSeenCount ? "true" : "false";
+    out += ",\"wind_seen\":"; out += windSeen ? "true" : "false";
+    out += ",\"rain_seen\":"; out += rainSeen ? "true" : "false";
+    out += ",\"uv_seen\":"; out += uvSeen ? "true" : "false";
+    out += ",\"thermo_channels\":" + String(thermoSeenCount);
     out += ",\"thermo_expected\":" + String(expThermo);
     out += ",\"wind_expected\":" + String(expWind);
     out += ",\"rain_expected\":" + String(expRain);
     out += ",\"uv_expected\":" + String(expUv);
+    out += ",\"thermo_quality_available\":"; out += thermoQualityAvailable ? "true" : "false";
+    out += ",\"wind_quality_available\":"; out += (windSeen && windCadence) ? "true" : "false";
+    out += ",\"rain_quality_available\":"; out += (rainSeen && rainCadence) ? "true" : "false";
+    out += ",\"uv_quality_available\":"; out += (uvSeen && uvCadence) ? "true" : "false";
     out += ",\"thermo_quality_pct\":" + String(qualityPct(sessionThermo, expThermo));
     out += ",\"wind_quality_pct\":" + String(qualityPct(sessionWind, expWind));
     out += ",\"rain_quality_pct\":" + String(qualityPct(sessionRain, expRain));
@@ -1676,6 +1733,39 @@ void serviceWeb() {
 
 void recordWebPacket(const OregonPacket &packet, const WeatherReading *reading, bool accepted) {
 #if WEB_ENABLE
+    if (accepted && reading) {
+        ensureRfSession();
+        switch (reading->type) {
+            case SensorType::ThermoHygro: {
+                const uint8_t channel = (reading->channel >= 1U && reading->channel <= 3U) ? reading->channel : 1U;
+                const uint8_t index = static_cast<uint8_t>(channel - 1U);
+                if (rfSession.thermoFirstMs[index] == 0 && rfSession.baseThermo == station->thermoPacketCount && rfSession.baseThermo > 0)
+                    rfSession.baseThermo--;
+                if (rfSession.thermoFirstMs[index] == 0) rfSession.thermoFirstMs[index] = reading->receivedAtMs;
+                rfSession.thermoCode[index] = reading->sensorCode;
+                break;
+            }
+            case SensorType::Wind:
+                if (rfSession.windFirstMs == 0 && rfSession.baseWind == station->windPacketCount && rfSession.baseWind > 0)
+                    rfSession.baseWind--;
+                if (rfSession.windFirstMs == 0) rfSession.windFirstMs = reading->receivedAtMs;
+                rfSession.windCode = reading->sensorCode;
+                break;
+            case SensorType::Rain:
+                if (rfSession.rainFirstMs == 0 && rfSession.baseRain == station->rainPacketCount && rfSession.baseRain > 0)
+                    rfSession.baseRain--;
+                if (rfSession.rainFirstMs == 0) rfSession.rainFirstMs = reading->receivedAtMs;
+                rfSession.rainCode = reading->sensorCode;
+                break;
+            case SensorType::UV:
+                if (rfSession.uvFirstMs == 0 && rfSession.baseUv == station->uvPacketCount && rfSession.baseUv > 0)
+                    rfSession.baseUv--;
+                if (rfSession.uvFirstMs == 0) rfSession.uvFirstMs = reading->receivedAtMs;
+                rfSession.uvCode = reading->sensorCode;
+                break;
+            default: break;
+        }
+    }
     RawEntry &e = history[historyHead];
     e = RawEntry{};
     e.ms = packet.receivedAtMs;

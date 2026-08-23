@@ -4,6 +4,7 @@
 
 - Added bounded Oregon Scientific V2.1 decoding for EC40/1D20/1D30 thermo sensors, WGR968 wind, RGR968 rain and UVR128 UV.
 - Reused the existing dashboard cards and MQTT fields for legacy sensor families, without adding graphical components.
+- Made Oregon session quality sensor-aware: absent families are excluded, multiple thermo channels have separate expectations, and V2.1 legacy links no longer receive invented OSV3 cadence percentages.
 - Added V2.1 diagnostics and host-side protocol vectors.
 - Moved the full dashboard source to `web/dashboard.html` and gzip-compress it at build time.
 - Corrected temperature-only channel rendering, backup range validation and MQTT retained cleanup.

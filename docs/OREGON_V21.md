@@ -26,6 +26,11 @@ already-supported direct values `1`, `2`, `3` remain accepted.
 - exposes V2.1 preamble, candidate, valid-frame, checksum and pair-error counters
   in `/api/state` under `rf`.
 
+Session quality excludes sensor families not observed after the latest RF
+mode/gain reset. Known OSV3 families retain cadence-based percentages (with
+separate expectations for each thermo channel); V2.1 legacy families report an
+active link without assigning an undocumented OSV3 cadence.
+
 The UVR128 transmission is longer than its useful measurement payload. The decoder
 stops after the validated checksum, so supporting it does not enlarge the 12-byte
 RF packet buffer. Barometric V2.1 families are deliberately not decoded yet: they
