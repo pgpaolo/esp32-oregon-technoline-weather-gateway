@@ -178,9 +178,11 @@ def main() -> None:
     assert (nibble(rgr968, 16) * 10000 + nibble(rgr968, 15) * 1000 +
             nibble(rgr968, 14) * 100 + nibble(rgr968, 13) * 10 + nibble(rgr968, 12)) / 10 == 123.4
     uvr128, uvr_bits = uvr128_double_message()
+    # Il decoder live accetta la prima copia non appena misura e checksum sono
+    # completi; il resto della trasmissione e' ridondanza e non deve bloccarla.
     decoded_uvr128 = decode_intervals_bits(
         physical_intervals_from_bits(uvr_bits, preamble_physical_bits=16),
-        152,
+        64,
         len(uvr128),
     )
     assert decoded_uvr128 == uvr128
@@ -191,11 +193,11 @@ def main() -> None:
     corrupt_uvr_bits[40] ^= 1
     corrupt_uvr128 = decode_intervals_bits(
         physical_intervals_from_bits(corrupt_uvr_bits, preamble_physical_bits=16),
-        152,
+        64,
         len(uvr128),
     )
     assert not checksum_ok(corrupt_uvr128, 13)
-    print("Oregon V2.1 vectors: 6 valid, 6 corrupt rejected, UVR128 double-message OK")
+    print("Oregon V2.1 vectors: 6 valid, 6 corrupt rejected, UVR128 first-copy acceptance OK")
 
 
 if __name__ == "__main__":

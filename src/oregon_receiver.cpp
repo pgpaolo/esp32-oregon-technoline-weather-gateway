@@ -974,9 +974,10 @@ void processStateAwareCandidate(StateAwareDecoder &d, uint16_t durationUs, uint8
 }
 
 void addDecodedV21Bit(Osv21Decoder &d, uint8_t bit) {
-    // UVR128 e' l'eccezione OSV2.1: trasmette due copie consecutive senza
-    // pausa. Consuma quindi 152 bit dal primo sync (148 dopo il sync secondo
-    // la convenzione rtl_433), ma conserva soltanto gli 8 byte utili iniziali.
+    // Conserva al massimo il payload utile. UVR128 trasmette due copie senza
+    // pausa, ma misura e checksum sono gia' completi nella prima copia: come
+    // nella prima implementazione EC70 funzionante, la validiamo subito senza
+    // subordinare il dato alla ricezione integra della copia ridondante.
     if (d.decodedBits < OREGON_MAX_PACKET_BYTES * 8U && bit) {
         const uint8_t byteIndex = static_cast<uint8_t>(d.decodedBits / 8U);
         const uint8_t bitIndex = static_cast<uint8_t>(d.decodedBits % 8U);
@@ -998,10 +999,9 @@ void addDecodedV21Bit(Osv21Decoder &d, uint8_t bit) {
         d.expectedBits = static_cast<uint16_t>(d.expectedBytes) * 8U;
     }
 
-    // L'ID EC70 e' completo al ventesimo bit. Aspettiamo la seconda copia
-    // prevista dal protocollo prima di accettare il candidato UVR128.
+    // L'ID EC70 e' completo al ventesimo bit; il contatore distingue il
+    // riconoscimento dell'header dall'accettazione finale con checksum valido.
     if (d.decodedBits == 20U && rawSensorCode(d.bytes) == 0xEC70U) {
-        d.expectedBits = 152U;
         stats.v21UvCandidates++;
     }
 

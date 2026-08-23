@@ -3,7 +3,7 @@
 ## Unreleased - Oregon V2.1 / compact Web asset
 
 - Added bounded Oregon Scientific V2.1 decoding for EC40/1D20/1D30 thermo sensors, WGR968 wind, RGR968 rain and UVR128 UV.
-- Corrected UVR128 framing by consuming its complete no-pause double transmission and exposing dedicated candidate/valid diagnostics without enlarging the RF packet buffer.
+- Corrected UVR128 framing by recognizing its no-pause double transmission while accepting the checksum-valid first copy, as in the initial working EC70 decoder; dedicated candidate/valid diagnostics remain available without enlarging the RF packet buffer.
 - Tolerated UVR128 preamble startup clipping down to 16 stable physical bits and exposed the reduced-preamble count for live verification.
 - Reused the existing dashboard cards and MQTT fields for legacy sensor families, without adding graphical components.
 - Made Oregon session quality transmitter-aware: each sensor code/channel/rolling ID has a separate received, expected, lost, quality and latest-RSSI row; documented nominal cadences and a guarded adaptive calibration prevent mixed or invented percentages.

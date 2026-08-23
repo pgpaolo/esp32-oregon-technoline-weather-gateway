@@ -40,12 +40,14 @@ packet-loss percentages explicit without inventing a cadence before evidence is
 available.
 
 The UVR128 transmission is longer than its useful measurement payload and sends
-two copies without an inter-message pause. The decoder follows all 152 bits from
-the first sync (148 after sync in the rtl_433 convention), then validates the
-checksum stored in the first copy. Only its first 8 useful bytes are retained, so
-supporting it does not enlarge the 12-byte RF packet buffer. Dedicated candidate
-and valid-frame counters make truncated UVR128 receptions visible in `/api/state`
-and Diagnostics. Barometric V2.1 families are deliberately not decoded yet: they
+two copies without an inter-message pause: 152 bits from the first sync (148
+after sync in the rtl_433 convention). Measurement and checksum are already
+complete in the first copy, so the live decoder validates and queues its first
+8 useful bytes without making reception of the redundant copy mandatory. This
+restores the behavior of the initial EC70 implementation and does not enlarge
+the 12-byte RF packet buffer. Dedicated candidate and valid-frame counters make
+UVR128 reception visible in `/api/state` and Diagnostics. Barometric V2.1
+families are deliberately not decoded yet: they
 need a pressure data path and real RF captures before being exposed by the UI/API.
 
 ## Reference vectors
@@ -55,7 +57,8 @@ need a pressure data path and real RF captures before being exposed by the UI/AP
 
 The test script also builds deterministic checksum-valid vectors for `1D30`,
 `3D00` and `2D10`. Its `EC70` vector includes the complete no-pause UVR128
-double message; every vector is also corrupted to exercise checksum rejection.
+double message while verifying first-copy acceptance; every vector is also
+corrupted to exercise checksum rejection.
 
 Run `python scripts/test_oregon_v21.py` to validate framing, checksum and field
 positions. These host-side tests do not substitute for reception tests with real
