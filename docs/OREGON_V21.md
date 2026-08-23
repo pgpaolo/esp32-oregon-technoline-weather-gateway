@@ -44,7 +44,8 @@ V2.1 checksum before a packet can enter the normal RF queue. OSV3, Technoline
 and the normal V2.1 streaming decoder are not changed by this recovery path.
 
 Hardware validation with a real UVR128 remains required before this recovery is
-merged into the legacy V2.1 branch.
+merged into the legacy V2.1 branch. The isolated CI runner is used only to apply
+and compile the recovery without changing the legacy branch itself.
 
 ## Reference vectors
 
