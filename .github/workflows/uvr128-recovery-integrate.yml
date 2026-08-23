@@ -1,0 +1,240 @@
+name: UVR128 Recovery Integrate
+
+on:
+  push:
+    branches:
+      - feature/uvr128-v21-recovery
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feature/uvr128-v21-recovery
+          fetch-depth: 0
+
+      - name: Apply bounded UVR128 burst recovery
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/oregon_receiver.cpp')
+          s = p.read_text()
+
+          marker = '''bool looksLikeTechnolineBurst(const RfBurstRecord &rec) {'''
+          if s.count(marker) != 1:
+              raise SystemExit('integration marker not unique')
+
+          recovery = r'''
+// -----------------------------------------------------------------------------
+// UVR128 / EC70 V2.1 burst recovery
+//
+// Il decoder V2.1 streaming resta invariato. UVR128 e' particolare: il data
+// slicer puo' consegnare il burst con fase/sync iniziale troncato e le due copie
+// sono trasmesse senza una vera pausa. A fine burst proviamo quindi allineamenti
+// diversi direttamente sugli intervalli gia' catturati. Ogni tentativo viene
+// scartato dopo 4/20 bit se non produce sync A + ID EC70; il frame entra nella
+// coda soltanto dopo checksum V2.1 valido.
+// -----------------------------------------------------------------------------
+bool decodeUvr128BurstFromStart(const BurstAccumulator &burst,
+                                uint16_t startIndex,
+                                uint8_t initialPhysicalBit) {
+    uint8_t frame[8]{};
+    uint8_t lastPhysicalBit = initialPhysicalBit & 1U;
+    bool havePairFirst = false;
+    uint8_t pairFirst = 0;
+    uint8_t decodedBits = 0;
+    uint16_t i = startIndex;
+
+    while (i < burst.storedEdges && decodedBits < 64U) {
+        const IntervalKind kind = classifyInterval(burst.durations[i]);
+        uint8_t physicalBit = lastPhysicalBit;
+
+        if (kind == IntervalKind::Long) {
+            lastPhysicalBit ^= 1U;
+            physicalBit = lastPhysicalBit;
+            ++i;
+        } else if (kind == IntervalKind::Short) {
+            if (static_cast<uint16_t>(i + 1U) >= burst.storedEdges ||
+                classifyInterval(burst.durations[i + 1U]) != IntervalKind::Short) {
+                return false;
+            }
+            physicalBit = lastPhysicalBit;
+            i = static_cast<uint16_t>(i + 2U);
+        } else {
+            return false;
+        }
+
+        if (!havePairFirst) {
+            pairFirst = physicalBit;
+            havePairFirst = true;
+            continue;
+        }
+        if (pairFirst == physicalBit) return false;
+        havePairFirst = false;
+
+        // OS V2.1 invia [inverso, originale]: il secondo bit e' il dato.
+        if (physicalBit) {
+            const uint8_t byteIndex = static_cast<uint8_t>(decodedBits / 8U);
+            const uint8_t bitIndex = static_cast<uint8_t>(decodedBits % 8U);
+            frame[byteIndex] |= OREGON_BIT_MASK[bitIndex];
+        }
+        ++decodedBits;
+
+        // Sync nibble A e Sensor ID EC70 sono filtri molto precoci: questo rende
+        // economica la scansione di tutti gli allineamenti del burst.
+        if (decodedBits == 4U && (frame[0] & 0xF0U) != 0xA0U) return false;
+        if (decodedBits == 20U && rawSensorCode(frame) != 0xEC70U) return false;
+    }
+
+    if (decodedBits != 64U || rawSensorCode(frame) != 0xEC70U) return false;
+
+    stats.v21Candidates++;
+    stats.v21UvCandidates++;
+    if (!validateFrameChecksumAt(frame, 8U, 13U)) {
+        stats.v21ChecksumFail++;
+        return false;
+    }
+
+    return queuePacket(frame, 8U, OregonDecodeSource::EdgeTimingV21);
+}
+
+bool tryUvr128BurstRecovery() {
+    // Un frame utile EC70 richiede 64 bit logici, cioe' 128 bit fisici. Il
+    // numero di intervalli puo' essere inferiore per le coppie short/short, ma
+    // sotto questa soglia non c'e' abbastanza informazione per un recovery
+    // credibile. Il limite superiore e' gia' quello del buffer del burst.
+    if (burstCurrent.storedEdges < 48U ||
+        burstCurrent.storedEdges > BURST_EDGE_BUFFER_SIZE) return false;
+
+    const uint16_t lastStart = burstCurrent.storedEdges > 16U
+        ? static_cast<uint16_t>(burstCurrent.storedEdges - 16U) : 0U;
+
+    for (uint16_t start = 0; start < lastStart; ++start) {
+        for (uint8_t initial = 0; initial < 2U; ++initial) {
+            if (decodeUvr128BurstFromStart(burstCurrent, start, initial)) return true;
+        }
+    }
+    return false;
+}
+
+'''
+          s = s.replace(marker, recovery + marker)
+
+          old = '''    // V6.3: Technoline viene gia' decodificata LIVE da ogni fronte con un
+    // demodulatore PWM molto leggero (rtl_433-style). Questo recovery offline
+    // e' opzionale e serve soltanto a recuperare un bordo iniziale/finale perso.
+'''
+          new = '''    // UVR128 V2.1: recovery offline indipendente dal decoder streaming.
+    // Non e' subordinato a burstExtraEnabled: accetta esclusivamente EC70 con
+    // coppie valide e checksum corretto, quindi non modifica gli altri sensori.
+    if (rfMode != RfProtocolMode::LaCrosse) {
+        tryUvr128BurstRecovery();
+    }
+
+    // V6.3: Technoline viene gia' decodificata LIVE da ogni fronte con un
+    // demodulatore PWM molto leggero (rtl_433-style). Questo recovery offline
+    // e' opzionale e serve soltanto a recuperare un bordo iniziale/finale perso.
+'''
+          if s.count(old) != 1:
+              raise SystemExit('finalize marker not unique')
+          s = s.replace(old, new)
+          p.write_text(s)
+
+          # Estende il test host con una scansione senza dipendenza dal preambolo.
+          t = Path('scripts/test_oregon_v21.py')
+          ts = t.read_text()
+          helper_marker = '''def decode_intervals(intervals, expected_bytes: int) -> bytes:
+    return decode_intervals_bits(intervals, expected_bytes * 8, expected_bytes)
+'''
+          if ts.count(helper_marker) != 1:
+              raise SystemExit('test helper marker not unique')
+          helper = helper_marker + r'''
+
+
+def recover_uvr128_from_intervals(intervals):
+    """Mima il recovery embedded: start arbitrario + due polarita', no preambolo."""
+    for start in range(len(intervals)):
+        for initial in (0, 1):
+            last = initial
+            physical = []
+            i = start
+            while i < len(intervals) and len(physical) < 128:
+                kind = intervals[i]
+                if kind == "L":
+                    last ^= 1
+                    physical.append(last)
+                    i += 1
+                elif kind == "S" and i + 1 < len(intervals) and intervals[i + 1] == "S":
+                    physical.append(last)
+                    i += 2
+                else:
+                    break
+
+            decoded = []
+            good = True
+            for j in range(0, len(physical) - 1, 2):
+                a, b = physical[j], physical[j + 1]
+                if a == b:
+                    good = False
+                    break
+                decoded.append(b)
+                if len(decoded) == 4:
+                    first = sum((bit << k) for k, bit in enumerate(decoded[:4]))
+                    # logical nibble uses masks 1,2,4,8 before reflection
+                    if first != 0xA:
+                        good = False
+                        break
+                if len(decoded) >= 64:
+                    break
+            if not good or len(decoded) < 64:
+                continue
+            frame = bytearray(8)
+            for n, bit in enumerate(decoded[:64]):
+                if bit:
+                    frame[n // 8] |= BIT_MASK[n % 8]
+            frame = bytes(frame)
+            if ((nibble(frame, 1) << 12) | (nibble(frame, 2) << 8) |
+                (nibble(frame, 3) << 4) | nibble(frame, 4)) != 0xEC70:
+                continue
+            if checksum_ok(frame, 13):
+                return frame
+    return None
+'''
+          ts = ts.replace(helper_marker, helper)
+
+          test_marker = '''    assert decoded_uvr128 == uvr128
+    assert checksum_ok(decoded_uvr128, 13)
+'''
+          test_new = '''    assert decoded_uvr128 == uvr128
+    assert checksum_ok(decoded_uvr128, 13)
+
+    # Recovery senza preambolo: elimina parte dell'inizio e aggiunge intervalli
+    # estranei davanti, come puo' avvenire sul data slicer SX1278 reale.
+    noisy_uvr_intervals = ["S", "S", "L", "S", "S"] + physical_intervals_from_bits(uvr_bits, preamble_physical_bits=16)[9:]
+    assert recover_uvr128_from_intervals(noisy_uvr_intervals) == uvr128
+'''
+          if ts.count(test_marker) != 1:
+              raise SystemExit('UVR test marker not unique')
+          ts = ts.replace(test_marker, test_new)
+          ts = ts.replace('UVR128 clipped-preamble recovery OK', 'UVR128 clipped-preamble + phase-scan recovery OK')
+          t.write_text(ts)
+          PY
+
+      - name: Remove staging workflow
+        run: rm .github/workflows/uvr128-recovery-integrate.yml
+
+      - name: Commit recovery
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/oregon_receiver.cpp scripts/test_oregon_v21.py .github/workflows/uvr128-recovery-integrate.yml
+          git commit -m "fix: add bounded UVR128 V2.1 burst phase recovery"
+          git push origin HEAD:feature/uvr128-v21-recovery
