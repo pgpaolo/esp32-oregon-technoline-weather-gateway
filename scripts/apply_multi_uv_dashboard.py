@@ -96,3 +96,5 @@ def patch_dashboard() -> None:
 
 patch_web_manager()
 patch_dashboard()
+
+# CI marker: this script is intentionally kept on the hardware-validation branch.
