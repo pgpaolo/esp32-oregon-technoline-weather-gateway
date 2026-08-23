@@ -26,10 +26,16 @@ already-supported direct values `1`, `2`, `3` remain accepted.
 - exposes V2.1 preamble, candidate, valid-frame, checksum and pair-error counters
   in `/api/state` under `rf`.
 
-Session quality excludes sensor families not observed after the latest RF
-mode/gain reset. Known OSV3 families retain cadence-based percentages (with
-separate expectations for each thermo channel); V2.1 legacy families report an
-active link without assigning an undocumented OSV3 cadence.
+Session quality excludes sensors not observed after the latest RF mode/gain
+reset. Every physical transmitter has its own row, identified by family, sensor
+code, channel and rolling code, so OSV3 and V2.1 traffic never shares a received
+or expected counter. The same row also exposes the RSSI of its latest valid
+frame. Known nominal intervals are used for THN/THGR channels,
+WGR, RGR and UV families. A legacy model without a reliable nominal interval is
+shown as `CAL`/`LINK` until four valid frames have provided three intervals; the
+shortest observed interval then becomes its adaptive session cadence. This keeps
+packet-loss percentages explicit without inventing a cadence before evidence is
+available.
 
 The UVR128 transmission is longer than its useful measurement payload. The decoder
 stops after the validated checksum, so supporting it does not enlarge the 12-byte
@@ -52,3 +58,5 @@ positions. These host-side tests do not substitute for reception tests with real
 
 - Oregon Scientific RF Protocols IV: <https://www.osengr.org/Articles/OS-RF-Protocols-IV.pdf>
 - rtl_433 Oregon decoder: <https://github.com/merbanan/rtl_433/blob/master/src/devices/oregon_scientific.c>
+- HEYU Oregon sensor interval notes: <https://www.gsp.com/cgi-bin/man.cgi?section=5&topic=X10OREGON>
+- Oregon UVR128 user manual: <https://usermanual.wiki/Oregon-Scientific/OregonScientificUvr128UsersManual374420.769016158.pdf>
