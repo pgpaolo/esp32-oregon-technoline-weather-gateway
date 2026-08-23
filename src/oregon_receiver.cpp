@@ -167,6 +167,7 @@ uint32_t lastQueuedMs = 0;
 constexpr uint8_t OREGON_BIT_MASK[8] = {16, 32, 64, 128, 1, 2, 4, 8};
 
 bool validateFrameChecksumRaw(const uint8_t *bytes, uint8_t len);
+uint16_t rawSensorCode(const uint8_t *bytes);
 
 uint8_t expectedLengthForSensor(uint8_t id) {
     switch (id) {
@@ -220,7 +221,12 @@ bool queuePacket(const uint8_t *data, uint8_t len, OregonDecodeSource source) {
     if (source == OregonDecodeSource::EdgeTimingV21) stats.v21Frames++;
 
     if (source == OregonDecodeSource::EdgeTimingV21) {
-        stats.rawThermoFrames++;
+        switch (rawSensorCode(data)) {
+            case 0x3D00U: stats.rawWindFrames++; break;
+            case 0x2D10U: stats.rawRainFrames++; break;
+            case 0xEC70U: stats.rawUvFrames++; break;
+            default: stats.rawThermoFrames++; break;
+        }
     } else {
         switch (data[0]) {
             case 0xAF: stats.rawThermoFrames++; break;
@@ -473,14 +479,22 @@ uint16_t rawSensorCode(const uint8_t *bytes) {
 }
 
 uint8_t expectedLengthForV21(uint8_t header) {
-    if (header == 0xAEU) return 8U; // EC40 THN132N: sync + payload fino al checksum/postamble parziale
-    if (header == 0xA1U) return 9U; // 1D20 THGR122NX/THGR228N: sync + 17 nibble
-    return 0U;
+    switch (header) {
+        case 0xAEU: return 8U;  // EC40 temperatura oppure EC70 UV
+        case 0xA1U: return 9U;  // 1D20/1D30 termo-igrometro
+        case 0xA2U: return 10U; // 2D10 RGR968 pioggia
+        case 0xA3U: return 10U; // 3D00 WGR968 vento
+        default: return 0U;
+    }
 }
 
 uint8_t checksumPositionForV21(uint16_t sensorCode) {
     if (sensorCode == 0xEC40U) return 13U;
+    if (sensorCode == 0xEC70U) return 13U;
     if (sensorCode == 0x1D20U) return 16U;
+    if (sensorCode == 0x1D30U) return 16U;
+    if (sensorCode == 0x2D10U) return 17U;
+    if (sensorCode == 0x3D00U) return 18U;
     return 0U;
 }
 

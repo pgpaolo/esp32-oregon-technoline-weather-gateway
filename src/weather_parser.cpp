@@ -33,7 +33,11 @@ uint16_t packetSensorCode(const OregonPacket &packet) {
 uint8_t checksumPositionForPacket(const OregonPacket &packet) {
     const uint16_t code = packetSensorCode(packet);
     if (code == 0xEC40U) return 13; // THN132N V2.1 temperatura
+    if (code == 0xEC70U) return 13; // UVR128 V2.1 UV
     if (code == 0x1D20U) return 16; // THGR122NX/THGR228N V2.1 termo/igro
+    if (code == 0x1D30U) return 16; // THGR968/THGN500 V2.1 termo/igro
+    if (code == 0x2D10U) return 17; // RGR968 V2.1 pioggia
+    if (code == 0x3D00U) return 18; // WGR968 V2.1 vento
     switch (packet.bytes[0]) {
         case 0xAF: return 16; // THGN800/THGN801 family
         case 0xA1: return 18; // WGR800
@@ -103,11 +107,12 @@ bool parseCommonFields(const OregonPacket &packet, WeatherReading &reading) {
 bool sensorCodeMatchesType(SensorType type, uint16_t code) {
     switch (type) {
         case SensorType::ThermoHygro:
-            return code == 0xF824 || code == 0xF8B4 || code == 0x1D20 || code == 0xEC40;
+            return code == 0xF824 || code == 0xF8B4 || code == 0x1D20 ||
+                   code == 0x1D30 || code == 0xEC40;
         case SensorType::Wind:
-            return code == 0x1984 || code == 0x1994;
+            return code == 0x1984 || code == 0x1994 || code == 0x3D00;
         case SensorType::Rain:
-            return code == 0x2914;
+            return code == 0x2914 || code == 0x2D10;
         case SensorType::UV:
             return code == 0xD874 || code == 0xEC70;
         default:
@@ -159,6 +164,80 @@ bool parseWeatherPacket(const OregonPacket &packet, WeatherReading &reading) {
     if (reading.sensorCode == 0x1D20U) {
         reading.type = SensorType::ThermoHygro;
         return parseThermoPayload(packet, reading, true);
+    }
+    if (reading.sensorCode == 0x1D30U) {
+        reading.type = SensorType::ThermoHygro;
+        return parseThermoPayload(packet, reading, true);
+    }
+    if (reading.sensorCode == 0x3D00U) {
+        reading.type = SensorType::Wind;
+        uint8_t dirHundreds, dirTens, dirOnes;
+        uint8_t gustUnits, gustTenthsA, gustTenthsB;
+        uint8_t avgUnits, avgTenthsA, avgTenthsB;
+        if (!decimalNybble(packet, 11, dirHundreds) ||
+            !decimalNybble(packet, 10, dirTens) ||
+            !decimalNybble(packet, 9, dirOnes) ||
+            !decimalNybble(packet, 13, gustUnits) ||
+            !decimalNybble(packet, 12, gustTenthsA) ||
+            !decimalNybble(packet, 14, gustTenthsB) ||
+            !decimalNybble(packet, 16, avgUnits) ||
+            !decimalNybble(packet, 15, avgTenthsA) ||
+            !decimalNybble(packet, 17, avgTenthsB)) return false;
+
+        const float direction = static_cast<float>(dirHundreds * 100U + dirTens * 10U + dirOnes);
+        const float gustMs = static_cast<float>(gustUnits) +
+                             static_cast<float>(gustTenthsA + gustTenthsB) / 10.0f;
+        const float avgMs = static_cast<float>(avgUnits) +
+                            static_cast<float>(avgTenthsA + avgTenthsB) / 10.0f;
+        const float gust = gustMs * 3.6f;
+        const float avg = avgMs * 3.6f;
+        if (direction > 360.0f || !plausibleWind(gust) || !plausibleWind(avg)) return false;
+
+        reading.windDirectionDeg = direction;
+        reading.windDirectionIndex = static_cast<uint8_t>(direction / 22.5f + 0.5f) & 0x0FU;
+        reading.windDirectionValid = true;
+        reading.windGustKmh = gust;
+        reading.windGustValid = true;
+        reading.windAverageKmh = avg;
+        reading.windAverageValid = true;
+        return true;
+    }
+    if (reading.sensorCode == 0x2D10U) {
+        reading.type = SensorType::Rain;
+        uint8_t rateHundreds, rateTens, rateTenths;
+        uint8_t totalTenThousands, totalThousands, totalHundreds, totalTens, totalTenths;
+        if (!decimalNybble(packet, 10, rateHundreds) ||
+            !decimalNybble(packet, 9, rateTens) ||
+            !decimalNybble(packet, 11, rateTenths) ||
+            !decimalNybble(packet, 16, totalTenThousands) ||
+            !decimalNybble(packet, 15, totalThousands) ||
+            !decimalNybble(packet, 14, totalHundreds) ||
+            !decimalNybble(packet, 13, totalTens) ||
+            !decimalNybble(packet, 12, totalTenths)) return false;
+
+        const float rate = static_cast<float>(rateHundreds * 100U + rateTens * 10U + rateTenths) / 10.0f;
+        const uint32_t totalRaw = static_cast<uint32_t>(totalTenThousands) * 10000UL +
+                                  static_cast<uint32_t>(totalThousands) * 1000UL +
+                                  static_cast<uint32_t>(totalHundreds) * 100UL +
+                                  static_cast<uint32_t>(totalTens) * 10UL + totalTenths;
+        const float total = static_cast<float>(totalRaw) / 10.0f;
+        if (!plausibleRain(total) || rate > 2000.0f) return false;
+
+        reading.rainTotalMm = total;
+        reading.rainTotalValid = true;
+        reading.rainRateMmH = rate;
+        reading.rainRateValid = true;
+        return true;
+    }
+    if (reading.sensorCode == 0xEC70U) {
+        reading.type = SensorType::UV;
+        uint8_t tens, ones;
+        if (!decimalNybble(packet, 10, tens) || !decimalNybble(packet, 9, ones)) return false;
+        const uint8_t uv = static_cast<uint8_t>(tens * 10U + ones);
+        if (uv > 25U) return false;
+        reading.uvIndex = uv;
+        reading.uvValid = true;
+        return true;
     }
 
     uint8_t a, b, c, d, e;
@@ -257,7 +336,10 @@ const char *sensorModelName(uint16_t sensorCode) {
         case 0xF824: return "THGN801/THGR810";
         case 0xF8B4: return "THGR810";
         case 0x1D20: return "THGR122NX/THGR228N";
+        case 0x1D30: return "THGR968/THGN500";
         case 0xEC40: return "THN132N/THR228N";
+        case 0x3D00: return "WGR968";
+        case 0x2D10: return "RGR968";
         case 0x1984: return "WGR800";
         case 0x1994: return "WGR800";
         case 0x2914: return "PCR800";

@@ -15,7 +15,7 @@ It receives **Oregon Scientific OSV2.1/OSV3** and **Technoline / La Crosse WS23x
 ## Highlights
 
 - Dual RF reception on a single SX1278 at **433.92 MHz**
-- Oregon Scientific OSV3 plus V2.1 EC40 (THN132N/THR228N) and 1D20 (THGR122NX/THGR228N) decoding
+- Oregon Scientific OSV3 plus bounded V2.1 thermo/hygro, wind, rain and UV decoding (`EC40`, `1D20`, `1D30`, `3D00`, `2D10`, `EC70`)
 - Technoline / La Crosse WS230x / WS-2310 compatible decoder
 - Responsive embedded Web UI with:
   - Oregon and Technoline dashboards

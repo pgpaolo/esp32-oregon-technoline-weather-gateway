@@ -7,7 +7,7 @@ Firmware release candidate: **V6.4.0-rc1** (release stabile: **V6.3.0**)
 ## Funzioni principali
 
 - ricezione RF simultanea Oregon + Technoline sullo stesso SX1278;
-- decoder Oregon V2.1 per EC40 (THN132N/THR228N) e 1D20 (THGR122NX/THGR228N), oltre a OSV3;
+- decoder Oregon V2.1 limitato e validato per termo/igro, vento, pioggia e UV (`EC40`, `1D20`, `1D30`, `3D00`, `2D10`, `EC70`), oltre a OSV3;
 - dashboard Web responsive;
 - dashboard completa compressa in gzip durante la build per ridurre lo spazio firmware;
 - bussole vento compatte per entrambe le stazioni;

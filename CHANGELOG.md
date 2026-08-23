@@ -2,7 +2,8 @@
 
 ## Unreleased - Oregon V2.1 / compact Web asset
 
-- Added bounded Oregon Scientific V2.1 decoding for EC40 and 1D20 thermo sensors.
+- Added bounded Oregon Scientific V2.1 decoding for EC40/1D20/1D30 thermo sensors, WGR968 wind, RGR968 rain and UVR128 UV.
+- Reused the existing dashboard cards and MQTT fields for legacy sensor families, without adding graphical components.
 - Added V2.1 diagnostics and host-side protocol vectors.
 - Moved the full dashboard source to `web/dashboard.html` and gzip-compress it at build time.
 - Corrected temperature-only channel rendering, backup range validation and MQTT retained cleanup.
