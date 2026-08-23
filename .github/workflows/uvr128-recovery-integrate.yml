@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+      - feature/oregon-v21-legacy-sensors
 
 permissions:
   contents: write
@@ -71,7 +72,6 @@ bool decodeUvr128BurstFromStart(const BurstAccumulator &burst,
         if (pairFirst == physicalBit) return false;
         havePairFirst = false;
 
-        // V2.1 trasmette [inverso, originale]: il secondo bit e' il dato.
         if (physicalBit) {
             const uint8_t byteIndex = static_cast<uint8_t>(decodedBits / 8U);
             const uint8_t bitIndex = static_cast<uint8_t>(decodedBits % 8U);
