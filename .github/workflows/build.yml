@@ -1,161 +1,93 @@
 name: PlatformIO Build
+# Branch CI: verifies the physical firmware.bin size before publishing artifacts.
 
 on:
   push:
     branches:
-      - feature/uvr128-v21-recovery
+      - main
+      - feature/oregon-3ch-thermohygro
+      - feature/oregon-v2-compact-web
+      - feature/oregon-v21-legacy-sensors
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: platformio-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  integrate-and-build:
+  build:
+    name: Build ${{ matrix.environment }}
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        environment:
+          - t3-v161-433
+          - t3-s3-433
+
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: feature/uvr128-v21-recovery
-          fetch-depth: 0
+      - name: Checkout repository
+        uses: actions/checkout@v6
 
-      - name: Apply bounded EC70 phase recovery
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('src/oregon_receiver.cpp')
-          s = p.read_text()
-          marker = 'bool looksLikeTechnolineBurst(const RfBurstRecord &rec) {'
-          if 'decodeUvr128BurstFromStart' not in s:
-              if s.count(marker) != 1:
-                  raise SystemExit('UVR integration marker not unique')
-              recovery = r'''
-// UVR128 / EC70 V2.1 burst recovery. Il decoder V2.1 streaming resta
-// invariato: questo fallback lavora solo a fine burst e accetta esclusivamente
-// EC70 con coppie Manchester e checksum validi.
-bool decodeUvr128BurstFromStart(const BurstAccumulator &burst,
-                                uint16_t startIndex,
-                                uint8_t initialPhysicalBit) {
-    uint8_t frame[8]{};
-    uint8_t lastPhysicalBit = initialPhysicalBit & 1U;
-    bool havePairFirst = false;
-    uint8_t pairFirst = 0;
-    uint8_t decodedBits = 0;
-    uint16_t i = startIndex;
-
-    while (i < burst.storedEdges && decodedBits < 64U) {
-        const IntervalKind kind = classifyInterval(burst.durations[i]);
-        uint8_t physicalBit = lastPhysicalBit;
-        if (kind == IntervalKind::Long) {
-            lastPhysicalBit ^= 1U;
-            physicalBit = lastPhysicalBit;
-            ++i;
-        } else if (kind == IntervalKind::Short) {
-            if (static_cast<uint16_t>(i + 1U) >= burst.storedEdges ||
-                classifyInterval(burst.durations[i + 1U]) != IntervalKind::Short) return false;
-            physicalBit = lastPhysicalBit;
-            i = static_cast<uint16_t>(i + 2U);
-        } else {
-            return false;
-        }
-
-        if (!havePairFirst) {
-            pairFirst = physicalBit;
-            havePairFirst = true;
-            continue;
-        }
-        if (pairFirst == physicalBit) return false;
-        havePairFirst = false;
-
-        if (physicalBit) {
-            const uint8_t byteIndex = static_cast<uint8_t>(decodedBits / 8U);
-            const uint8_t bitIndex = static_cast<uint8_t>(decodedBits % 8U);
-            frame[byteIndex] |= OREGON_BIT_MASK[bitIndex];
-        }
-        ++decodedBits;
-
-        if (decodedBits == 4U && (frame[0] & 0xF0U) != 0xA0U) return false;
-        if (decodedBits == 20U && rawSensorCode(frame) != 0xEC70U) return false;
-    }
-
-    if (decodedBits != 64U || rawSensorCode(frame) != 0xEC70U) return false;
-    stats.v21Candidates++;
-    stats.v21UvCandidates++;
-    if (!validateFrameChecksumAt(frame, 8U, 13U)) {
-        stats.v21ChecksumFail++;
-        return false;
-    }
-    return queuePacket(frame, 8U, OregonDecodeSource::EdgeTimingV21);
-}
-
-bool tryUvr128BurstRecovery() {
-    if (burstCurrent.storedEdges < 48U ||
-        burstCurrent.storedEdges > BURST_EDGE_BUFFER_SIZE) return false;
-    const uint16_t lastStart = burstCurrent.storedEdges > 16U
-        ? static_cast<uint16_t>(burstCurrent.storedEdges - 16U) : 0U;
-    for (uint16_t start = 0; start < lastStart; ++start) {
-        for (uint8_t initial = 0; initial < 2U; ++initial) {
-            if (decodeUvr128BurstFromStart(burstCurrent, start, initial)) return true;
-        }
-    }
-    return false;
-}
-
-'''
-              s = s.replace(marker, recovery + marker)
-              old = '''    // V6.3: Technoline viene gia' decodificata LIVE da ogni fronte con un
-    // demodulatore PWM molto leggero (rtl_433-style). Questo recovery offline
-    // e' opzionale e serve soltanto a recuperare un bordo iniziale/finale perso.
-'''
-              new = '''    // UVR128 V2.1: recovery offline indipendente dal decoder streaming.
-    if (rfMode != RfProtocolMode::LaCrosse) tryUvr128BurstRecovery();
-
-    // V6.3: Technoline viene gia' decodificata LIVE da ogni fronte con un
-    // demodulatore PWM molto leggero (rtl_433-style). Questo recovery offline
-    // e' opzionale e serve soltanto a recuperare un bordo iniziale/finale perso.
-'''
-              if s.count(old) != 1:
-                  raise SystemExit('finalize marker not unique')
-              s = s.replace(old, new)
-              p.write_text(s)
-          PY
-
-          rm -f .github/workflows/uvr128-recovery-integrate.yml
-
-      - uses: actions/setup-python@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-platformio-${{ matrix.environment }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-platformio-${{ matrix.environment }}-
+            ${{ runner.os }}-platformio-
 
       - name: Install PlatformIO Core
         run: python -m pip install --upgrade platformio
 
-      - name: Validate V2.1 vectors
+      - name: Show PlatformIO version
+        run: pio --version
+
+      - name: Validate Oregon V2.1 protocol vectors
         run: python scripts/test_oregon_v21.py
 
-      - name: Build T3 V1.6.1
-        run: pio run -e t3-v161-433
+      - name: Build firmware
+        run: pio run -e "${{ matrix.environment }}"
 
-      - name: Verify T3 V1.6.1 real BIN
+      - name: Verify real firmware.bin size
         shell: bash
         run: |
-          BIN=.pio/build/t3-v161-433/firmware.bin
+          BIN=".pio/build/${{ matrix.environment }}/firmware.bin"
           SIZE=$(stat -c%s "$BIN")
-          MAX=1310720
-          echo "firmware.bin=${SIZE} bytes"
-          echo "margin=$((MAX-SIZE)) bytes"
-          test "$SIZE" -le "$MAX"
-
-      - name: Build T3-S3
-        run: pio run -e t3-s3-433
-
-      - name: Commit corrected decoder
-        shell: bash
-        run: |
-          if git diff --quiet; then
-            echo "Recovery already integrated"
-            exit 0
+          echo "firmware.bin size: ${SIZE} bytes"
+          if [ "${{ matrix.environment }}" = "t3-v161-433" ]; then
+            MAX=1310720
+            MARGIN=$((MAX - SIZE))
+            echo "T3 V1.6.1 app partition: ${MAX} bytes"
+            echo "Real margin: ${MARGIN} bytes"
+            if [ "$SIZE" -gt "$MAX" ]; then
+              echo "ERROR: firmware.bin exceeds the application partition by $((SIZE - MAX)) bytes"
+              exit 1
+            fi
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/oregon_receiver.cpp .github/workflows/uvr128-recovery-integrate.yml
-          git commit -m "fix: add bounded UVR128 V2.1 burst phase recovery"
-          git push origin HEAD:feature/uvr128-v21-recovery
+
+      - name: Upload firmware artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.environment }}
+          path: |
+            .pio/build/${{ matrix.environment }}/*.bin
+            .pio/build/${{ matrix.environment }}/firmware.elf
+          if-no-files-found: warn
+          retention-days: 14
