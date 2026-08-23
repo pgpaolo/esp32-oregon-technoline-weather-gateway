@@ -1,9 +1,8 @@
 # Oregon Scientific protocol V2.1
 
-This branch adds a bounded V2.1 decoder alongside the existing OSV3 decoders.
-It does not replace or relax OSV3 validation.
+The consolidated development branch `feature/uvr128-v21-recovery` runs a bounded Oregon V2.1 decoder alongside the existing OSV3 path. It does not replace or relax OSV3 validation.
 
-## Supported sensors
+## Supported V2.1 sensors
 
 | Sensor code | Known models | Values |
 |---|---|---|
@@ -14,53 +13,111 @@ It does not replace or relax OSV3 validation.
 | `2D10` | RGR968 | rainfall rate, total rainfall, battery |
 | `EC70` | UVR128 | UV index, battery |
 
-Legacy channel values `1`, `2`, `4` are normalized to CH1, CH2, CH3. The
-already-supported direct values `1`, `2`, `3` remain accepted.
+The rest of the firmware also continues to support the existing OSV3 families, including the sensors used by the main Oregon weather station.
+
+## Channel normalization
+
+Both representations observed in compatible thermo/hygro sensors are accepted:
+
+- one-hot legacy: raw `1` -> CH1, `2` -> CH2, `4` -> CH3;
+- direct numeric representation observed on hardware: raw `1` -> CH1, `2` -> CH2, `3` -> CH3.
+
+The resulting normalized channel is used by the CH1-CH3 manager, Dashboard and MQTT routing.
 
 ## Decoder boundaries
 
-- recognizes the alternating 32-bit physical preamble;
-- accepts a shortened stable tail of that preamble while retaining downstream validation;
-- reconstructs and validates every Manchester inverse/original pair;
-- accepts only the listed sensor IDs and their bounded payload through checksum;
-- verifies the nibble-sum checksum before placing a frame in the RF queue;
-- exposes V2.1 preamble, candidate, valid-frame, checksum and pair-error counters
-  in `/api/state` under `rf`.
+The bounded V2.1 path:
 
-Session quality excludes sensors not observed after the latest RF mode/gain
-reset. Every physical transmitter has its own row, identified by family, sensor
-code, channel and rolling code, so OSV3 and V2.1 traffic never shares a received
-or expected counter. The same row also exposes the RSSI of its latest valid
-frame.
+- recognizes the alternating physical preamble;
+- accepts the configured shortened stable tail while retaining downstream validation;
+- reconstructs and validates Manchester inverse/original pairs;
+- accepts only supported/bounded sensor IDs and payload formats;
+- verifies the nibble-sum checksum before a frame can enter the normal RF queue;
+- exposes V2.1 candidate/valid/checksum/pair diagnostics in `/api/state`.
 
-The UVR128 transmission is longer than its useful measurement payload and sends
-two copies without an inter-message pause. Measurement and checksum are already
-complete in the first useful copy. Real SX1278 direct-mode captures can lose the
-exact initial phase/sync even when other V2.1 sensors decode normally, so the
-UVR128 recovery branch also scans the stored end-of-burst intervals across
-possible start positions and both physical polarities. This fallback is bounded
-to sensor code `EC70` and still requires valid inverse/original pairs and the
-V2.1 checksum before a packet can enter the normal RF queue. OSV3, Technoline
-and the normal V2.1 streaming decoder are not changed by this recovery path.
+## Per-transmitter session quality
 
-The hardware-validation branch applies this recovery as an idempotent PlatformIO
-pre-build step. Raw burst capture needed by EC70 is active whenever Oregon is
-active, even if optional `BURST EXTRA` is off; the Technoline burst decoder
-remains gated by the existing setting. Hardware validation with a real UVR128 is
-still required before folding the recovery directly into the legacy source.
+Oregon session quality is transmitter-aware. A physical transmitter is identified by:
+
+- sensor family/type;
+- sensor code;
+- channel;
+- rolling code.
+
+Each row has separate received/expected/lost/quality information and latest RSSI. OSV3 and V2.1 traffic from different transmitters therefore does not share a single counter.
+
+Nominal cadence is used only for known sensor families; guarded observed cadence is used for unknown-but-supported cases only after sufficient samples. The UI does not invent a percentage when cadence is unavailable.
+
+## UVR128 / EC70 behavior
+
+UVR128 sends a longer transmission containing two copies without the usual inter-message pause. The useful measurement and checksum are already complete in the first valid copy.
+
+Real SX1278 direct-mode captures can lose the exact beginning of the short V2.1 preamble or start at an uncertain physical phase even when other V2.1 sensors decode normally. The dedicated recovery path therefore scans stored end-of-burst intervals across candidate start positions and both physical polarities.
+
+The fallback is intentionally narrow:
+
+- sensor code must resolve to `EC70`;
+- valid inverse/original Manchester pairs are still required;
+- the normal V2.1 checksum must pass;
+- only then can the recovered frame enter the normal RF queue.
+
+OSV3, Technoline and the normal V2.1 streaming decoder remain separate from this fallback.
+
+## Hardware validation status
+
+A real UVR128 has been successfully received on the consolidated branch together with the existing Oregon and Technoline sensors. The EC70 recovery is therefore no longer only a host-side hypothesis; it has field evidence on the target T3/SX1278 setup.
+
+The branch still remains a hardware-validation line until the full combined Web/MQTT/OLED behavior is accepted before merge to `main`.
+
+## Build-time recovery patch
+
+The current branch applies the UVR128 recovery as an idempotent PlatformIO pre-build step. Minimum raw interval collection required by the EC70 fallback remains available when Oregon reception is active even with optional `BURST EXTRA` diagnostics disabled.
+
+This is intentional: `BURST EXTRA` controls additional diagnostics, while the small EC70 recovery input is part of the functional receiver path on this branch.
 
 ## Reference vectors
 
-- `AEC4015F07300D30`: EC40, CH1, 3.7 °C, checksum `3D`;
-- `A1D20485C480882835`: 1D20, CH3, battery low, -8.4 °C, 28%, checksum `53`.
+Examples used by the host-side validation include:
 
-The host-side test also exercises UVR128 with a clipped preamble and with an
-artificial phase offset/junk prefix, requiring the phase-scan recovery to
-reconstruct the original checksum-valid `EC70` frame.
+```text
+AEC4015F07300D30
+```
 
-Run `python scripts/test_oregon_v21.py` to validate framing, checksum and field
-positions. These host-side tests do not substitute for reception tests with real
-433.92 MHz hardware.
+EC40, CH1, 3.7 °C, checksum `3D`.
+
+```text
+A1D20485C480882835
+```
+
+1D20, CH3, battery low, -8.4 °C, 28%, checksum `53`.
+
+The host-side suite also exercises UVR128 with clipped preamble and artificial phase offset/junk prefix. The recovery must reconstruct the original checksum-valid EC70 frame and reject corrupted vectors.
+
+Run:
+
+```bash
+python scripts/test_oregon_v21.py
+```
+
+Build #92 reported:
+
+```text
+6 valid, 6 corrupt rejected, UVR128 clipped-preamble + phase-scan recovery OK
+```
+
+Host vectors complement but do not replace RF hardware tests.
+
+## Dashboard / MQTT consequences
+
+V2.1 transmitters use the same uniform RSSI/battery presentation as supported OSV3 transmitters.
+
+When MQTT fields are enabled, a V2.1 transmitter can publish through the generic per-transmitter namespace:
+
+```text
+oregon/sensor/<CODE>/ch<CHANNEL>/id<ROLLING>/...
+```
+
+UVR128 also retains the dedicated compatibility namespace under `oregon/uv/EC70/...`.
 
 ## Sources
 
