@@ -202,5 +202,6 @@ bool tryUvr128BurstRecovery() {
     print("UVR128 recovery: patched oregon_receiver.cpp")
 
 
-if __name__ == "__main__":
-    main()
+# PlatformIO executes extra_scripts through SCons exec(), so __name__ is not
+# guaranteed to be "__main__". Execute the idempotent patch unconditionally.
+main()
