@@ -8,7 +8,8 @@ folded into oregon_receiver.cpp and this helper removed.
 
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+Import("env")  # PlatformIO/SCons injects this symbol.
+ROOT = Path(env.subst("$PROJECT_DIR"))
 PATH = ROOT / "src" / "oregon_receiver.cpp"
 
 
