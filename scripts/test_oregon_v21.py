@@ -52,7 +52,8 @@ def physical_intervals(frame: bytes):
     return physical_intervals_from_bits(logical_bits(frame))
 
 
-def decode_intervals_bits(intervals, expected_bits: int, stored_bytes: int) -> bytes:
+def decode_intervals_bits(intervals, expected_bits: int, stored_bytes: int,
+                          min_preamble_longs: int = 15) -> bytes:
     preamble_longs = 0
     decoding = False
     short_pending = False
@@ -64,7 +65,7 @@ def decode_intervals_bits(intervals, expected_bits: int, stored_bytes: int) -> b
             if kind == "L":
                 preamble_longs += 1
                 continue
-            if kind == "S" and preamble_longs >= 15:
+            if kind == "S" and preamble_longs >= min_preamble_longs:
                 decoding = True
             else:
                 preamble_longs = 0
@@ -177,13 +178,18 @@ def main() -> None:
     assert (nibble(rgr968, 10) * 100 + nibble(rgr968, 9) * 10 + nibble(rgr968, 11)) / 10 == 12.3
     assert (nibble(rgr968, 16) * 10000 + nibble(rgr968, 15) * 1000 +
             nibble(rgr968, 14) * 100 + nibble(rgr968, 13) * 10 + nibble(rgr968, 12)) / 10 == 123.4
+
     uvr128, uvr_bits = uvr128_double_message()
-    # Il decoder live accetta la prima copia non appena misura e checksum sono
-    # completi; il resto della trasmissione e' ridondanza e non deve bloccarla.
+    # UVR128 e' il caso piu' critico: il data slicer puo' iniziare tardi e
+    # consegnare solo la coda del preambolo. Simuliamo 12 bit fisici alternati
+    # (11 LONG teorici) e richiediamo la nuova soglia recovery di 10 LONG.
+    # La sicurezza non dipende dal preambolo: coppie Manchester, EC70 e checksum
+    # devono comunque risultare validi prima dell'accettazione.
     decoded_uvr128 = decode_intervals_bits(
-        physical_intervals_from_bits(uvr_bits, preamble_physical_bits=16),
+        physical_intervals_from_bits(uvr_bits, preamble_physical_bits=12),
         64,
         len(uvr128),
+        min_preamble_longs=10,
     )
     assert decoded_uvr128 == uvr128
     assert checksum_ok(decoded_uvr128, 13)
@@ -192,12 +198,13 @@ def main() -> None:
     corrupt_uvr_bits = uvr_bits.copy()
     corrupt_uvr_bits[40] ^= 1
     corrupt_uvr128 = decode_intervals_bits(
-        physical_intervals_from_bits(corrupt_uvr_bits, preamble_physical_bits=16),
+        physical_intervals_from_bits(corrupt_uvr_bits, preamble_physical_bits=12),
         64,
         len(uvr128),
+        min_preamble_longs=10,
     )
     assert not checksum_ok(corrupt_uvr128, 13)
-    print("Oregon V2.1 vectors: 6 valid, 6 corrupt rejected, UVR128 first-copy acceptance OK")
+    print("Oregon V2.1 vectors: 6 valid, 6 corrupt rejected, UVR128 clipped-preamble recovery OK")
 
 
 if __name__ == "__main__":
