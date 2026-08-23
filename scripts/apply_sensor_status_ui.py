@@ -6,6 +6,7 @@ No decoder logic is touched. The Oregon session registry gains one compact
 battery-state byte per active transmitter; RSSI already exists. The optional
 OLED sensor-health page rotates five rows at a time when more than five
 transmitters are active, preserving readability on the 128x64 display.
+Validated by the standard PlatformIO matrix before hardware deployment.
 """
 
 from pathlib import Path
