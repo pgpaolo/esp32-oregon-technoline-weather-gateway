@@ -6,7 +6,9 @@
 #include "station_state.h"
 
 struct SdLoggerConfig {
-    bool enabled{true};
+    // Fail-safe default: installing the SD-capable firmware without a card
+    // must not alter the normal gateway path. Enable explicitly from Web.
+    bool enabled{false};
     bool logOregon{true};
     bool logTechnoline{true};
     bool logBme280{true};
