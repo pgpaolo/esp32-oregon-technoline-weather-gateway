@@ -55,7 +55,9 @@ uint8_t queueDepth() {
 }
 
 bool queueLine(const char *line) {
-    if (!cfg.enabled || !line || !line[0]) return false;
+    // An absent/unmounted card is a normal optional-hardware state: do not
+    // consume RAM or count artificial queue drops while storage is offline.
+    if (!cfg.enabled || !status.mounted || !line || !line[0]) return false;
     const uint8_t next = static_cast<uint8_t>((queueHead + 1U) % QUEUE_SIZE);
     if (next == queueTail) {
         status.recordsDropped++;
@@ -224,7 +226,7 @@ void valueOrBlank(char *out, size_t len, bool valid, float v, uint8_t decimals =
 }
 
 void queueBmeSnapshot(const StationState &station) {
-    if (!cfg.enabled || !cfg.logBme280) return;
+    if (!cfg.enabled || !cfg.logBme280 || !status.mounted) return;
     if (!station.indoorTemperatureValid && !station.indoorHumidityValid && !station.pressureValid) return;
 
     char ts[24]; isoTimestamp(ts, sizeof(ts));
@@ -243,7 +245,7 @@ void queueBmeSnapshot(const StationState &station) {
 }
 
 void queueLightningSnapshot() {
-    if (!cfg.enabled || !cfg.logAs3935) return;
+    if (!cfg.enabled || !cfg.logAs3935 || !status.mounted) return;
     const LightningState s = getLightningState();
     if (!s.enabled && !s.detected && s.irqTotal == 0) return;
 
@@ -270,6 +272,8 @@ void unmount() {
     status.totalBytes = 0;
     status.usedBytes = 0;
     status.currentFile[0] = '\0';
+    queueHead = queueTail = 0;
+    status.queueDepth = 0;
 }
 
 } // namespace
@@ -322,7 +326,7 @@ bool remountSdLogger() {
 }
 
 void enqueueSdOregon(const WeatherReading &r, const OregonPacket &packet) {
-    if (!cfg.enabled || !cfg.logOregon) return;
+    if (!cfg.enabled || !cfg.logOregon || !status.mounted) return;
 
     char ts[24]; isoTimestamp(ts, sizeof(ts));
     char code[8]; snprintf(code, sizeof(code), "%04X", r.sensorCode);
@@ -350,7 +354,7 @@ void enqueueSdOregon(const WeatherReading &r, const OregonPacket &packet) {
 }
 
 void enqueueSdTechnoline(const LaCrosseReading &r, const LaCrossePacket &packet) {
-    if (!cfg.enabled || !cfg.logTechnoline) return;
+    if (!cfg.enabled || !cfg.logTechnoline || !status.mounted) return;
 
     char ts[24]; isoTimestamp(ts, sizeof(ts));
     char raw[LACROSSE_WS23XX_NIBBLES + 1U]{}; rawTechnoline(packet, raw, sizeof(raw));
@@ -374,7 +378,7 @@ void enqueueSdTechnoline(const LaCrosseReading &r, const LaCrossePacket &packet)
 
 void serviceSdLogger(const StationState &station) {
     status.timeSynced = timeValid();
-    if (!cfg.enabled) return;
+    if (!cfg.enabled || !status.mounted) return;
 
     const uint32_t now = millis();
     const uint32_t snapshotMs = static_cast<uint32_t>(cfg.snapshotIntervalSec) * 1000UL;
@@ -384,7 +388,6 @@ void serviceSdLogger(const StationState &station) {
         queueLightningSnapshot();
     }
 
-    if (!status.mounted) return;
     if (static_cast<uint32_t>(now - lastWriteServiceMs) >= WRITE_PERIOD_MS) {
         lastWriteServiceMs = now;
         appendBatch();
