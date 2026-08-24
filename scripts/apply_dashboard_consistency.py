@@ -22,13 +22,6 @@ if tech_start >= 0 and tech_end > tech_start:
     panel = text[tech_start:tech_end]
     uv_pattern = re.compile(
         r'<section\b[^>]*class="[^"]*uvCard[^"]*"[^>]*>.*?'
-        r'(?:WS-2305|Il protocollo WS-23xx non contiene un dato UV\.).*?'</n        r'</section>',
-        re.S,
-    )
-    # The split literal above is avoided below with a second robust expression;
-    # keep matching tightly inside the Technoline panel only.
-    uv_pattern = re.compile(
-        r'<section\b[^>]*class="[^"]*uvCard[^"]*"[^>]*>.*?'
         r'(?:WS-2305|Il protocollo WS-23xx non contiene un dato UV\.).*?'</section>',
         re.S,
     )
