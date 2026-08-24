@@ -9,9 +9,11 @@ on:
       - feature/oregon-v2-compact-web
       - feature/oregon-v21-legacy-sensors
       - feature/sd-datalogger
+      - feature/v21-cycle-quality-analyzer
   pull_request:
     branches:
       - main
+      - feature/v21-uvr128-thgr-quality-fix
   workflow_dispatch:
 
 permissions:
@@ -63,6 +65,13 @@ jobs:
         run: python scripts/test_oregon_v21.py
 
       - name: Build firmware
+        run: pio run -e "${{ matrix.environment }}"
+
+      # The PlatformIO pre-scripts intentionally patch generated source in-place.
+      # A second build in the same checkout reproduces the Windows/local workflow
+      # and guards against duplicate generated SD handlers/UI blocks.
+      - name: Rebuild same workspace (SD idempotence)
+        if: matrix.environment == 't3-v161-433'
         run: pio run -e "${{ matrix.environment }}"
 
       - name: Verify real firmware.bin size
