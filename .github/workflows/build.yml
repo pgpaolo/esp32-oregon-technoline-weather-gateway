@@ -8,6 +8,7 @@ on:
       - feature/oregon-3ch-thermohygro
       - feature/oregon-v2-compact-web
       - feature/oregon-v21-legacy-sensors
+      - feature/sd-datalogger
   pull_request:
     branches:
       - main
