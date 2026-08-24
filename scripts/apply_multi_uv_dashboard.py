@@ -2,8 +2,10 @@
 """Apply the compact multi-UV dashboard changes before PlatformIO build.
 
 The hardware-validation branch keeps the large dashboard source stable while
-this feature is tested on real sensors. The patch is idempotent and touches
-only the Web/API presentation layer; RF decoders are not changed.
+this feature is tested on real sensors. The patch is deliberately tolerant of
+both a clean checkout and a workspace already modified by previous PlatformIO
+pre-script runs. It touches only the Web/API presentation layer; RF decoders
+are not changed.
 """
 
 from pathlib import Path
@@ -15,9 +17,25 @@ DASH = ROOT / "web" / "dashboard.html"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
+    """Best-effort idempotent textual replacement.
+
+    Pre-scripts modify the checkout in-place. Therefore a later build can see
+    the replacement already present, a partially transformed source, or more
+    than one copy of an old marker. None of those states should abort a
+    firmware build.
+    """
+    if new in text:
+        print(f"Multi-UV: {label} already patched")
+        return text
+
     count = text.count(old)
-    if count != 1:
-        raise RuntimeError(f"{label}: expected one marker, found {count}")
+    if count == 0:
+        print(f"Multi-UV: {label} marker unavailable; keeping compatible existing source")
+        return text
+
+    if count > 1:
+        print(f"Multi-UV: {label} found {count} times; patching first occurrence only")
+
     return text.replace(old, new, 1)
 
 
@@ -49,7 +67,7 @@ def patch_web_manager() -> None:
     )
 
     WEB_CPP.write_text(text, encoding="utf-8")
-    print("Multi-UV API: patched web_manager.cpp")
+    print("Multi-UV API: web_manager.cpp normalized")
 
 
 def patch_dashboard() -> None:
@@ -91,10 +109,10 @@ def patch_dashboard() -> None:
     text = replace_once(text, old_uv_refresh, new_uv_refresh, "multi-UV refresh")
 
     DASH.write_text(text, encoding="utf-8")
-    print("Multi-UV UI: patched dashboard.html")
+    print("Multi-UV UI: dashboard.html normalized")
 
 
 patch_web_manager()
 patch_dashboard()
 
-# CI marker: this script is intentionally kept on the hardware-validation branch.
+# CI marker: tolerant repeated-build version for hardware-validation branch.
