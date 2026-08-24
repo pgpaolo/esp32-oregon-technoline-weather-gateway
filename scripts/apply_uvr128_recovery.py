@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Apply isolated Oregon V2.1 recovery for UVR128/EC70 and THGR122NX/1D20.
 
-The normal streaming V2.1 decoder is deliberately left unchanged.  The recovery
-runs only at the end of an already captured Oregon burst and accepts only EC70
-or 1D20 frames with a valid protocol checksum.  This keeps the proven OSV3,
-Technoline and other V2.1 paths untouched while recovering clipped phase/pair
-starts seen on real hardware.
+UVR128 is a special V2.1 transmitter: the complete message is repeated with no
+inter-copy pause. The second 16-one preamble therefore lives inside the same RF
+burst. Keep enough raw edges to preserve both copies, while the actual recovery
+continues to accept only EC70/1D20 frames with a valid protocol checksum.
+
+The normal streaming V2.1, OSV3 and Technoline decoders remain unchanged.
 """
 
 from pathlib import Path
 
-Import("env")  # PlatformIO/SCons injects this symbol.
+Import("env")
 ROOT = Path(env.subst("$PROJECT_DIR"))
 PATH = ROOT / "src" / "oregon_receiver.cpp"
 
@@ -25,20 +26,45 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 def main() -> None:
     text = PATH.read_text(encoding="utf-8")
 
-    # Idempotent: the second PlatformIO environment can reuse the source tree.
     if "bool decodeV21TargetBurstFromStart(" in text:
         print("V2.1 EC70/1D20 recovery: source already patched")
         return
+
+    # UVR128 can produce one continuous double-copy V2.1 burst. A synthetic
+    # standards-compliant EC70 double message already reaches ~386 intervals,
+    # while real slicer distortion/noise can add more edges. 672 covers the
+    # theoretical worst region with margin and costs RAM only, not app Flash.
+    text = replace_once(
+        text,
+        "constexpr uint16_t BURST_EDGE_BUFFER_SIZE = 384;",
+        "constexpr uint16_t BURST_EDGE_BUFFER_SIZE = 672;",
+        "UVR128 double-copy edge buffer",
+    )
+
+    # Compensate the larger raw edge buffer by keeping shorter diagnostic
+    # histories. These are display/debug history only and do not affect decode.
+    text = replace_once(
+        text,
+        "constexpr uint8_t BURST_HISTORY_SIZE = 24;",
+        "constexpr uint8_t BURST_HISTORY_SIZE = 12;",
+        "compact universal burst history",
+    )
+    if "constexpr uint8_t WGR_PROBE_HISTORY_SIZE = 24;" in text:
+        text = text.replace(
+            "constexpr uint8_t WGR_PROBE_HISTORY_SIZE = 24;",
+            "constexpr uint8_t WGR_PROBE_HISTORY_SIZE = 8;",
+            1,
+        )
 
     function_marker = "bool looksLikeTechnolineBurst(const RfBurstRecord &rec) {"
     recovery = r'''// -----------------------------------------------------------------------------
 // Oregon V2.1 targeted phase recovery: UVR128/EC70 + THGR122NX/1D20
 //
-// The streaming V2.1 decoder remains untouched.  Real EC70 and 1D20 bursts can
-// reach the SX1278 slicer with the first edge/Manchester phase clipped.  At the
-// end of the bounded raw burst this fallback scans candidate starts.  It exits
-// after 4/20 logical bits unless the payload is exactly EC70 or 1D20 and only a
-// valid V2.1 checksum is allowed into the packet queue.
+// UVR128 repeats the complete V2.1 message without a pause. The bounded burst
+// buffer is therefore deliberately large enough to retain the second preamble
+// and second payload. This scanner may start at any edge and consequently can
+// recover either copy when the first preamble was clipped by the SX1278 slicer.
+// Only exact EC70/1D20 + checksum-valid frames can reach the packet queue.
 // -----------------------------------------------------------------------------
 bool decodeV21TargetBurstFromStart(const BurstAccumulator &burst,
                                    uint16_t startIndex,
@@ -95,7 +121,7 @@ bool decodeV21TargetBurstFromStart(const BurstAccumulator &burst,
         if (pairFirst == physicalBit) return false;
         havePairFirst = false;
 
-        // Oregon V2.1 transmits [inverse, original].
+        // V2.1 transmits [inverse, original], so the second physical bit is data.
         if (physicalBit) {
             const uint8_t byteIndex = static_cast<uint8_t>(decodedBits / 8U);
             const uint8_t bitIndex = static_cast<uint8_t>(decodedBits % 8U);
@@ -106,21 +132,15 @@ bool decodeV21TargetBurstFromStart(const BurstAccumulator &burst,
         if (decodedBits == 4U && (frame[0] & 0xF0U) != 0xA0U) return false;
         if (decodedBits == 20U) {
             sensorCode = rawSensorCode(frame);
-            if (sensorCode == 0xEC70U) {
-                expectedBytes = 8U;
-            } else if (sensorCode == 0x1D20U) {
-                expectedBytes = 9U;
-            } else {
-                return false;
-            }
+            if (sensorCode == 0xEC70U) expectedBytes = 8U;
+            else if (sensorCode == 0x1D20U) expectedBytes = 9U;
+            else return false;
             expectedBits = static_cast<uint16_t>(expectedBytes) * 8U;
         }
         if (expectedBits != 0U && decodedBits >= expectedBits) break;
     }
 
     if (expectedBits == 0U || decodedBits != expectedBits) return false;
-    if (sensorCode != 0xEC70U && sensorCode != 0x1D20U) return false;
-
     stats.v21Candidates++;
     if (sensorCode == 0xEC70U) stats.v21UvCandidates++;
     const uint8_t csPos = sensorCode == 0xEC70U ? 13U : 16U;
@@ -128,40 +148,31 @@ bool decodeV21TargetBurstFromStart(const BurstAccumulator &burst,
         stats.v21ChecksumFail++;
         return false;
     }
-
     return queuePacket(frame, expectedBytes, OregonDecodeSource::EdgeTimingV21);
 }
 
 bool tryV21TargetBurstRecovery() {
     if (burstCurrent.storedEdges < 48U ||
-        burstCurrent.storedEdges > BURST_EDGE_BUFFER_SIZE) {
-        return false;
-    }
+        burstCurrent.storedEdges > BURST_EDGE_BUFFER_SIZE) return false;
 
     const uint16_t lastStart = burstCurrent.storedEdges > 20U
         ? static_cast<uint16_t>(burstCurrent.storedEdges - 20U) : 0U;
 
-    // First pass keeps the original duration-only classifier that already
-    // recovered real UVR128 frames.
+    // Duration-only pass first: smallest and historically successful path.
     for (uint16_t start = 0; start < lastStart; ++start) {
         for (uint8_t initial = 0; initial < 2U; ++initial) {
             if (decodeV21TargetBurstFromStart(
-                    burstCurrent, start, initial, false, false)) {
-                return true;
-            }
+                    burstCurrent, start, initial, false, false)) return true;
         }
     }
 
-    // If phase recovery still fails, use the RF-level-aware ON/OFF timing in
-    // both polarities.  This is restricted to EC70/1D20 + checksum, so other
-    // sensors and the normal streaming decoder are unaffected.
+    // RF-level-aware fallback, both polarities. Because the complete UVR128
+    // double burst is now retained, this pass can reach the second preamble.
     for (uint8_t inv = 0; inv < 2U; ++inv) {
         for (uint16_t start = 0; start < lastStart; ++start) {
             for (uint8_t initial = 0; initial < 2U; ++initial) {
                 if (decodeV21TargetBurstFromStart(
-                        burstCurrent, start, initial, true, inv != 0U)) {
-                    return true;
-                }
+                        burstCurrent, start, initial, true, inv != 0U)) return true;
             }
         }
     }
@@ -180,11 +191,9 @@ bool tryV21TargetBurstRecovery() {
     // demodulatore PWM molto leggero (rtl_433-style). Questo recovery offline
     // e' opzionale e serve soltanto a recuperare un bordo iniziale/finale perso.
 '''
-    finalize_replacement = '''    // EC70/1D20 V2.1 recovery is independent from BURST EXTRA. Technoline
-    // burst decoding below stays gated exactly as before.
-    if (rfMode != RfProtocolMode::LaCrosse) {
-        tryV21TargetBurstRecovery();
-    }
+    finalize_replacement = '''    // EC70/1D20 recovery is independent from BURST DEBUG. Technoline
+    // offline recovery below stays explicitly gated by the debug option.
+    if (rfMode != RfProtocolMode::LaCrosse) tryV21TargetBurstRecovery();
 
 ''' + finalize_marker
     text = replace_once(
@@ -202,8 +211,8 @@ bool tryV21TargetBurstRecovery() {
     service_start_replacement = '''    uint16_t durationUs = 0;
     uint8_t level = 0;
     uint16_t processed = 0;
-    // EC70/1D20 recovery needs the bounded raw Oregon burst even when the
-    // optional generic BURST EXTRA decoder is OFF.
+    // The same bounded burst capture serves EC70/1D20 recovery and, when
+    // enabled, the universal BURST DEBUG view. No second raw buffer is needed.
     const bool v21TargetBurstCapture =
         (rfMode == RfProtocolMode::Oregon || rfMode == RfProtocolMode::Dual);
     while (processed < 1536 && popEdge(durationUs, level)) {
@@ -221,8 +230,8 @@ bool tryV21TargetBurstRecovery() {
             processRfBurstEdge(durationUs, level);
         }
 '''
-    capture_replacement = '''        // Keep a bounded raw burst for EC70/1D20 recovery whenever Oregon is
-        // active. Generic/Technoline burst decoding remains gated in finalize.
+    capture_replacement = '''        // One shared raw burst accumulator: V2.1 support always gets the data it
+        // needs; BURST DEBUG/AUTO only add diagnostic or optional recovery work.
         if (v21TargetBurstCapture || burstExtraEnabled || burstStats.autoActive) {
             processRfBurstEdge(durationUs, level);
         }
@@ -231,7 +240,7 @@ bool tryV21TargetBurstRecovery() {
         text,
         capture_marker,
         capture_replacement,
-        "V2.1 target edge capture",
+        "shared burst edge capture",
     )
 
     finalization_marker = '''    if ((burstExtraEnabled || burstStats.autoActive) && burstCurrent.active) {
@@ -242,13 +251,11 @@ bool tryV21TargetBurstRecovery() {
         text,
         finalization_marker,
         finalization_replacement,
-        "V2.1 target burst finalization",
+        "shared burst finalization",
     )
 
     PATH.write_text(text, encoding="utf-8")
-    print("V2.1 EC70/1D20 recovery: patched oregon_receiver.cpp")
+    print("V2.1 EC70/1D20 recovery: no-gap UVR128 burst preserved (672 edges)")
 
 
-# PlatformIO executes extra_scripts through SCons exec(), so __name__ is not
-# guaranteed to be "__main__". Execute the idempotent patch unconditionally.
 main()
