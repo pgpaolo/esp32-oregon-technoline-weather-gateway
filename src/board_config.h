@@ -22,6 +22,13 @@
 #define BOARD_LED_ON            HIGH
 #define BATTERY_ADC_PIN         1
 
+// LILYGO T3-S3 V1.2/V1.3: bus SPI dedicato microSD.
+#define SDCARD_SUPPORTED        1
+#define SDCARD_MOSI_PIN         11
+#define SDCARD_MISO_PIN         2
+#define SDCARD_SCLK_PIN         14
+#define SDCARD_CS_PIN           13
+
 #else
 
 // Default: T3/LoRa32 V1.6.1 ESP32 + SX1278 433 MHz.
@@ -41,6 +48,13 @@
 #define BOARD_LED_PIN           25
 #define BOARD_LED_ON            HIGH
 #define BATTERY_ADC_PIN         35
+
+// LILYGO T3 V1.6.1: bus SPI dedicato microSD.
+#define SDCARD_SUPPORTED        1
+#define SDCARD_MOSI_PIN         15
+#define SDCARD_MISO_PIN         2
+#define SDCARD_SCLK_PIN         14
+#define SDCARD_CS_PIN           13
 
 #endif
 
