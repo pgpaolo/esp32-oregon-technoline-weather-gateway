@@ -21,8 +21,7 @@ tech_end = text.find('<div class="panel stationBme', tech_start) if tech_start >
 if tech_start >= 0 and tech_end > tech_start:
     panel = text[tech_start:tech_end]
     uv_pattern = re.compile(
-        r'<section\b[^>]*class="[^"]*uvCard[^"]*"[^>]*>.*?'
-        r'(?:WS-2305|Il protocollo WS-23xx non contiene un dato UV\.).*?'</section>',
+        r'''<section\b[^>]*class="[^"]*uvCard[^"]*"[^>]*>.*?(?:WS-2305|Il protocollo WS-23xx non contiene un dato UV\.).*?</section>''',
         re.S,
     )
     panel2, n = uv_pattern.subn('', panel)
