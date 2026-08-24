@@ -3,6 +3,7 @@
 
 BIT_MASK = (0x10, 0x20, 0x40, 0x80, 0x01, 0x02, 0x04, 0x08)
 NIBBLE_MASK = (0x01, 0x02, 0x04, 0x08)
+UVR128_BURST_EDGE_BUFFER = 672
 
 
 def nibble(frame: bytes, index: int) -> int:
@@ -17,7 +18,6 @@ def checksum_ok(frame: bytes, position: int) -> bool:
 
 
 def make_frame(nibbles: list[int], checksum_position: int) -> bytes:
-    """Complete an even-sized nibble vector with the protocol checksum."""
     assert checksum_position + 1 < len(nibbles)
     checksum = sum(nibbles[1:checksum_position]) & 0xFF
     nibbles[checksum_position] = checksum & 0x0F
@@ -100,7 +100,6 @@ def decode_intervals(intervals, expected_bytes: int) -> bytes:
 
 
 def recover_uvr128_from_intervals(intervals):
-    """Mimic the embedded recovery: arbitrary edge start + both polarities."""
     for start in range(len(intervals)):
         for initial in (0, 1):
             last = initial
@@ -119,7 +118,6 @@ def recover_uvr128_from_intervals(intervals):
                     i += 2
                 else:
                     break
-
                 if not have_first:
                     pair_first = physical
                     have_first = True
@@ -128,12 +126,10 @@ def recover_uvr128_from_intervals(intervals):
                     break
                 have_first = False
                 decoded.append(physical)
-
                 if len(decoded) == 4:
                     first_nibble = sum(bit << k for k, bit in enumerate(decoded))
                     if first_nibble != 0xA:
                         break
-
             if len(decoded) < 64:
                 continue
             frame = bytearray(8)
@@ -176,19 +172,13 @@ def temperature(frame: bytes) -> float:
 def synthetic_vectors():
     thgr968 = make_frame(
         [0xA, 0x1, 0xD, 0x3, 0x0, 0x2, 0x4, 0x2, 0x0,
-         0x4, 0x3, 0x2, 0x0, 0x6, 0x5, 0x0, 0x0, 0x0],
-        16,
-    )
+         0x4, 0x3, 0x2, 0x0, 0x6, 0x5, 0x0, 0x0, 0x0], 16)
     wgr968 = make_frame(
         [0xA, 0x3, 0xD, 0x0, 0x0, 0x1, 0x2, 0x3, 0x0,
-         0x5, 0x2, 0x2, 0x2, 0x5, 0x2, 0x3, 0x4, 0x3, 0x0, 0x0],
-        18,
-    )
+         0x5, 0x2, 0x2, 0x2, 0x5, 0x2, 0x3, 0x4, 0x3, 0x0, 0x0], 18)
     rgr968 = make_frame(
         [0xA, 0x2, 0xD, 0x1, 0x0, 0x1, 0x2, 0x3, 0x0,
-         0x2, 0x1, 0x3, 0x4, 0x3, 0x2, 0x1, 0x0, 0x0, 0x0, 0x0],
-        17,
-    )
+         0x2, 0x1, 0x3, 0x4, 0x3, 0x2, 0x1, 0x0, 0x0, 0x0, 0x0], 17)
     return thgr968, wgr968, rgr968
 
 
@@ -208,8 +198,7 @@ def main() -> None:
         assert not checksum_ok(corrupted, checksum_position)
 
     thgr968, wgr968, rgr968 = synthetic_vectors()
-    legacy_vectors = ((thgr968, 16), (wgr968, 18), (rgr968, 17))
-    for frame, checksum_position in legacy_vectors:
+    for frame, checksum_position in ((thgr968, 16), (wgr968, 18), (rgr968, 17)):
         assert checksum_ok(frame, checksum_position)
         assert decode_intervals(physical_intervals(frame), len(frame)) == frame
         corrupted = bytearray(frame)
@@ -232,7 +221,15 @@ def main() -> None:
     assert checksum_ok(decoded_uvr128, 13)
     assert nibble(decoded_uvr128, 10) * 10 + nibble(decoded_uvr128, 9) == 12
 
-    # Phase/polarity recovery: junk in front + partial preamble removed.
+    # Real UVR128 V2.1 repeats the full message without a pause. Preserve the
+    # whole combined burst so the second preamble/payload remains available if
+    # the first copy begins clipped. The old 384-edge budget is deliberately
+    # shown to be tight for a standards-shaped synthetic message.
+    full_double = physical_intervals_from_bits(uvr_bits, preamble_physical_bits=32)
+    assert len(full_double) > 384
+    assert len(full_double) <= UVR128_BURST_EDGE_BUFFER
+    assert recover_uvr128_from_intervals(full_double) == uvr128
+
     raw = physical_intervals_from_bits(uvr_bits, preamble_physical_bits=16)
     noisy = ["S", "S", "L", "S", "S"] + raw[9:]
     assert recover_uvr128_from_intervals(noisy) == uvr128
@@ -241,11 +238,9 @@ def main() -> None:
     corrupt_uvr_bits[40] ^= 1
     corrupt_uvr128 = decode_intervals_bits(
         physical_intervals_from_bits(corrupt_uvr_bits, preamble_physical_bits=16),
-        64,
-        len(uvr128),
-    )
+        64, len(uvr128))
     assert not checksum_ok(corrupt_uvr128, 13)
-    print("Oregon V2.1 vectors: 6 valid, 6 corrupt rejected, UVR128 clipped-preamble + phase-scan recovery OK")
+    print("Oregon V2.1 vectors: 6 valid, 6 corrupt rejected, UVR128 no-gap double burst + clipped phase recovery OK")
 
 
 if __name__ == "__main__":
