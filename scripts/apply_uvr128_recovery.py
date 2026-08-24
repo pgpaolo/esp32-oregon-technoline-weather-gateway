@@ -258,6 +258,17 @@ def main() -> None:
         start = text.index(RECOVERY_FN_MARKER)
         end = text.index(FUNCTION_MARKER, start)
         text = text[:start] + RECOVERY_FUNCTIONS + text[end:]
+
+        # V1 installed a no-argument finalize hook.  Upgrade that hook together
+        # with the generated functions so a dirty developer tree still compiles
+        # immediately after pulling this script update.
+        old_finalize_call = "        tryV21TargetBurstRecovery();\n"
+        new_finalize_call = "        tryV21TargetBurstRecovery(rec);\n"
+        if old_finalize_call in text:
+            text = text.replace(old_finalize_call, new_finalize_call, 1)
+        if new_finalize_call not in text:
+            raise RuntimeError("V2.1 target recovery upgrade: finalize hook not found")
+
         PATH.write_text(text, encoding="utf-8")
         print("V2.1 EC70/1D20 recovery: upgraded generated V1 block -> V2")
         return
