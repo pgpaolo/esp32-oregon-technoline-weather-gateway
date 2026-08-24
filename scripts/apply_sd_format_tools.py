@@ -15,12 +15,30 @@ def patch_once(path, old, new, label):
     print(f"SD format tools: patched {path} ({label})")
 
 
-# ---- sd_logger.h: expose negotiated SPI speed and format action ----
+def replace_if_present(path, old, new, label):
+    p = root / path
+    text = p.read_text(encoding="utf-8")
+    if new in text:
+        return True
+    if old not in text:
+        return False
+    p.write_text(text.replace(old, new, 1), encoding="utf-8")
+    print(f"SD format tools: upgraded {path} ({label})")
+    return True
+
+
+# ---- sd_logger.h: expose negotiated SPI speed, diagnostics and format action ----
 patch_once(
     "src/sd_logger.h",
     "    uint32_t mountAttempts{0};\n",
     "    uint32_t mountAttempts{0};\n    uint32_t spiFrequencyHz{0};\n",
     "status SPI frequency",
+)
+patch_once(
+    "src/sd_logger.h",
+    "    uint32_t spiFrequencyHz{0};\n",
+    "    uint32_t spiFrequencyHz{0};\n    uint8_t spiAttemptMask{0};\n    uint8_t spiBeginFailMask{0};\n    uint8_t initCode{0};\n",
+    "compact mount diagnostics",
 )
 patch_once(
     "src/sd_logger.h",
@@ -30,7 +48,7 @@ patch_once(
 )
 
 
-# ---- sd_logger.cpp: adaptive 4/2/1 MHz mount + guarded FAT init/erase ----
+# ---- sd_logger.cpp: LILYGO-style HSPI + adaptive 4/2/1/0.4 MHz mount ----
 patch_once(
     "src/sd_logger.cpp",
     "    status.usedBytes = 0;\n    status.currentFile[0] = '\\0';\n",
@@ -38,7 +56,7 @@ patch_once(
     "clear SPI frequency on unmount",
 )
 
-helpers = r'''bool mountSdAdaptive(bool formatIfEmpty) {
+old_helpers_v1 = r'''bool mountSdAdaptive(bool formatIfEmpty) {
 #if !SDCARD_SUPPORTED
     status.supported = false;
     return false;
@@ -71,37 +89,99 @@ helpers = r'''bool mountSdAdaptive(bool formatIfEmpty) {
 }
 
 bool clearSdTree(const char *path) {
-    while (true) {
-        File dir = SD.open(path);
-        if (!dir || !dir.isDirectory()) {
-            if (dir) dir.close();
-            return false;
+'''
+
+helpers_v2 = r'''bool mountSdAdaptive(bool formatIfEmpty) {
+#if !SDCARD_SUPPORTED
+    status.supported = false;
+    return false;
+#else
+    unmount();
+    status.mountAttempts++;
+    status.spiAttemptMask = 0;
+    status.spiBeginFailMask = 0;
+    status.initCode = 0;
+
+    // Match the official LILYGO T3 V1.6.x sequence exactly: HSPI gets only
+    // SCK/MISO/MOSI; CS remains owned by SD.begin(). Give old cards/socket
+    // contacts a short settle time before issuing the first command.
+    pinMode(SDCARD_CS_PIN, OUTPUT);
+    digitalWrite(SDCARD_CS_PIN, HIGH);
+    sdSpi.begin(SDCARD_SCLK_PIN, SDCARD_MISO_PIN, SDCARD_MOSI_PIN);
+    spiStarted = true;
+    delay(250);
+
+    const uint32_t freq[] = {4000000U, 2000000U, 1000000U, 400000U};
+    for (uint8_t i = 0; i < 4U; ++i) {
+        const uint8_t bit = static_cast<uint8_t>(1U << i);
+        status.spiAttemptMask |= bit;
+
+        // First normal attempt intentionally uses the same overload as the
+        // LILYGO Factory example. Formatting needs the extended overload.
+        const bool beginOk = (i == 0U && !formatIfEmpty)
+            ? SD.begin(SDCARD_CS_PIN, sdSpi)
+            : SD.begin(SDCARD_CS_PIN, sdSpi, freq[i], "/sd", 5, formatIfEmpty);
+
+        if (!beginOk) {
+            status.spiBeginFailMask |= bit;
+            status.initCode = 2; // SD.begin failed before a usable card existed.
+            Serial.printf("[SD] %lu kHz: begin FAIL\n",
+                          static_cast<unsigned long>(freq[i] / 1000UL));
+            SD.end();
+            digitalWrite(SDCARD_CS_PIN, HIGH);
+            delay(60);
+            continue;
         }
-        File entry = dir.openNextFile();
-        if (!entry) {
-            dir.close();
-            return true;
+
+        if (SD.cardType() == CARD_NONE) {
+            status.initCode = 3; // SPI/FAT path returned, but no card type.
+            Serial.printf("[SD] %lu kHz: CARD_NONE\n",
+                          static_cast<unsigned long>(freq[i] / 1000UL));
+            SD.end();
+            digitalWrite(SDCARD_CS_PIN, HIGH);
+            delay(60);
+            continue;
         }
-        const String child = entry.path();
-        const bool isDir = entry.isDirectory();
-        entry.close();
-        dir.close();
-        if (isDir) {
-            if (!clearSdTree(child.c_str()) || !SD.rmdir(child)) return false;
-        } else if (!SD.remove(child)) {
-            return false;
-        }
-        delay(0);
+
+        status.mounted = true;
+        status.spiFrequencyHz = freq[i];
+        status.initCode = 1;
+        refreshCapacity();
+        Serial.printf("[SD] OK %lu kHz, %lu MB\n",
+                      static_cast<unsigned long>(freq[i] / 1000UL),
+                      static_cast<unsigned long>(status.cardSizeBytes / (1024ULL * 1024ULL)));
+        return true;
     }
+
+    SD.end();
+    sdSpi.end();
+    spiStarted = false;
+    Serial.printf("[SD] mount FAIL try=0x%02X beginFail=0x%02X code=%u\n",
+                  static_cast<unsigned>(status.spiAttemptMask),
+                  static_cast<unsigned>(status.spiBeginFailMask),
+                  static_cast<unsigned>(status.initCode));
+    return false;
+#endif
 }
 
+bool clearSdTree(const char *path) {
 '''
-patch_once(
+
+# Upgrade a workspace already patched by the previous SD tool; otherwise insert
+# the current helper into a clean checkout. This keeps repeated local builds safe.
+if not replace_if_present(
     "src/sd_logger.cpp",
-    "} // namespace\n\nvoid initSdLogger() {\n",
-    helpers + "} // namespace\n\nvoid initSdLogger() {\n",
-    "adaptive mount helpers",
-)
+    old_helpers_v1,
+    helpers_v2,
+    "LILYGO HSPI mount sequence",
+):
+    helpers_insert = helpers_v2.rsplit("bool clearSdTree(const char *path) {\n", 1)[0]
+    patch_once(
+        "src/sd_logger.cpp",
+        "} // namespace\n\nvoid initSdLogger() {\n",
+        helpers_insert + "} // namespace\n\nvoid initSdLogger() {\n",
+        "adaptive mount helpers",
+    )
 
 old_remount = r'''bool remountSdLogger() {
 #if !SDCARD_SUPPORTED
@@ -172,6 +252,12 @@ patch_once(
     '    out += ",\\\"mount_attempts\\\":" + String(s.mountAttempts);\n    out += ",\\\"spi_hz\\\":" + String(s.spiFrequencyHz);\n',
     "status SPI JSON",
 )
+patch_once(
+    "src/sd_logger.cpp",
+    '    out += ",\\\"spi_hz\\\":" + String(s.spiFrequencyHz);\n',
+    '    out += ",\\\"spi_hz\\\":" + String(s.spiFrequencyHz);\n    out += ",\\\"spi_try\\\":" + String(s.spiAttemptMask);\n    out += ",\\\"spi_fail\\\":" + String(s.spiBeginFailMask);\n    out += ",\\\"init_code\\\":" + String(s.initCode);\n',
+    "status compact diagnostics JSON",
+)
 
 
 # ---- web_manager.cpp: destructive POST endpoint with explicit token ----
@@ -203,7 +289,7 @@ patch_once(
 )
 
 
-# ---- Dashboard: format button, double confirmation, negotiated speed ----
+# ---- Dashboard: format button, double confirmation, speed + compact diagnostics ----
 patch_once(
     "web/dashboard.html",
     '<button class="modeBtn" onclick="remountSd()">Rimonta scheda</button><button class="modeBtn" onclick="resetSd()">Default firmware</button>',
@@ -213,8 +299,14 @@ patch_once(
 patch_once(
     "web/dashboard.html",
     "sdBytes(s.card_size)+' · usati '+sdBytes(s.used_bytes)",
-    "sdBytes(s.card_size)+' · usati '+sdBytes(s.used_bytes)+' · SPI '+((s.spi_hz||0)/1000000).toFixed(0)+' MHz'",
+    "sdBytes(s.card_size)+' · usati '+sdBytes(s.used_bytes)+' · SPI '+((s.spi_hz||0)>=1000000?((s.spi_hz||0)/1000000).toFixed(0)+' MHz':((s.spi_hz||0)/1000).toFixed(0)+' kHz')",
     "show negotiated SPI",
+)
+patch_once(
+    "web/dashboard.html",
+    "E('sdSummary').textContent=(c.enabled?'logger ON':'logger OFF')+' · mount tentativi '+(s.mount_attempts||0);",
+    "E('sdSummary').textContent=(c.enabled?'logger ON':'logger OFF')+' · mount '+(s.mount_attempts||0)+' · init '+({0:'--',1:'OK',2:'BEGIN FAIL',3:'CARD NONE'}[s.init_code]||s.init_code)+' · try 0x'+Number(s.spi_try||0).toString(16).toUpperCase()+' / fail 0x'+Number(s.spi_fail||0).toString(16).toUpperCase();",
+    "show compact mount diagnostics",
 )
 
 format_js = r'''async function formatSd(){
@@ -232,9 +324,17 @@ patch_once(
     format_js + "async function resetSd(){",
     "format javascript",
 )
-patch_once(
+
+# Handle both a clean datalogger page and a workspace already patched by v1.
+if not replace_if_present(
     "web/dashboard.html",
-    "La scrittura e differita: il decoder RF non scrive mai direttamente sulla SD.",
     "Mount adattivo 4/2/1 MHz. FORMATTA ricrea FAT se non valido oppure azzera il contenuto se gia FAT. La scrittura e differita: il decoder RF non scrive mai direttamente sulla SD.",
-    "format note",
-)
+    "Mount LILYGO HSPI ufficiale + fallback 4/2/1 MHz/400 kHz. Diagnostica try/fail esposta in Web. FORMATTA ricrea FAT se non valido oppure azzera il contenuto se gia FAT. La scrittura e differita: il decoder RF non scrive mai direttamente sulla SD.",
+    "mount note v2",
+):
+    patch_once(
+        "web/dashboard.html",
+        "La scrittura e differita: il decoder RF non scrive mai direttamente sulla SD.",
+        "Mount LILYGO HSPI ufficiale + fallback 4/2/1 MHz/400 kHz. Diagnostica try/fail esposta in Web. FORMATTA ricrea FAT se non valido oppure azzera il contenuto se gia FAT. La scrittura e differita: il decoder RF non scrive mai direttamente sulla SD.",
+        "mount note",
+    )
