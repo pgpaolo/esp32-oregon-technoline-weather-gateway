@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Apply V2.1 cycle-aware quality accounting for 1D20 and EC70.
+"""Apply cycle-aware session quality for Oregon V2.1 1D20 and EC70.
 
-This patch is deliberately diagnostic/statistical only. It does not touch the
-RF decoder, timings, AGC, bandwidth, packet checksum, MQTT, SD or OLED paths.
-For Oregon V2.1 1D20/EC70 the sensor can emit redundant copies a few hundred
-milliseconds apart. The dashboard must compare transmission cycles with the
-nominal cadence, not raw valid frames with the nominal cadence.
+Diagnostic/statistical layer only: no RF decoder, timing, AGC, bandwidth,
+checksum, MQTT, SD or OLED behavior is changed. The script intentionally runs
+after the existing multi-UV and sensor-status patchers and before Web UI
+compression.
 """
 from pathlib import Path
 
@@ -28,6 +27,8 @@ def patch_web_cpp() -> None:
         print("V2.1 cycle quality API: source already patched")
         return
 
+    # At this point apply_multi_uv_dashboard.py and apply_sensor_status_ui.py
+    # have already enriched the session slot with uvIndex and batteryState.
     old_struct = '''struct OregonSessionSensor {
     SensorType type{SensorType::Unknown};
     uint16_t code{0};
@@ -35,6 +36,8 @@ def patch_web_cpp() -> None:
     uint8_t rollingCode{0};
     uint8_t protocolVersion{0};
     uint8_t cadenceSamples{0};
+    int8_t uvIndex{-1}; // compact per-transmitter UV value; also fills existing alignment gap
+    uint8_t batteryState{0}; // compact session battery: 0=N/D, 1=OK, 2=LOW
     uint32_t firstMs{0};
     uint32_t lastMs{0};
     uint32_t received{0};
@@ -48,6 +51,8 @@ def patch_web_cpp() -> None:
     uint8_t rollingCode{0};
     uint8_t protocolVersion{0};
     uint8_t cadenceSamples{0};
+    int8_t uvIndex{-1}; // compact per-transmitter UV value; also fills existing alignment gap
+    uint8_t batteryState{0}; // compact session battery: 0=N/D, 1=OK, 2=LOW
     uint32_t firstMs{0};
     uint32_t lastMs{0};
     uint32_t received{0};          // tutti i frame validi, incluse copie ridondanti
@@ -67,10 +72,9 @@ def patch_web_cpp() -> None:
 }
 '''
     cadence_new = cadence_marker + '''
-// 1D20 e EC70 trasmettono copie ridondanti molto ravvicinate. Nei log reali
-// 1D20 mostra tipicamente la seconda copia dopo ~0,2 s, mentre il ciclo vero e'
-// ~39/41/43 s. Una finestra di 1,5 s e' quindi molto conservativa e viene
-// applicata SOLO a questi due codici V2.1.
+// 1D20 e EC70 inviano copie ridondanti ravvicinate. Nei log reali 1D20 mostra
+// tipicamente la seconda copia dopo ~0,2 s, contro un ciclo reale ~39/41/43 s.
+// La finestra viene applicata SOLO a questi due codici V2.1.
 constexpr uint32_t V21_CYCLE_COPY_WINDOW_MS = 1500UL;
 constexpr uint32_t V21_CYCLE_MIN_INTERVAL_MS = 10000UL;
 constexpr uint32_t V21_CYCLE_MAX_INTERVAL_MS = 300000UL;
@@ -85,27 +89,9 @@ uint32_t qualityReceivedForSensor(const OregonSessionSensor &sensor) {
 '''
     text = replace_once(text, cadence_marker, cadence_new, "cycle helper insertion")
 
-    old_note = '''void noteOregonSessionSensor(const WeatherReading &reading, uint8_t decodeSource) {
-    OregonSessionSensor *freeSlot = nullptr;
-    OregonSessionSensor *sensor = nullptr;
-    for (uint8_t i = 0; i < OREGON_SESSION_SENSOR_MAX; ++i) {
-        OregonSessionSensor &candidate = rfSession.oregon[i];
-        if (candidate.received == 0) {
-            if (!freeSlot) freeSlot = &candidate;
-            continue;
-        }
-        if (candidate.type == reading.type && candidate.code == reading.sensorCode &&
-            candidate.channel == reading.channel && candidate.rollingCode == reading.rollingCode) {
-            sensor = &candidate;
-            break;
-        }
-    }
-    if (!sensor) sensor = freeSlot;
-    if (!sensor) {
-        if (rfSession.oregonOverflow < 255U) rfSession.oregonOverflow++;
-        return;
-    }
-    if (sensor->received == 0) {
+    # Replace only the accounting block. UV value and battery updates appended
+    # by previous patchers remain untouched below sensor->lastRssi.
+    old_accounting = '''    if (sensor->received == 0) {
         sensor->type = reading.type;
         sensor->code = reading.sensorCode;
         sensor->channel = reading.channel;
@@ -121,33 +107,8 @@ uint32_t qualityReceivedForSensor(const OregonSessionSensor &sensor) {
             if (sensor->cadenceSamples < 255U) sensor->cadenceSamples++;
         }
     }
-    sensor->lastMs = reading.receivedAtMs;
-    sensor->lastRssi = reading.rssi;
-    sensor->received++;
-}
 '''
-    new_note = '''void noteOregonSessionSensor(const WeatherReading &reading, uint8_t decodeSource) {
-    OregonSessionSensor *freeSlot = nullptr;
-    OregonSessionSensor *sensor = nullptr;
-    for (uint8_t i = 0; i < OREGON_SESSION_SENSOR_MAX; ++i) {
-        OregonSessionSensor &candidate = rfSession.oregon[i];
-        if (candidate.received == 0) {
-            if (!freeSlot) freeSlot = &candidate;
-            continue;
-        }
-        if (candidate.type == reading.type && candidate.code == reading.sensorCode &&
-            candidate.channel == reading.channel && candidate.rollingCode == reading.rollingCode) {
-            sensor = &candidate;
-            break;
-        }
-    }
-    if (!sensor) sensor = freeSlot;
-    if (!sensor) {
-        if (rfSession.oregonOverflow < 255U) rfSession.oregonOverflow++;
-        return;
-    }
-
-    const bool cycleTracked = v21CycleTrackedCode(reading.sensorCode);
+    new_accounting = '''    const bool cycleTracked = v21CycleTrackedCode(reading.sensorCode);
     if (sensor->received == 0) {
         sensor->type = reading.type;
         sensor->code = reading.sensorCode;
@@ -167,8 +128,8 @@ uint32_t qualityReceivedForSensor(const OregonSessionSensor &sensor) {
             if (sensor->cycles < 0xFFFFFFFFUL) sensor->cycles++;
             sensor->lastCycleIntervalMs = cycleInterval;
             if (cycleInterval >= V21_CYCLE_MIN_INTERVAL_MS && cycleInterval <= V21_CYCLE_MAX_INTERVAL_MS) {
-                // Il minimo intervallo fra cicli e' robusto ai cicli saltati: una
-                // perdita produce 2x/3x la cadenza, non una cadenza artificialmente corta.
+                // A missed transmission gives 2x/3x cadence. Keeping the minimum
+                // valid cycle interval therefore converges to the base cadence.
                 if (sensor->cadenceSamples == 0U || cycleInterval < sensor->observedCadenceMs)
                     sensor->observedCadenceMs = cycleInterval;
                 if (sensor->cadenceSamples < 255U) sensor->cadenceSamples++;
@@ -184,12 +145,8 @@ uint32_t qualityReceivedForSensor(const OregonSessionSensor &sensor) {
             if (sensor->cadenceSamples < 255U) sensor->cadenceSamples++;
         }
     }
-    sensor->lastMs = reading.receivedAtMs;
-    sensor->lastRssi = reading.rssi;
-    sensor->received++;
-}
 '''
-    text = replace_once(text, old_note, new_note, "cycle-aware session accounting")
+    text = replace_once(text, old_accounting, new_accounting, "cycle-aware session accounting")
 
     agg_marker = '''        const uint32_t cadence = effectiveOregonCadenceMs(sensor);
         const uint32_t expected = cadence ? expectedPacketsSinceFirst(now, sensor.firstMs, cadence) : 0;
@@ -205,12 +162,17 @@ uint32_t qualityReceivedForSensor(const OregonSessionSensor &sensor) {
                 thermoSeenCount++; sessionThermo += qualityRx; expThermo += expected;
 '''
     text = replace_once(text, agg_marker, agg_new, "aggregate quality rx")
-    text = text.replace('windSeen = true; sessionWind += sensor.received; expWind += expected;',
-                        'windSeen = true; sessionWind += qualityRx; expWind += expected;', 1)
-    text = text.replace('rainSeen = true; sessionRain += sensor.received; expRain += expected;',
-                        'rainSeen = true; sessionRain += qualityRx; expRain += expected;', 1)
-    text = text.replace('uvSeen = true; sessionUv += sensor.received; expUv += expected;',
-                        'uvSeen = true; sessionUv += qualityRx; expUv += expected;', 1)
+    for old, new in [
+        ('windSeen = true; sessionWind += sensor.received; expWind += expected;',
+         'windSeen = true; sessionWind += qualityRx; expWind += expected;'),
+        ('rainSeen = true; sessionRain += sensor.received; expRain += expected;',
+         'rainSeen = true; sessionRain += qualityRx; expRain += expected;'),
+        ('uvSeen = true; sessionUv += sensor.received; expUv += expected;',
+         'uvSeen = true; sessionUv += qualityRx; expUv += expected;'),
+    ]:
+        if text.count(old) != 1:
+            raise RuntimeError(f"aggregate marker missing: {old}")
+        text = text.replace(old, new, 1)
 
     per_sensor_marker = '''        const uint32_t nominal = nominalOregonCadenceMs(sensor.type, sensor.code, sensor.channel);
         const uint32_t cadence = effectiveOregonCadenceMs(sensor);
@@ -258,11 +220,19 @@ def patch_dashboard() -> None:
         print("V2.1 cycle quality UI: source already patched")
         return
 
-    old = '''const oqSensor=x=>{const ready=Number(x.q)>=0,loss=ready?Math.max(0,100-Number(x.q)):0,proto=Number(x.v)===2?'V2.1':'OSV3',source=x.src==='nom'?'nominale':(x.src==='auto'?'adattiva':'calibrazione'),rssi=x.rssi==null?'RSSI N/D':'RSSI '+Number(x.rssi).toFixed(1)+' dBm';return '<div class="qrow"><span><b>'+x.m+'</b><small class="qmeta">'+x.t+' · '+proto+' · 0x'+x.c+' · CH'+x.ch+' · ID '+x.id+' · '+rssi+' · '+(x.cad?'~'+x.cad+' s '+source:source)+'</small></span><span>'+x.rx+'/'+(ready?x.ex:'—')+'</span><span class="'+(ready?qClass(Number(x.q)):'qwarn')+'">'+(ready?x.lost+' · '+loss+'%':'CAL')+'</span><span class="'+(ready?qClass(Number(x.q)):'qgood')+'">'+(ready?qText(Number(x.q)):'LINK')+'</span></div>'};
-const renderOregonQuality=s=>{const rows=Array.isArray(s.oregon_sensors)?s.oregon_sensors:[],overflow=Number(s.oregon_sensor_overflow||0);return '<b>Qualita sessione Oregon</b><div class="qrow qhdr"><span>Trasmettitore</span><span>Rx/Attesi</span><span>Persi</span><span>Qualita</span></div>'+(rows.length?rows.map(oqSensor).join(''):'<div class="muted" style="padding-top:6px">Nessun sensore Oregon rilevato nella sessione.</div>')+(overflow?'<div class="qbad" style="margin-top:6px">Registro pieno: '+overflow+' frame senza riga dedicata.</div>':'')+'<div class="muted" style="margin-top:7px">Una riga per trasmettitore · Persi = attesi − ricevuti · CAL = stima della cadenza in corso.<br>Sessione azzerata al cambio protocollo/gain.</div>'};'''
-    new = '''const oqSensor=x=>{const ready=Number(x.q)>=0,loss=ready?Math.max(0,100-Number(x.q)):0,proto=Number(x.v)===2?'V2.1':'OSV3',source=x.src==='nom'?'nominale':(x.src==='auto'?'adattiva':'calibrazione'),rssi=x.rssi==null?'RSSI N/D':'RSSI '+Number(x.rssi).toFixed(1)+' dBm',cycle=!!x.cycle,cycleMeta=cycle?' · frame '+Number(x.fr||0)+' · copie '+Number(x.dup||0)+(Number(x.obs||0)?' · osservata ~'+Number(x.obs)+' s':''):'',rxLabel=cycle?Number(x.cy||x.rx):x.rx;return '<div class="qrow"><span><b>'+x.m+'</b><small class="qmeta">'+x.t+' · '+proto+' · 0x'+x.c+' · CH'+x.ch+' · ID '+x.id+' · '+rssi+' · '+(x.cad?'~'+x.cad+' s '+source:source)+cycleMeta+'</small></span><span>'+rxLabel+'/'+(ready?x.ex:'—')+'</span><span class="'+(ready?qClass(Number(x.q)):'qwarn')+'">'+(ready?x.lost+' · '+loss+'%':'CAL')+'</span><span class="'+(ready?qClass(Number(x.q)):'qgood')+'">'+(ready?qText(Number(x.q)):'LINK')+'</span></div>'};
-const renderOregonQuality=s=>{const rows=Array.isArray(s.oregon_sensors)?s.oregon_sensors:[],overflow=Number(s.oregon_sensor_overflow||0);return '<b>Qualita sessione Oregon</b><div class="qrow qhdr"><span>Trasmettitore</span><span>Rx/Attesi</span><span>Persi</span><span>Qualita</span></div>'+(rows.length?rows.map(oqSensor).join(''):'<div class="muted" style="padding-top:6px">Nessun sensore Oregon rilevato nella sessione.</div>')+(overflow?'<div class="qbad" style="margin-top:6px">Registro pieno: '+overflow+' frame senza riga dedicata.</div>':'')+'<div class="muted" style="margin-top:7px">Per 1D20/EC70 Rx = cicli unici: le copie ridondanti ravvicinate restano visibili come diagnostica ma non aumentano la qualita. Per gli altri sensori Rx resta il numero di frame validi.<br>Persi = attesi − cicli/ricevuti · CAL = stima della cadenza in corso · sessione azzerata al cambio protocollo/gain.</div>'};'''
-    text = replace_once(text, old, new, "quality UI renderer")
+    # Existing UI patchers have already converted RSSI and battery to badges.
+    marker = "rssi=rssiBadge(x.rssi);return"
+    replacement = "rssi=rssiBadge(x.rssi),cycle=!!x.cycle,cycleMeta=cycle?' · frame '+Number(x.fr||0)+' · copie '+Number(x.dup||0)+(Number(x.obs||0)?' · osservata ~'+Number(x.obs)+' s':''):'';return"
+    text = replace_once(text, marker, replacement, "cycle UI variables")
+
+    meta_marker = "+rssi+' · '+batteryBadge(x.bat)+' · '+(x.cad?'~'+x.cad+' s '+source:source)+'</small>"
+    meta_replacement = "+rssi+' · '+batteryBadge(x.bat)+' · '+(x.cad?'~'+x.cad+' s '+source:source)+cycleMeta+'</small>"
+    text = replace_once(text, meta_marker, meta_replacement, "cycle UI metadata")
+
+    footer = "Una riga per trasmettitore · Persi = attesi − ricevuti · CAL = stima della cadenza in corso.<br>Sessione azzerata al cambio protocollo/gain."
+    footer_new = "Per 1D20/EC70 Rx = cicli unici: le copie ridondanti ravvicinate restano diagnostiche e non aumentano la qualita. Per gli altri sensori Rx = frame validi.<br>Persi = attesi − Rx · CAL = stima cadenza · sessione azzerata al cambio protocollo/gain."
+    text = replace_once(text, footer, footer_new, "cycle UI footer")
+
     DASH.write_text(text, encoding="utf-8")
     print("V2.1 cycle quality UI: patched dashboard.html")
 
