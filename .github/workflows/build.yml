@@ -10,6 +10,7 @@ on:
       - feature/oregon-v21-legacy-sensors
       - feature/sd-datalogger
       - feature/v21-cycle-quality-analyzer
+      - codex/web-provisioning-ota-auth
   pull_request:
     branches:
       - main
