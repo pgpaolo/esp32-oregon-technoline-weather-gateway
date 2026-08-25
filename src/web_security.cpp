@@ -7,6 +7,7 @@ namespace {
 constexpr const char *NVS_NS = "webauth";
 constexpr const char *DEFAULT_USER = "admin";
 constexpr const char *DEFAULT_PASSWORD = "admin";
+constexpr uint8_t AUTH_SCHEMA_VERSION = 2U;
 constexpr uint8_t MAX_FAILED_ATTEMPTS = 10U;
 constexpr uint32_t LOCKOUT_MS = 30000UL;
 
@@ -66,10 +67,12 @@ void noteFailure() {
 
 bool persistConfig(const WebSecurityConfig &next, const String &nextPassword) {
     if (!prefs.begin(NVS_NS, false)) return false;
+    prefs.putUChar("schema", AUTH_SCHEMA_VERSION);
     prefs.putBool("enabled", next.enabled);
     prefs.putString("user", next.username);
     prefs.putString("pass", nextPassword);
-    const bool ok = prefs.getBool("enabled", !next.enabled) == next.enabled &&
+    const bool ok = prefs.getUChar("schema", 0U) == AUTH_SCHEMA_VERSION &&
+                    prefs.getBool("enabled", !next.enabled) == next.enabled &&
                     prefs.getString("user", "") == next.username &&
                     prefs.getString("pass", "") == nextPassword;
     prefs.end();
@@ -83,7 +86,9 @@ void initWebSecurity() {
     bootstrapPassword = "";
 
     bool haveStoredPassword = false;
+    uint8_t storedSchema = 0U;
     if (prefs.begin(NVS_NS, true)) {
+        storedSchema = prefs.getUChar("schema", 0U);
         cfg.enabled = prefs.getBool("enabled", true);
         cfg.username = prefs.getString("user", DEFAULT_USER);
         if (prefs.isKey("pass")) {
@@ -95,14 +100,20 @@ void initWebSecurity() {
 
     if (!validUsername(cfg.username)) cfg.username = DEFAULT_USER;
 
-    if (!haveStoredPassword) {
+    const bool migrateLegacyCredentials = storedSchema < AUTH_SCHEMA_VERSION;
+    if (migrateLegacyCredentials || !haveStoredPassword) {
+        cfg.enabled = true;
+        cfg.username = DEFAULT_USER;
         password = DEFAULT_PASSWORD;
         bootstrapPassword = password;
-        cfg.enabled = true;
         if (!persistConfig(cfg, password)) {
-            Serial.println(F("[AUTH] ERRORE: impossibile salvare la password iniziale in NVS"));
+            Serial.println(F("[AUTH] ERRORE: impossibile salvare le credenziali iniziali in NVS"));
         }
-        Serial.println(F("[AUTH] credenziali Web iniziali impostate"));
+        if (migrateLegacyCredentials) {
+            Serial.println(F("[AUTH] migrazione credenziali legacy -> admin/admin completata"));
+        } else {
+            Serial.println(F("[AUTH] credenziali Web iniziali impostate"));
+        }
         Serial.print(F("[AUTH] utente: ")); Serial.println(cfg.username);
         Serial.print(F("[AUTH] password iniziale: ")); Serial.println(bootstrapPassword);
         Serial.println(F("[AUTH] cambiare la password dalla sezione SISTEMA dopo il primo accesso"));
