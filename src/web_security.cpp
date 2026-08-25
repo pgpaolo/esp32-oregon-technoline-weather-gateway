@@ -2,6 +2,7 @@
 
 #include <Preferences.h>
 #include <WebServer.h>
+#include <esp_system.h>
 
 namespace {
 constexpr const char *NVS_NS = "webauth";
