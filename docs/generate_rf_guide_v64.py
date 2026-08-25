@@ -245,8 +245,8 @@ def build_addendum():
 
     build_data = [
         [p("Target", styles["CellHead"]), p("RAM", styles["CellHead"]), p("Applicazione / slot", styles["CellHead"]), p("Uso", styles["CellHead"])],
-        [p("T3 V1.6.1", styles["Cell"]), p("100.592 / 327.680 B", styles["Cell"]), p("1.276.865 / 1.966.080 B", styles["Cell"]), p("64,9%", styles["Cell"])],
-        [p("T3-S3", styles["Cell"]), p("99.552 / 327.680 B", styles["Cell"]), p("1.220.777 / 1.966.080 B", styles["Cell"]), p("62,1%", styles["Cell"])],
+        [p("T3 V1.6.1", styles["Cell"]), p("100.592 / 327.680 B", styles["Cell"]), p("1.277.173 / 1.966.080 B", styles["Cell"]), p("65,0%", styles["Cell"])],
+        [p("T3-S3", styles["Cell"]), p("99.552 / 327.680 B", styles["Cell"]), p("1.221.077 / 1.966.080 B", styles["Cell"]), p("62,1%", styles["Cell"])],
     ]
     builds = Table(build_data, colWidths=[34 * mm, 48 * mm, 68 * mm, 24 * mm], repeatRows=1)
     builds.setStyle(TableStyle([
@@ -272,6 +272,11 @@ def build_addendum():
             "Per MQTT con più D874 usare oregon/sensor/D874/ch&lt;CHANNEL&gt;/id&lt;ROLLING&gt;/uv. I topic oregon/uv e "
             "oregon/uv/D874/index restano compatibili ma rappresentano l'ultimo valore ricevuto e non identificano "
             "due UVN800 dello stesso modello.", styles["Smallx"]),
+        p(
+            "Correzione D874: il nibble flags/batteria non fa parte dell'indice UV. Il frame reale "
+            "AD 87 41 55 C0 00 00 73 ha checksum valido e indica CH1, rolling ID 85, UV 0 e batteria LOW. "
+            "La diagnostica distingue ora checksum KO da parser KO e mostra il rolling ID anche nella tabella RAW.",
+            styles["Smallx"]),
     ]
 
     doc.build(story, onFirstPage=footer, onLaterPages=footer)

@@ -43,6 +43,8 @@ It supersedes the intermediate AS3935, Oregon multichannel and legacy V2.1 featu
 
 ### Multi-sensor Dashboard
 
+- Fixed D874/UVN800 parsing when battery/flag bits are non-zero: the UV field is now reconstructed from payload nibbles 9/10 instead of incorrectly including the flags nibble.
+- Split RAW diagnostics into `checksum KO` and `parser KO`, and added rolling ID to accepted/rejected Oregon descriptions.
 - Added compact simultaneous UV display for UVN800 (`D874`), UVR128 (`EC70`) and future supported UV transmitters.
 - Displayed the rolling ID on each UV card so multiple UVN800 units of the same model and channel remain visibly distinct.
 - Made Oregon session quality transmitter-aware using sensor type/code/channel/rolling ID.

@@ -169,6 +169,12 @@ def temperature(frame: bytes) -> float:
     return -value if nibble(frame, 12) == 8 else value
 
 
+def uvn800_index(frame: bytes) -> int:
+    # Legacy buffer includes sync A at nibble 0. Nibble 8 is flags;
+    # UV units/tens are nibbles 9/10, matching the on-air D874 layout.
+    return nibble(frame, 10) * 10 + nibble(frame, 9)
+
+
 def synthetic_vectors():
     thgr968 = make_frame(
         [0xA, 0x1, 0xD, 0x3, 0x0, 0x2, 0x4, 0x2, 0x0,
@@ -183,6 +189,16 @@ def synthetic_vectors():
 
 
 def main() -> None:
+    uvn800_vectors = (
+        (bytes.fromhex("AD8741F5010F70C4"), 245, 1, False),
+        (bytes.fromhex("AD874155C0000073"), 85, 0, True),
+    )
+    for frame, expected_id, expected_uv, battery_low in uvn800_vectors:
+        assert checksum_ok(frame, 14)
+        assert nibble(frame, 6) * 16 + nibble(frame, 7) == expected_id
+        assert uvn800_index(frame) == expected_uv
+        assert bool(nibble(frame, 8) & 0x04) is battery_low
+
     thermo_vectors = (
         (bytes.fromhex("AEC4015F07300D30"), 13, 3.7, None),
         (bytes.fromhex("A1D20485C480882835"), 16, -8.4, 28),
@@ -240,7 +256,8 @@ def main() -> None:
         physical_intervals_from_bits(corrupt_uvr_bits, preamble_physical_bits=16),
         64, len(uvr128))
     assert not checksum_ok(corrupt_uvr128, 13)
-    print("Oregon V2.1 vectors: 6 valid, 6 corrupt rejected, UVR128 no-gap double burst + clipped phase recovery OK")
+    print("Oregon vectors: UVN800 ID85/UV0/BAT-LOW regression OK; "
+          "V2.1 6 valid, 6 corrupt rejected; UVR128 no-gap + clipped recovery OK")
 
 
 if __name__ == "__main__":

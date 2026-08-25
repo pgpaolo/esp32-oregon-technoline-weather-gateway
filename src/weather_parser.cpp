@@ -304,11 +304,15 @@ bool parseWeatherPacket(const OregonPacket &packet, WeatherReading &reading) {
         case 0xAD: { // UVN800
             reading.type = SensorType::UV;
             if (!sensorCodeMatchesType(reading.type, reading.sensorCode)) return false;
-            // Oregon RF Protocol Description: per D874/EC70 i nibble 8..9 sono
-            // un "UV Index Unit-less Integer", non un campo BCD. I frame reali
-            // del sensore confermano la sequenza 09 -> 0A -> 0B ... per UV 9,10,11.
-            // Nel buffer legacy il campo corrisponde al byte 4.
-            const int uv = static_cast<int>(packet.bytes[4]);
+            // Il sync A occupa il nibble 0 del buffer legacy. Il nibble 8 e'
+            // ancora il campo flags/batteria; l'indice UV D874 usa i nibble
+            // successivi 9 (unita') e 10 (decine). Non leggere packet.bytes[4]
+            // come byte intero: con flags=C e UV=0 diventerebbe falsamente C0.
+            // L'unita' puo' assumere A/B nei frame reali UV=10/11, quindi si
+            // valida il valore ricomposto anziche' imporre BCD stretto.
+            uint8_t uvUnits = 0, uvTens = 0;
+            if (!getNybble(packet, 9, uvUnits) || !getNybble(packet, 10, uvTens)) return false;
+            const int uv = static_cast<int>(uvTens) * 10 + static_cast<int>(uvUnits);
             if (uv < 0 || uv > 25) return false;
             reading.uvIndex = uv;
             reading.uvValid = true;

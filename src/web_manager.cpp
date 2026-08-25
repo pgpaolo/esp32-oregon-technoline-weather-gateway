@@ -1722,8 +1722,23 @@ void handleRoot() {
     server.send_P(200, PSTR("text/html; charset=utf-8"), reinterpret_cast<PGM_P>(WEB_UI_GZ), WEB_UI_GZ_LEN);
 }
 
-void fillDecoded(char *dst, size_t size, const WeatherReading *r) {
-    if (!r) { snprintf(dst, size, "checksum/parser KO"); return; }
+void fillDecoded(char *dst, size_t size, const OregonPacket &packet, const WeatherReading *r) {
+    if (!r) {
+        if (!validateOregonChecksum(packet)) {
+            snprintf(dst, size, "checksum KO");
+            return;
+        }
+        WeatherReading partial;
+        (void)parseWeatherPacket(packet, partial);
+        if (partial.sensorCode) {
+            snprintf(dst, size, "parser KO | %s %04X ch%u id%u BAT=%s",
+                     sensorModelName(partial.sensorCode), partial.sensorCode, partial.channel,
+                     partial.rollingCode, batteryStatusName(partial));
+        } else {
+            snprintf(dst, size, "parser KO");
+        }
+        return;
+    }
     char value[78]{};
     switch (r->type) {
         case SensorType::ThermoHygro:
@@ -1738,8 +1753,8 @@ void fillDecoded(char *dst, size_t size, const WeatherReading *r) {
         default:
             snprintf(value, sizeof(value), "unknown"); break;
     }
-    snprintf(dst, size, "%s | %s %04X ch%u BAT=%s", value, sensorModelName(r->sensorCode),
-             r->sensorCode, r->channel, batteryStatusName(*r));
+    snprintf(dst, size, "%s | %s %04X ch%u id%u BAT=%s", value, sensorModelName(r->sensorCode),
+             r->sensorCode, r->channel, r->rollingCode, batteryStatusName(*r));
 }
 } // namespace
 
@@ -1836,7 +1851,7 @@ void recordWebPacket(const OregonPacket &packet, const WeatherReading *reading, 
     e.batteryKnown = reading ? reading->batteryStatusValid : false;
     e.batteryLow = reading ? reading->batteryLow : false;
     snprintf(e.type, sizeof(e.type), "%s", reading ? sensorTypeName(reading->type) : "rejected");
-    fillDecoded(e.decoded, sizeof(e.decoded), reading);
+    fillDecoded(e.decoded, sizeof(e.decoded), packet, reading);
 
     size_t pos = 0;
     for (uint8_t i = 0; i < packet.length && pos + 4 < sizeof(e.hex); ++i) {

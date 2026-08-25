@@ -67,6 +67,10 @@ oregon/sensor/EC70/ch.../id.../uv
 
 The legacy `oregon/uv` topic is only a compatibility aggregate and can change as different valid UV transmitters are received.
 
+## Checksum-valid D874 shown as DROP
+
+Older firmware could combine the D874 flags nibble with the UV value. A frame such as `AD 87 41 55 C0 00 00 73` therefore appeared as `checksum/parser KO`, although its checksum is valid: it represents UVN800 `D874`, CH1, rolling ID 85, UV 0 and battery LOW. Current firmware reconstructs UV from payload nibbles 9/10 and reports checksum and parser failures separately.
+
 ## RSSI shows red
 
 The common UI thresholds are:
