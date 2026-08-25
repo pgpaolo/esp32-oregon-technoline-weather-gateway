@@ -114,6 +114,8 @@ The embedded UI is divided into:
 
 Oregon sensor cards use the same RSSI and battery language across thermo/hygro, wind, rain and UV. Technoline uses the same RSSI thresholds and reports battery as unavailable.
 
+Multiple UVN800 (`D874`) transmitters are kept independent by sensor code, channel and rolling ID. The Dashboard prints the rolling ID on every UV card, including when two units use the same channel. The shared live registry holds up to ten Oregon transmitters across all sensor families.
+
 ## MQTT
 
 MQTT configuration is persistent in NVS and selectable by function group.

@@ -139,6 +139,12 @@ oregon/uv/EC70/index
 
 With RF metadata enabled, these namespaces can also carry model, RSSI, battery, channel and rolling-code metadata.
 
+The compatibility path is keyed only by sensor code, so two UVN800 units (`D874`) can overwrite each other there. Multi-UV installations must consume the complete per-transmitter path instead:
+
+```text
+oregon/sensor/D874/ch<CHANNEL>/id<ROLLING>/uv
+```
+
 ## Technoline / La Crosse WS23xx
 
 | Topic | Unit / value |

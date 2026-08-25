@@ -46,6 +46,8 @@ The embedded Web UI communicates with the following endpoints on the main HTTP s
 
 The live state includes a transmitter-aware Oregon session registry. Each received transmitter is distinguished by sensor type, sensor code, channel and rolling code. Current fields include reception/quality information, RSSI and the data needed by the Web UI to display independent sensors.
 
+The registry has ten slots shared by all Oregon families. Consequently, multiple UVN800 transmitters remain independent when their rolling codes differ, even on the same RF channel. The API exposes `oregon_sensor_overflow` when additional identities arrive after all slots are occupied.
+
 This prevents traffic from different OSV2.1/OSV3 transmitters from sharing a single reception-quality counter.
 
 The `rf` object also includes V2.1/recovery diagnostics for preambles, candidates, accepted frames, checksum failures, invalid Manchester pairs and UVR128 recovery activity.

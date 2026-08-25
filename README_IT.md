@@ -98,7 +98,7 @@ I trasmettitori Oregon sono distinti per codice sensore, canale e rolling ID anc
 
 ## UV multipli
 
-UVN800 (`D874`), UVR128 (`EC70`) e futuri UV supportati possono essere visualizzati contemporaneamente nella Dashboard. Il valore UV aggregato legacy resta disponibile per compatibilità.
+UVN800 (`D874`), UVR128 (`EC70`) e futuri UV supportati possono essere visualizzati contemporaneamente nella Dashboard. Anche due o più UVN800 dello stesso modello e sullo stesso canale restano separati tramite rolling ID, mostrato su ogni riquadro. Il registro live è condiviso con tutti i sensori Oregon e contiene fino a 10 trasmettitori; il valore UV aggregato legacy resta disponibile per compatibilità.
 
 ## MQTT
 

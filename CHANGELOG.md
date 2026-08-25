@@ -44,6 +44,7 @@ It supersedes the intermediate AS3935, Oregon multichannel and legacy V2.1 featu
 ### Multi-sensor Dashboard
 
 - Added compact simultaneous UV display for UVN800 (`D874`), UVR128 (`EC70`) and future supported UV transmitters.
+- Displayed the rolling ID on each UV card so multiple UVN800 units of the same model and channel remain visibly distinct.
 - Made Oregon session quality transmitter-aware using sensor type/code/channel/rolling ID.
 - Unified RSSI presentation across Oregon thermo, wind, rain, UV and Technoline:
   - green >= -100 dBm;

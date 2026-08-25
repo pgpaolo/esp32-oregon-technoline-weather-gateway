@@ -245,8 +245,8 @@ def build_addendum():
 
     build_data = [
         [p("Target", styles["CellHead"]), p("RAM", styles["CellHead"]), p("Applicazione / slot", styles["CellHead"]), p("Uso", styles["CellHead"])],
-        [p("T3 V1.6.1", styles["Cell"]), p("100.592 / 327.680 B", styles["Cell"]), p("1.276.881 / 1.966.080 B", styles["Cell"]), p("64,9%", styles["Cell"])],
-        [p("T3-S3", styles["Cell"]), p("99.552 / 327.680 B", styles["Cell"]), p("1.220.809 / 1.966.080 B", styles["Cell"]), p("62,1%", styles["Cell"])],
+        [p("T3 V1.6.1", styles["Cell"]), p("100.592 / 327.680 B", styles["Cell"]), p("1.276.865 / 1.966.080 B", styles["Cell"]), p("64,9%", styles["Cell"])],
+        [p("T3-S3", styles["Cell"]), p("99.552 / 327.680 B", styles["Cell"]), p("1.220.777 / 1.966.080 B", styles["Cell"]), p("62,1%", styles["Cell"])],
     ]
     builds = Table(build_data, colWidths=[34 * mm, 48 * mm, 68 * mm, 24 * mm], repeatRows=1)
     builds.setStyle(TableStyle([
@@ -261,6 +261,18 @@ def build_addendum():
         "Entrambi i target usano min_spiffs.csv: il progetto non usa SPIFFS, conserva NVS e due slot OTA, e "
         "porta ogni slot applicativo a 1.966.080 byte. Le prove confermano mount e formato; scheda piena, read-only, "
         "deep sleep con coda pendente e concorrenza RF di lunga durata restano verifiche separate.", styles["Smallx"])]
+    story += [
+        p("5. Più trasmettitori UVN800", styles["H2x"]),
+        p(
+            "La Dashboard mantiene separati più UVN800 D874 usando codice sensore, canale e rolling ID. Il rolling "
+            "ID compare su ogni riquadro UV, quindi due unità sullo stesso canale restano riconoscibili. Il registro "
+            "live contiene fino a 10 trasmettitori Oregon complessivi, condivisi tra termo-igro, vento, pioggia e UV.",
+            styles["Bodyx"]),
+        p(
+            "Per MQTT con più D874 usare oregon/sensor/D874/ch&lt;CHANNEL&gt;/id&lt;ROLLING&gt;/uv. I topic oregon/uv e "
+            "oregon/uv/D874/index restano compatibili ma rappresentano l'ultimo valore ricevuto e non identificano "
+            "due UVN800 dello stesso modello.", styles["Smallx"]),
+    ]
 
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
 
