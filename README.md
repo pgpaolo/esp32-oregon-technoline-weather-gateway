@@ -11,7 +11,7 @@ It receives **Oregon Scientific OSV2.1/OSV3** and **Technoline / La Crosse WS23x
 Current consolidated development branch:
 
 ```text
-feature/uvr128-v21-recovery
+codex/sdfat-write-status
 ```
 
 The firmware macro on this line is **6.4.0-rc2**. The branch contains additional hardware-validation work not yet merged into `main`.
@@ -39,6 +39,7 @@ The firmware macro on this line is **6.4.0-rc2**. The branch contains additional
 - Optional local AS3935 lightning detector with Web, MQTT and OLED integration.
 - Optional local BME280.
 - Configurable hostname + mDNS, JSON backup/restore, restart and soft power-off/deep sleep.
+- Hardware-validated microSD datalogger using SdFat, FAT reformat support and a live `SD ON` / `SD SCRIVE` header badge.
 - Deterministic gzip Web asset generated during PlatformIO build.
 
 Full consolidated branch reference: [docs/UVR128_RECOVERY.md](docs/UVR128_RECOVERY.md).
@@ -166,12 +167,22 @@ AS3935 is an optional local I2C/IRQ sensor with:
 - selectable OLED page;
 - configuration included in backup/restore.
 
+## microSD datalogger
+
+The onboard microSD uses its dedicated HSPI wiring and the Greiman SdFat backend. Valid Oregon and Technoline frames, plus optional BME280/AS3935 snapshots, are queued in RAM and written outside the RF-critical path to daily UTC CSV files under `/weather/`.
+
+The header badge reports `SD OFF`, `SD PRONTA`, `SD ON`, `SD SCRIVE`, `SD KO` or `SD ERR`. Its tooltip includes the cumulative write count, queue depth, errors and current file. The Web configuration can remount or explicitly format the card; an invalid/missing FAT is handled only after the card transport has initialized successfully.
+
+Full reference: [docs/SD_DATALOGGER.md](docs/SD_DATALOGGER.md).
+
+Updated technical PDF: [RF encoding guide V6.4.0 - Edition 3](output/pdf/Guida_Codifiche_RF_Oregon_Technoline_V6.4.0_Edizione_3.pdf).
+
 ## Quick start
 
 ```bash
 git clone https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway.git
 cd esp32-oregon-technoline-weather-gateway
-git checkout feature/uvr128-v21-recovery
+git checkout codex/sdfat-write-status
 cp src/config_private.example.h src/config_private.h
 pio run -e t3-v161-433
 pio run -e t3-v161-433 -t upload
@@ -195,7 +206,7 @@ UVR128 recovery uses the minimum raw interval collection needed by the dedicated
 
 ## Build / CI status
 
-Functional code was validated by **PlatformIO Build #92** before the final documentation cleanup commits:
+The hardware-validated SdFat branch was rebuilt locally on both targets:
 
 - Validate: PASS;
 - AS3935 Integration Guard: PASS;
@@ -203,12 +214,12 @@ Functional code was validated by **PlatformIO Build #92** before the final docum
 - `t3-s3-433`: PASS;
 - Oregon V2.1 host vectors: PASS.
 
-T3 V1.6.1 Build #92:
+T3 V1.6.1 current branch:
 
-- RAM: `92,560 / 327,680 B` = 28.2%;
-- application ELF: `1,226,765 / 1,310,720 B` = 93.6%;
-- real `firmware.bin`: `1,233,472 B`;
-- real application-partition margin: `77,248 B`.
+- RAM: `100,592 / 327,680 B` = 30.7%;
+- application ELF: `1,276,881 / 1,966,080 B` = 64.9%;
+- real `firmware.bin`: `1,283,584 B`;
+- application-partition margin: `689,199 B`.
 
 Artifact ID: `9498796327`.
 
@@ -253,6 +264,6 @@ GNU GPL v3 or later (`GPL-3.0-or-later`). See [LICENSE](LICENSE).
 The intended simplified branch layout after repository cleanup is:
 
 - `main` - integrated/stable line;
-- `feature/uvr128-v21-recovery` - current hardware-validation line.
+- `codex/sdfat-write-status` - current hardware-validated microSD/SdFat line.
 
 Historical pull requests remain available as development history after intermediate branches are removed.

@@ -1,6 +1,6 @@
 # Troubleshooting
 
-This guide refers to the consolidated development branch `feature/uvr128-v21-recovery`.
+This guide refers to the hardware-validated storage branch `codex/sdfat-write-status`.
 
 ## No Wi-Fi connection
 
@@ -46,7 +46,7 @@ Secondary CH2/CH3 values are intentionally kept independent and should not overw
 
 ## UVN800 works but UVR128 does not
 
-- Confirm the firmware is built from `feature/uvr128-v21-recovery`, not an older intermediate branch.
+- Confirm the firmware is built from `codex/sdfat-write-status`, not an older intermediate branch.
 - Keep Oregon reception active (`OREGON` or `DUAL`).
 - The EC70 recovery does **not** require optional Burst Extra to be ON.
 - Check V2.1 candidate/checksum/pair/recovery counters in Diagnostics/API state.
@@ -188,12 +188,30 @@ pio run -e t3-s3-433
 
 The build runs several idempotent pre-build scripts that generate/patch the final Web, MQTT/OLED and UVR128 recovery sources. Their status lines should appear before compilation.
 
+## microSD does not mount
+
+Read the top badge and the microSD Configuration tab before changing pins or RF code:
+
+- `SD OFF`: enable the datalogger if storage is wanted;
+- `SD PRONTA`: card mounted, logger disabled;
+- `SD ON`: logger enabled and mounted;
+- `SD SCRIVE`: new CSV records were written since the previous four-second status poll;
+- `SD KO`: logger enabled but the card did not mount;
+- `SD ERR`: the browser could not read `/api/sd`.
+
+The tooltip reports written rows, queue, errors and current file. In the microSD tab, `init=FAT INVALID` with SdFat error `0x00/0x00` means the card transport initialized but the filesystem is absent/invalid; use the explicit two-confirmation `FORMATTA SD` action. A non-zero SdFat error indicates card/SPI initialization failure and formatting cannot begin yet.
+
+The T3 V1.6.1 wiring is CS13, SCK14, MOSI15 and MISO2. The firmware tries 4 MHz and then 400 kHz after full cleanup. Do not reintroduce repeated Arduino `SD.begin()` retries: the hardware-confirmed fix uses SdFat.
+
+Formatting erases the entire card. Copy any needed data first.
+
 ## Firmware size
 
-Build #92 functional reference for T3 V1.6.1:
+Current `codex/sdfat-write-status` reference for T3 V1.6.1:
 
-- real firmware.bin: 1,233,472 B;
-- app partition: 1,310,720 B;
-- margin: 77,248 B.
+- real firmware.bin: 1,283,584 B;
+- app partition: 1,966,080 B;
+- application ELF: 1,276,881 B;
+- margin: 689,199 B.
 
-Do not change the partition table merely to hide an unexpected size regression; first inspect what changed in generated Web assets or added code.
+Both targets intentionally use `min_spiffs.csv`: the project embeds its Web UI and does not use SPIFFS, while NVS and two OTA slots remain. Do not change the layout again merely to hide a size regression; first inspect generated Web assets and linked code.

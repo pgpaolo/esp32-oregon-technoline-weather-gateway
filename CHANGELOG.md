@@ -2,15 +2,26 @@
 
 All notable project changes are documented here.
 
-## Unreleased - consolidated UVR128 recovery branch
+## Unreleased - SdFat microSD and write-status branch
 
 This development line is consolidated in:
 
 ```text
-feature/uvr128-v21-recovery
+codex/sdfat-write-status
 ```
 
 It supersedes the intermediate AS3935, Oregon multichannel and legacy V2.1 feature branches. PR #15 now targets `main` directly.
+
+### microSD / Web status
+
+- Replaced the Arduino-ESP32 `SD` transport with Greiman SdFat 2.3.1 after hardware showed a valid `CMD0` response followed by library initialization failure.
+- Kept the official LILYGO HSPI pin mapping, using 4 MHz first and one clean 400 kHz fallback.
+- Added explicit FAT formatting through SdFat, including the card-ready/filesystem-invalid state that previously prevented the formatter from starting.
+- Added SdFat error-code/data diagnostics to the Web API and format-failure messages.
+- Added the top-bar `SD OFF` / `SD PRONTA` / `SD ON` / `SD SCRIVE` / `SD KO` / `SD ERR` badge with queue, error, current-file and write-count tooltip.
+- Confirmed mount and format on the physical T3 V1.6.1 setup.
+- Switched both targets to `min_spiffs.csv`: NVS and two OTA slots remain, while each application slot grows to 1,966,080 bytes.
+- Rebuilt both PlatformIO targets and reran the Oregon V2.1 vector suite after the storage change.
 
 ### Oregon RF / UVR128
 
@@ -74,24 +85,29 @@ It supersedes the intermediate AS3935, Oregon multichannel and legacy V2.1 featu
 
 - Moved the full Dashboard source to `web/dashboard.html` and gzip-compresses it during build.
 - Reused compact live/session structures instead of adding telemetry history for the new sensor-status views.
-- Preserved the existing partition table.
+- Replaced the previous near-full application layout with `min_spiffs.csv`; the project does not use SPIFFS and retains NVS plus two OTA slots.
 
 ### Validation reference
 
-Functional code was validated by PlatformIO Build #92 before the final documentation-only cleanup commits:
+Current SdFat branch validation:
 
 - Validate: PASS;
 - AS3935 Integration Guard: PASS;
 - `t3-v161-433`: PASS;
 - `t3-s3-433`: PASS.
 
-T3 V1.6.1 Build #92:
+T3 V1.6.1:
 
-- RAM: 92,560 / 327,680 B = 28.2%;
-- application ELF: 1,226,765 / 1,310,720 B = 93.6%;
-- real firmware.bin: 1,233,472 B;
-- real app-partition margin: 77,248 B;
-- artifact ID: 9498796327.
+- RAM: 100,592 / 327,680 B = 30.7%;
+- application ELF: 1,276,881 / 1,966,080 B = 64.9%;
+- real firmware.bin: 1,283,584 B;
+- application-partition margin: 689,199 B.
+
+T3-S3:
+
+- RAM: 99,552 / 327,680 B = 30.4%;
+- application ELF: 1,220,809 / 1,966,080 B = 62.1%;
+- real firmware.bin: 1,221,232 B.
 
 ## 6.4.0-rc2
 

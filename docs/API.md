@@ -34,6 +34,11 @@ The embedded Web UI communicates with the following endpoints on the main HTTP s
 | POST | `/api/as3935/config` | update AS3935 configuration |
 | POST | `/api/as3935/reset` | restore AS3935 defaults |
 | POST | `/api/as3935/reinit` | reinitialize/re-detect AS3935 using current configuration |
+| GET | `/api/sd` | read microSD logger configuration and live mount/write diagnostics |
+| POST | `/api/sd` | update microSD logger/source/snapshot configuration |
+| POST | `/api/sd/reset` | restore microSD logger defaults |
+| POST | `/api/sd/remount` | explicitly remount the card |
+| POST | `/api/sd/format` | destructively format FAT and remount; requires `confirm=FORMATTA` |
 | POST | `/api/poweroff` | controlled MQTT/RF/display shutdown followed by ESP32 deep sleep |
 | POST | `/api/restart` | restart ESP32 |
 
@@ -73,6 +78,14 @@ The state endpoint is intended for the Dashboard. Configuration/reinit/reset end
 Configuration backup schema is currently `1`. Wi-Fi credentials are never exported. The MQTT password is omitted unless explicitly requested with the secrets option.
 
 Backup/restore includes the persistent settings documented in [CONFIG_BACKUP.md](CONFIG_BACKUP.md).
+
+## microSD API
+
+`GET /api/sd` returns `{config,status}`. The status includes mount/support/time state, capacity, current file, queue/write/drop/error counters, negotiated SPI frequency, initialization result and SdFat `sd_error` / `sd_error_data` bytes.
+
+The embedded header reads this endpoint every four seconds. `SD SCRIVE` means the cumulative `written` counter increased since the preceding poll; it is not inferred from a guessed timestamp.
+
+`POST /api/sd/format` is intentionally destructive and rejected unless the form body contains `confirm=FORMATTA`. Formatting starts only after SdFat has initialized the card transport; a missing/electrically unavailable card remains a mount error.
 
 ## Stability note
 

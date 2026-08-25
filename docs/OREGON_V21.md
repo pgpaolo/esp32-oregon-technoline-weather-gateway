@@ -1,6 +1,6 @@
 # Oregon Scientific protocol V2.1
 
-The consolidated development branch `feature/uvr128-v21-recovery` runs a bounded Oregon V2.1 decoder alongside the existing OSV3 path. It does not replace or relax OSV3 validation.
+The consolidated development branch `codex/sdfat-write-status` runs a bounded Oregon V2.1 decoder alongside the existing OSV3 path. It does not replace or relax OSV3 validation; the SdFat storage layer consumes only already accepted frames.
 
 ## Supported V2.1 sensors
 
@@ -99,7 +99,7 @@ Run:
 python scripts/test_oregon_v21.py
 ```
 
-Build #92 reported:
+The current SdFat branch rerun reported:
 
 ```text
 6 valid, 6 corrupt rejected, UVR128 clipped-preamble + phase-scan recovery OK

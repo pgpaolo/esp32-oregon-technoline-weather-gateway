@@ -3,7 +3,7 @@
 Current consolidated development branch:
 
 ```text
-feature/uvr128-v21-recovery
+codex/sdfat-write-status
 ```
 
 ## Data flow
@@ -33,10 +33,12 @@ Oregon / Technoline 433.92 MHz sensors
                        ▼
                 station_state.*
                        │
-           ┌───────────┼────────────┬──────────────┐
-           ▼           ▼            ▼              ▼
-        Web/API      MQTT          OLED          Serial
-        web_mgr      publisher     display_mgr    diagnostics
+           ┌───────────┼────────────┬──────────────┬─────────────┐
+           ▼           ▼            ▼              ▼             ▼
+        Web/API      MQTT          OLED          Serial       RAM queue
+        web_mgr      publisher     display_mgr    diagnostics     │
+                                                                  ▼
+                                                             SdFat / CSV
 
 BME280 ───────► barometer_manager ───────────────► station_state
 
@@ -122,6 +124,12 @@ ESP32 Preferences/NVS is reserved for user configuration rather than continuous 
 
 Persistent areas include network, MQTT/TLS, display, Oregon thermo-channel policy, AS3935 and persistent RF settings. Runtime reception counters/history are not continuously written to flash.
 
+## microSD output path
+
+`sd_logger.*` receives only already validated measurements. It copies CSV rows into a fixed 16-slot RAM queue; deferred service writes bounded batches through SdFat on the board's dedicated HSPI bus. The RF decoder never performs filesystem I/O.
+
+The storage backend tries 4 MHz and one clean 400 kHz fallback. An explicit format operation is permitted when the card transport initialized but no supported FAT volume exists. The Web header polls the existing SD status API every four seconds and derives `SD SCRIVE` from the cumulative written-record counter; this adds no flash writes and no RF-path coupling.
+
 ## Power management
 
 The controlled Web power-off path coordinates MQTT/offline state, OLED, BME280, AS3935, SX1278 and Wi-Fi before entering deep sleep.
@@ -136,4 +144,5 @@ Deep sleep is a controller state, not a physical power disconnect.
 - Preserve legacy topics/fields while adding non-colliding per-transmitter outputs.
 - Minimize RAM/flash growth by reusing compact live registries and build-time Web compression.
 - Avoid flash wear by writing NVS only for user configuration changes.
+- Keep removable-media failure isolated from RF, MQTT, OLED and Web operation.
 - Keep raw/burst diagnostic polling off the normal Dashboard path whenever possible.

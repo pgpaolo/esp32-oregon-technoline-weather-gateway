@@ -3,7 +3,7 @@
 Questa checklist valida il branch corrente:
 
 ```text
-feature/uvr128-v21-recovery
+codex/sdfat-write-status
 ```
 
 Il macro firmware è `6.4.0-rc2`; il branch contiene ulteriori funzioni non ancora integrate in `main`.
@@ -18,7 +18,20 @@ Il macro firmware è `6.4.0-rc2`; il branch contiene ulteriori funzioni non anco
 - [x] Controllo dimensione reale `firmware.bin`
 - [ ] Build locale pulita prima del merge finale: `pio run -t clean -e t3-v161-433 && pio run -e t3-v161-433`
 
-Riferimento funzionale prima dei commit finali di sola documentazione: Build #92.
+Riferimento storage corrente: T3 64,9% Flash / 30,7% RAM; T3-S3 62,1% Flash / 30,4% RAM.
+
+## microSD / SdFat
+
+- [x] T3 V1.6.1: mount reale confermato
+- [x] T3 V1.6.1: formattazione reale confermata
+- [x] Backend SdFat 2.3.1 compilato su entrambi i target
+- [x] Primo tentativo 4 MHz + fallback pulito 400 kHz
+- [x] Badge superiore presente una sola volta dopo build consecutive
+- [x] `SD ON` e `SD SCRIVE` derivati dallo stato/contatore reale
+- [ ] Scrittura CSV Oregon e Technoline continuativa >= 2 ore
+- [ ] `queue_depth=0`, `dropped=0`, `write_errors=0` durante RF intensa
+- [ ] Scheda piena/read-only: gateway RF/MQTT/Web resta operativo
+- [ ] Deep sleep con coda pendente: drain e chiusura verificati
 
 ## Boot / system
 
@@ -197,4 +210,4 @@ Verificare:
 
 ## Criterio di merge
 
-PR #15 può essere considerata pronta per `main` solo dopo il completamento delle verifiche hardware rilevanti per l'impianto reale. I vecchi branch intermedi non sono più linee di sviluppo autonome: il riferimento corrente è il branch consolidato UVR128 recovery.
+Il branch `codex/sdfat-write-status` può essere considerato pronto per merge solo dopo le verifiche hardware di lunga durata ancora aperte. Mount e formattazione sono confermati; non vengono presentati come prova automatica dei casi scheda piena, read-only o deep sleep con coda pendente.

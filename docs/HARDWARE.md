@@ -25,6 +25,10 @@ t3-v161-433
 | Battery ADC | 35 |
 | AS3935 default I2C | `0x03` |
 | AS3935 default IRQ | 34 |
+| microSD MOSI | 15 |
+| microSD MISO | 2 |
+| microSD SCLK | 14 |
+| microSD CS | 13 |
 
 The SX1278 remains the single 433.92 MHz receiver for Oregon and Technoline.
 
@@ -56,7 +60,13 @@ Check for address conflicts when adding other I2C hardware.
 
 ## AS3935 lightning detector
 
-The consolidated `feature/uvr128-v21-recovery` branch includes the AS3935 integration inherited from the intermediate development branch.
+The consolidated `codex/sdfat-write-status` branch includes the AS3935 integration inherited from the intermediate development branch.
+
+## microSD
+
+The onboard microSD uses a dedicated HSPI instance and does not share the SX1278 pin set. The current branch uses Greiman SdFat 2.3.1 with 4 MHz initialization and one 400 kHz fallback after complete bus cleanup.
+
+Mount and explicit FAT format were confirmed on the physical T3 V1.6.1 setup. The formatter is allowed to run when the card transport is initialized but FAT is missing/invalid; it is not run against a card that failed transport initialization.
 
 Classic T3 V1.6.1 defaults:
 
@@ -129,11 +139,19 @@ Technoline WS23xx provides usable RF RSSI but does not provide a battery-status 
 
 ## Build reference
 
-The functional consolidated code passed PlatformIO Build #92 on both targets before the final documentation-only commits.
+The current SdFat/write-status code passed local PlatformIO builds on both targets after hardware mount/format confirmation.
 
-T3 V1.6.1 Build #92:
+T3 V1.6.1:
 
-- RAM: 92,560 / 327,680 B;
-- application ELF: 1,226,765 / 1,310,720 B;
-- real firmware.bin: 1,233,472 B;
-- app-partition margin: 77,248 B.
+- RAM: 100,592 / 327,680 B;
+- application ELF: 1,276,881 / 1,966,080 B;
+- real firmware.bin: 1,283,584 B;
+- app-partition margin: 689,199 B.
+
+T3-S3:
+
+- RAM: 99,552 / 327,680 B;
+- application ELF: 1,220,809 / 1,966,080 B;
+- real firmware.bin: 1,221,232 B.
+
+Both environments use `min_spiffs.csv`. NVS and two OTA application slots remain; SPIFFS is not used by this project.

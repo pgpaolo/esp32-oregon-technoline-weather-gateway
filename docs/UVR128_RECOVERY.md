@@ -1,6 +1,6 @@
 # UVR128 / EC70 V2.1 recovery
 
-This document describes the current UVR128 work carried by `feature/v21-cycle-quality-analyzer`, derived from the SD datalogger and V2.1 quality branches.
+This document describes the UVR128 work carried forward into `codex/sdfat-write-status`, derived from the SD datalogger and V2.1 quality branches. The SdFat change is output-only and does not alter these RF recovery gates.
 
 ## Why UVR128 is special
 

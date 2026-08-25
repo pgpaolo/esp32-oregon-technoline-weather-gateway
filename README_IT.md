@@ -5,7 +5,7 @@ Firmware standalone per **ESP32 / LILYGO T3 + SX1278 433.92 MHz** capace di rice
 Branch di sviluppo consolidato attuale:
 
 ```text
-feature/uvr128-v21-recovery
+codex/sdfat-write-status
 ```
 
 Il macro firmware resta **6.4.0-rc2**; questo branch contiene ulteriori funzioni in collaudo hardware non ancora integrate in `main`.
@@ -33,6 +33,7 @@ Il macro firmware resta **6.4.0-rc2**; questo branch contiene ulteriori funzioni
 - hostname configurabile e mDNS;
 - backup/ripristino JSON della configurazione;
 - riavvio e spegnimento software/deep sleep del controller;
+- datalogger microSD validato su hardware con backend SdFat, formattazione FAT e badge superiore di stato/scrittura;
 - asset Web gzip generato durante la build per ridurre l'occupazione flash.
 
 Documentazione consolidata del branch: [docs/UVR128_RECOVERY.md](docs/UVR128_RECOVERY.md).
@@ -181,12 +182,22 @@ AS3935 è integrato come sensore locale I2C/IRQ opzionale e dispone di:
 - pagina OLED selezionabile;
 - configurazione inclusa nel backup/ripristino.
 
+## Datalogger microSD
+
+La microSD integrata usa il cablaggio HSPI dedicato e il backend Greiman SdFat. I frame Oregon e Technoline validi, insieme agli snapshot opzionali BME280/AS3935, passano prima in una coda RAM e vengono scritti fuori dal percorso RF critico in file CSV UTC giornalieri sotto `/weather/`.
+
+Il badge superiore mostra `SD OFF`, `SD PRONTA`, `SD ON`, `SD SCRIVE`, `SD KO` oppure `SD ERR`. Il tooltip riporta scritture totali, profondità coda, errori e file corrente. Dalla configurazione Web è possibile rimontare o formattare esplicitamente la scheda; una FAT assente o corrotta viene ricreata solo dopo l'inizializzazione corretta del trasporto.
+
+Riferimento completo: [docs/SD_DATALOGGER.md](docs/SD_DATALOGGER.md).
+
+PDF tecnico aggiornato: [Guida codifiche RF V6.4.0 - Edizione 3](output/pdf/Guida_Codifiche_RF_Oregon_Technoline_V6.4.0_Edizione_3.pdf).
+
 ## Compilazione rapida
 
 ```bash
 git clone https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway.git
 cd esp32-oregon-technoline-weather-gateway
-git checkout feature/uvr128-v21-recovery
+git checkout codex/sdfat-write-status
 cp src/config_private.example.h src/config_private.h
 pio run -e t3-v161-433
 pio run -e t3-v161-433 -t upload
@@ -210,7 +221,7 @@ Il recovery UVR128 conserva comunque il minimo necessario di intervalli RAW quan
 
 ## Build e CI
 
-Il codice funzionale è stato validato con **PlatformIO Build #92** prima dei commit finali di sola documentazione:
+Il branch SdFat validato su hardware è stato ricompilato localmente su entrambi i target:
 
 - Validate: PASS;
 - AS3935 Integration Guard: PASS;
@@ -218,12 +229,12 @@ Il codice funzionale è stato validato con **PlatformIO Build #92** prima dei co
 - `t3-s3-433`: PASS;
 - vettori host Oregon V2.1: PASS.
 
-T3 V1.6.1, Build #92:
+T3 V1.6.1, branch corrente:
 
-- RAM: `92.560 / 327.680 B` = 28,2%;
-- ELF applicazione: `1.226.765 / 1.310.720 B` = 93,6%;
-- `firmware.bin` reale: `1.233.472 B`;
-- margine reale partizione applicazione: `77.248 B`.
+- RAM: `100.592 / 327.680 B` = 30,7%;
+- ELF applicazione: `1.276.881 / 1.966.080 B` = 64,9%;
+- `firmware.bin` reale: `1.283.584 B`;
+- margine reale partizione applicazione: `689.199 B`.
 
 Artifact ID: `9498796327`.
 
@@ -259,6 +270,6 @@ GNU GPL v3 o successiva. Il decoder Technoline/WS23xx usa conoscenze e logica co
 La struttura prevista dopo la pulizia del repository è volutamente ridotta a:
 
 - `main` - linea integrata/stabile;
-- `feature/uvr128-v21-recovery` - linea di sviluppo/collaudo hardware corrente.
+- `codex/sdfat-write-status` - linea microSD/SdFat corrente, validata su hardware.
 
 Le vecchie PR restano disponibili come storico anche dopo la rimozione dei branch intermedi.

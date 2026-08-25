@@ -3,10 +3,10 @@
 Development branch:
 
 ```text
-feature/sd-datalogger
+codex/sdfat-write-status
 ```
 
-This branch is derived from `feature/uvr128-v21-recovery` and keeps the RF decoders unchanged. The microSD path is an output layer only.
+This branch is derived from `feature/v21-cycle-quality-analyzer` and keeps the RF decoders unchanged. The microSD path is an output layer only. Mount and format have been confirmed on the physical T3 V1.6.1 setup.
 
 ## Hardware pinout
 
@@ -31,6 +31,20 @@ Official LILYGO mappings used by the branch:
 | SD CS | 13 |
 
 The SD card uses a dedicated `SPIClass(HSPI)` path. SX1278 keeps its existing radio SPI pins.
+
+## SdFat backend and initialization
+
+The branch uses Greiman **SdFat 2.3.1**, not the Arduino-ESP32 `SD` wrapper. Hardware diagnostics showed that the card entered SPI idle state (`CMD0 = 0x01`) while the previous `SD.begin()` path still failed later in initialization. Reformatting could not solve that state because the old formatter never obtained a usable block device.
+
+The current sequence is deliberately bounded:
+
+1. CS is driven high while the official LILYGO SCK/MISO/MOSI pins are configured.
+2. SdFat tries shared HSPI at 4 MHz.
+3. After a complete bus cleanup, one 400 kHz fallback is attempted for slow or marginal cards.
+4. `sdErrorCode` and `sdErrorData` are retained for Web diagnostics.
+5. When the card transport is ready but FAT is absent/invalid, the explicit format action calls the SdFat formatter and performs a clean remount.
+
+Formatting is never attempted when the card transport itself has not initialized.
 
 ## Safety rule
 
@@ -114,6 +128,7 @@ GET  /api/sd
 POST /api/sd
 POST /api/sd/reset
 POST /api/sd/remount
+POST /api/sd/format
 ```
 
 The Web configuration exposes:
@@ -130,6 +145,21 @@ The Web configuration exposes:
 - queue depth, dropped records and write errors;
 - UTC/NTP synchronization state;
 - explicit remount action.
+- explicit destructive FAT format action with two Web confirmations;
+- negotiated SPI frequency and SdFat error code/data.
+
+The top header contains a compact status badge refreshed every four seconds:
+
+| Badge | Meaning |
+|---|---|
+| `SD OFF` | datalogger disabled; the optional card is not mounted |
+| `SD PRONTA` | card mounted, datalogger disabled |
+| `SD ON` | card mounted and datalogger enabled |
+| `SD SCRIVE` | cumulative written-record counter increased since the previous poll |
+| `SD KO` | datalogger enabled but mount failed |
+| `SD ERR` | Web status request failed |
+
+The badge tooltip reports written records, queue depth, errors and current file. The polling reads existing counters only and does not write NVS or touch the RF decoder.
 
 Configuration is stored in the dedicated NVS namespace `sdlog` and is only rewritten when values actually change.
 
@@ -160,7 +190,19 @@ Before deep sleep the logger attempts to drain the pending queue, closes the fil
 7. Disconnect Wi-Fi/NTP after sync and confirm logging continues.
 8. Test deep-sleep shutdown with pending records.
 9. Test a full/read-only/bad card and confirm fail-safe behavior.
+10. With an invalid/blank card press `FORMATTA SD`, confirm both prompts and verify automatic remount.
+11. Verify the top badge changes from `SD ON` to `SD SCRIVE` after a CSV append.
+12. Hover the badge and verify write count, queue, errors and current file.
 
 ## Current status
 
-The branch remains experimental until PlatformIO builds and real microSD + RF concurrency tests pass on the T3 V1.6.1 target.
+Mount and format are hardware-confirmed on T3 V1.6.1. Both PlatformIO targets build successfully and the Oregon V2.1 host vectors remain green. Long-duration RF + microSD concurrency, full/read-only-card handling and deep-sleep draining remain checklist items rather than claimed hardware proof.
+
+Current build reference with `min_spiffs.csv`:
+
+| Target | RAM | Application | Slot use |
+|---|---:|---:|---:|
+| T3 V1.6.1 | 100,592 / 327,680 B | 1,276,881 / 1,966,080 B | 64.9% |
+| T3-S3 | 99,552 / 327,680 B | 1,220,809 / 1,966,080 B | 62.1% |
+
+`min_spiffs.csv` is appropriate because the Web UI is embedded and the project does not use SPIFFS. NVS and two OTA application slots remain available.
