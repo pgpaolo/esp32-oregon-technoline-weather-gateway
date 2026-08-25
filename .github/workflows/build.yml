@@ -82,7 +82,8 @@ jobs:
           SIZE=$(stat -c%s "$BIN")
           echo "firmware.bin size: ${SIZE} bytes"
           if [ "${{ matrix.environment }}" = "t3-v161-433" ]; then
-            MAX=1310720
+            # min_spiffs.csv uses two 0x1E0000 application slots.
+            MAX=1966080
             MARGIN=$((MAX - SIZE))
             echo "T3 V1.6.1 app partition: ${MAX} bytes"
             echo "Real margin: ${MARGIN} bytes"
