@@ -2,11 +2,11 @@
 
 #include <Preferences.h>
 #include <WebServer.h>
-#include <esp_system.h>
 
 namespace {
 constexpr const char *NVS_NS = "webauth";
 constexpr const char *DEFAULT_USER = "admin";
+constexpr const char *DEFAULT_PASSWORD = "admin";
 constexpr uint8_t MAX_FAILED_ATTEMPTS = 10U;
 constexpr uint32_t LOCKOUT_MS = 30000UL;
 
@@ -32,15 +32,12 @@ bool validPassword(const String &value) {
     return value.length() >= 8U && value.length() <= 63U;
 }
 
-String randomPassword() {
-    static const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-    String out;
-    out.reserve(14);
-    for (uint8_t i = 0; i < 14U; ++i) {
-        const uint32_t r = esp_random();
-        out += alphabet[r % (sizeof(alphabet) - 1U)];
-    }
-    return out;
+bool factoryBootstrapPassword(const String &value) {
+    return value == DEFAULT_PASSWORD;
+}
+
+bool validStoredPassword(const String &value) {
+    return validPassword(value) || factoryBootstrapPassword(value);
 }
 
 bool lockoutActive() {
@@ -91,7 +88,7 @@ void initWebSecurity() {
         cfg.username = prefs.getString("user", DEFAULT_USER);
         if (prefs.isKey("pass")) {
             password = prefs.getString("pass", "");
-            haveStoredPassword = validPassword(password);
+            haveStoredPassword = validStoredPassword(password);
         }
         prefs.end();
     }
@@ -99,26 +96,26 @@ void initWebSecurity() {
     if (!validUsername(cfg.username)) cfg.username = DEFAULT_USER;
 
     if (!haveStoredPassword) {
-        password = randomPassword();
+        password = DEFAULT_PASSWORD;
         bootstrapPassword = password;
         cfg.enabled = true;
         if (!persistConfig(cfg, password)) {
             Serial.println(F("[AUTH] ERRORE: impossibile salvare la password iniziale in NVS"));
         }
-        Serial.println(F("[AUTH] autenticazione Web iniziale generata"));
+        Serial.println(F("[AUTH] credenziali Web iniziali impostate"));
         Serial.print(F("[AUTH] utente: ")); Serial.println(cfg.username);
         Serial.print(F("[AUTH] password iniziale: ")); Serial.println(bootstrapPassword);
         Serial.println(F("[AUTH] cambiare la password dalla sezione SISTEMA dopo il primo accesso"));
     }
 
-    cfg.passwordSet = validPassword(password);
+    cfg.passwordSet = validStoredPassword(password);
     failedAttempts = 0;
     lockedUntilMs = 0;
 }
 
 WebSecurityConfig getWebSecurityConfig() {
     WebSecurityConfig out = cfg;
-    out.passwordSet = validPassword(password);
+    out.passwordSet = validStoredPassword(password);
     return out;
 }
 
@@ -163,7 +160,7 @@ bool saveWebSecurityConfig(bool enabled, const String &username,
         }
         nextPassword = newPassword;
     }
-    if (enabled && !validPassword(nextPassword)) {
+    if (enabled && !validStoredPassword(nextPassword)) {
         error = "authentication cannot be enabled without a valid password";
         return false;
     }
@@ -171,7 +168,7 @@ bool saveWebSecurityConfig(bool enabled, const String &username,
     WebSecurityConfig next = cfg;
     next.enabled = enabled;
     next.username = nextUser;
-    next.passwordSet = validPassword(nextPassword);
+    next.passwordSet = validStoredPassword(nextPassword);
     changed = next.enabled != cfg.enabled || next.username != cfg.username || nextPassword != password;
     if (!changed) return true;
 
@@ -195,7 +192,7 @@ String webSecurityConfigJson() {
     out += cfg.enabled ? "true" : "false";
     out += ",\"username\":\"" + cfg.username + "\"";
     out += ",\"password_set\":";
-    out += validPassword(password) ? "true" : "false";
+    out += validStoredPassword(password) ? "true" : "false";
     out += ",\"locked\":";
     out += lockoutActive() ? "true" : "false";
     out += ",\"lock_remaining_ms\":" + String(lockoutRemainingMs());
