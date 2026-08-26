@@ -23,8 +23,22 @@ bool plausibleHumidity(float value)    { return value >= 0.0f && value <= 100.0f
 bool plausibleWind(float value)        { return value >= 0.0f && value <= 300.0f; }
 bool plausibleRain(float value)        { return value >= 0.0f && value <= 100000.0f; }
 
-uint8_t checksumPositionForSensor(uint8_t sensorId) {
-    switch (sensorId) {
+uint16_t packetSensorCode(const OregonPacket &packet) {
+    uint8_t n1, n2, n3, n4;
+    if (!getNybble(packet, 1, n1) || !getNybble(packet, 2, n2) ||
+        !getNybble(packet, 3, n3) || !getNybble(packet, 4, n4)) return 0;
+    return static_cast<uint16_t>((n1 << 12U) | (n2 << 8U) | (n3 << 4U) | n4);
+}
+
+uint8_t checksumPositionForPacket(const OregonPacket &packet) {
+    const uint16_t code = packetSensorCode(packet);
+    if (code == 0xEC40U) return 13; // THN132N V2.1 temperatura
+    if (code == 0xEC70U) return 13; // UVR128 V2.1 UV
+    if (code == 0x1D20U) return 16; // THGR122NX/THGR228N V2.1 termo/igro
+    if (code == 0x1D30U) return 16; // THGR968/THGN500 V2.1 termo/igro
+    if (code == 0x2D10U) return 17; // RGR968 V2.1 pioggia
+    if (code == 0x3D00U) return 18; // WGR968 V2.1 vento
+    switch (packet.bytes[0]) {
         case 0xAF: return 16; // THGN800/THGN801 family
         case 0xA1: return 18; // WGR800
         case 0xA2: return 19; // PCR800, checksum attraversa il byte
@@ -34,11 +48,37 @@ uint8_t checksumPositionForSensor(uint8_t sensorId) {
     }
 }
 
+bool parseThermoPayload(const OregonPacket &packet, WeatherReading &reading, bool withHumidity) {
+    uint8_t tens, ones, tenths, sign;
+    if (!decimalNybble(packet, 11, tens) || !decimalNybble(packet, 10, ones) ||
+        !decimalNybble(packet, 9, tenths) || !getNybble(packet, 12, sign)) return false;
+
+    float temp = static_cast<float>(tens * 10U + ones) + static_cast<float>(tenths) / 10.0f;
+    if (sign == 8U) temp = -temp;
+    else if (sign != 0U) return false;
+    if (!plausibleTemperature(temp)) return false;
+
+    reading.temperatureC = temp;
+    reading.temperatureValid = true;
+    if (!withHumidity) return true;
+
+    uint8_t humTens, humOnes;
+    if (!decimalNybble(packet, 14, humTens) || !decimalNybble(packet, 13, humOnes)) return false;
+    const float humidity = static_cast<float>(humTens * 10U + humOnes);
+    if (!plausibleHumidity(humidity)) return false;
+    reading.humidityPct = humidity;
+    reading.humidityValid = true;
+    return true;
+}
+
 uint8_t decodeChannel(uint8_t raw) {
-    // OS v2.1/v3 spesso usa 1 << (channel-1): 1,2,4 -> canali 1,2,3.
+    // Oregon OS v2.1/v3 does not use one single channel coding across all
+    // thermo families. Legacy 3-channel sensors commonly use one-hot coding
+    // 1,2,4 -> CH1,CH2,CH3. F824 hardware in this project was also observed
+    // on-air using raw=3 for CH3, so accept direct numeric 1,2,3 as well.
     if (raw == 1) return 1;
     if (raw == 2) return 2;
-    if (raw == 4) return 3;
+    if (raw == 3 || raw == 4) return 3;
     return 0;
 }
 
@@ -67,11 +107,12 @@ bool parseCommonFields(const OregonPacket &packet, WeatherReading &reading) {
 bool sensorCodeMatchesType(SensorType type, uint16_t code) {
     switch (type) {
         case SensorType::ThermoHygro:
-            return code == 0xF824 || code == 0xF8B4 || code == 0x1D20;
+            return code == 0xF824 || code == 0xF8B4 || code == 0x1D20 ||
+                   code == 0x1D30 || code == 0xEC40;
         case SensorType::Wind:
-            return code == 0x1984 || code == 0x1994;
+            return code == 0x1984 || code == 0x1994 || code == 0x3D00;
         case SensorType::Rain:
-            return code == 0x2914;
+            return code == 0x2914 || code == 0x2D10;
         case SensorType::UV:
             return code == 0xD874 || code == 0xEC70;
         default:
@@ -84,7 +125,7 @@ bool sensorCodeMatchesType(SensorType type, uint16_t code) {
 bool validateOregonChecksum(const OregonPacket &packet) {
     if (packet.length == 0) return false;
 
-    const uint8_t csPos = checksumPositionForSensor(packet.bytes[0]);
+    const uint8_t csPos = checksumPositionForPacket(packet);
     if (csPos == 0) return false;
 
     const uint8_t requiredNibbles = static_cast<uint8_t>(csPos + 2U);
@@ -114,28 +155,98 @@ bool parseWeatherPacket(const OregonPacket &packet, WeatherReading &reading) {
     reading.rssi = packet.rssi;
     if (!parseCommonFields(packet, reading)) return false;
 
+    // I codici completi disambiguano i sensori V2.1. In particolare 1D20
+    // condivide il byte legacy A1 con il WGR800 V3 e non deve finire nel ramo vento.
+    if (reading.sensorCode == 0xEC40U) {
+        reading.type = SensorType::ThermoHygro;
+        return parseThermoPayload(packet, reading, false);
+    }
+    if (reading.sensorCode == 0x1D20U) {
+        reading.type = SensorType::ThermoHygro;
+        return parseThermoPayload(packet, reading, true);
+    }
+    if (reading.sensorCode == 0x1D30U) {
+        reading.type = SensorType::ThermoHygro;
+        return parseThermoPayload(packet, reading, true);
+    }
+    if (reading.sensorCode == 0x3D00U) {
+        reading.type = SensorType::Wind;
+        uint8_t dirHundreds, dirTens, dirOnes;
+        uint8_t gustUnits, gustTenthsA, gustTenthsB;
+        uint8_t avgUnits, avgTenthsA, avgTenthsB;
+        if (!decimalNybble(packet, 11, dirHundreds) ||
+            !decimalNybble(packet, 10, dirTens) ||
+            !decimalNybble(packet, 9, dirOnes) ||
+            !decimalNybble(packet, 13, gustUnits) ||
+            !decimalNybble(packet, 12, gustTenthsA) ||
+            !decimalNybble(packet, 14, gustTenthsB) ||
+            !decimalNybble(packet, 16, avgUnits) ||
+            !decimalNybble(packet, 15, avgTenthsA) ||
+            !decimalNybble(packet, 17, avgTenthsB)) return false;
+
+        const float direction = static_cast<float>(dirHundreds * 100U + dirTens * 10U + dirOnes);
+        const float gustMs = static_cast<float>(gustUnits) +
+                             static_cast<float>(gustTenthsA + gustTenthsB) / 10.0f;
+        const float avgMs = static_cast<float>(avgUnits) +
+                            static_cast<float>(avgTenthsA + avgTenthsB) / 10.0f;
+        const float gust = gustMs * 3.6f;
+        const float avg = avgMs * 3.6f;
+        if (direction > 360.0f || !plausibleWind(gust) || !plausibleWind(avg)) return false;
+
+        reading.windDirectionDeg = direction;
+        reading.windDirectionIndex = static_cast<uint8_t>(direction / 22.5f + 0.5f) & 0x0FU;
+        reading.windDirectionValid = true;
+        reading.windGustKmh = gust;
+        reading.windGustValid = true;
+        reading.windAverageKmh = avg;
+        reading.windAverageValid = true;
+        return true;
+    }
+    if (reading.sensorCode == 0x2D10U) {
+        reading.type = SensorType::Rain;
+        uint8_t rateHundreds, rateTens, rateTenths;
+        uint8_t totalTenThousands, totalThousands, totalHundreds, totalTens, totalTenths;
+        if (!decimalNybble(packet, 10, rateHundreds) ||
+            !decimalNybble(packet, 9, rateTens) ||
+            !decimalNybble(packet, 11, rateTenths) ||
+            !decimalNybble(packet, 16, totalTenThousands) ||
+            !decimalNybble(packet, 15, totalThousands) ||
+            !decimalNybble(packet, 14, totalHundreds) ||
+            !decimalNybble(packet, 13, totalTens) ||
+            !decimalNybble(packet, 12, totalTenths)) return false;
+
+        const float rate = static_cast<float>(rateHundreds * 100U + rateTens * 10U + rateTenths) / 10.0f;
+        const uint32_t totalRaw = static_cast<uint32_t>(totalTenThousands) * 10000UL +
+                                  static_cast<uint32_t>(totalThousands) * 1000UL +
+                                  static_cast<uint32_t>(totalHundreds) * 100UL +
+                                  static_cast<uint32_t>(totalTens) * 10UL + totalTenths;
+        const float total = static_cast<float>(totalRaw) / 10.0f;
+        if (!plausibleRain(total) || rate > 2000.0f) return false;
+
+        reading.rainTotalMm = total;
+        reading.rainTotalValid = true;
+        reading.rainRateMmH = rate;
+        reading.rainRateValid = true;
+        return true;
+    }
+    if (reading.sensorCode == 0xEC70U) {
+        reading.type = SensorType::UV;
+        uint8_t tens, ones;
+        if (!decimalNybble(packet, 10, tens) || !decimalNybble(packet, 9, ones)) return false;
+        const uint8_t uv = static_cast<uint8_t>(tens * 10U + ones);
+        if (uv > 25U) return false;
+        reading.uvIndex = uv;
+        reading.uvValid = true;
+        return true;
+    }
+
     uint8_t a, b, c, d, e;
 
     switch (reading.sensorId) {
         case 0xAF: { // Thermo/Hygro
             reading.type = SensorType::ThermoHygro;
             if (!sensorCodeMatchesType(reading.type, reading.sensorCode)) return false;
-            uint8_t sign;
-            if (!decimalNybble(packet, 11, a) || !decimalNybble(packet, 10, b) ||
-                !decimalNybble(packet, 9, c) || !getNybble(packet, 12, sign) ||
-                !decimalNybble(packet, 14, d) || !decimalNybble(packet, 13, e)) return false;
-
-            float temp = static_cast<float>(a * 10U + b) + static_cast<float>(c) / 10.0f;
-            if (sign == 8) temp = -temp;
-            else if (sign != 0) return false;
-            const float hum = static_cast<float>(d * 10U + e);
-            if (!plausibleTemperature(temp) || !plausibleHumidity(hum)) return false;
-
-            reading.temperatureC = temp;
-            reading.temperatureValid = true;
-            reading.humidityPct = hum;
-            reading.humidityValid = true;
-            return true;
+            return parseThermoPayload(packet, reading, true);
         }
 
         case 0xA1: { // WGR800 Protocol 3.0, ID 1984/1994
@@ -193,11 +304,15 @@ bool parseWeatherPacket(const OregonPacket &packet, WeatherReading &reading) {
         case 0xAD: { // UVN800
             reading.type = SensorType::UV;
             if (!sensorCodeMatchesType(reading.type, reading.sensorCode)) return false;
-            // Oregon RF Protocol Description: per D874/EC70 i nibble 8..9 sono
-            // un "UV Index Unit-less Integer", non un campo BCD. I frame reali
-            // del sensore confermano la sequenza 09 -> 0A -> 0B ... per UV 9,10,11.
-            // Nel buffer legacy il campo corrisponde al byte 4.
-            const int uv = static_cast<int>(packet.bytes[4]);
+            // Il sync A occupa il nibble 0 del buffer legacy. Il nibble 8 e'
+            // ancora il campo flags/batteria; l'indice UV D874 usa i nibble
+            // successivi 9 (unita') e 10 (decine). Non leggere packet.bytes[4]
+            // come byte intero: con flags=C e UV=0 diventerebbe falsamente C0.
+            // L'unita' puo' assumere A/B nei frame reali UV=10/11, quindi si
+            // valida il valore ricomposto anziche' imporre BCD stretto.
+            uint8_t uvUnits = 0, uvTens = 0;
+            if (!getNybble(packet, 9, uvUnits) || !getNybble(packet, 10, uvTens)) return false;
+            const int uv = static_cast<int>(uvTens) * 10 + static_cast<int>(uvUnits);
             if (uv < 0 || uv > 25) return false;
             reading.uvIndex = uv;
             reading.uvValid = true;
@@ -224,7 +339,11 @@ const char *sensorModelName(uint16_t sensorCode) {
     switch (sensorCode) {
         case 0xF824: return "THGN801/THGR810";
         case 0xF8B4: return "THGR810";
-        case 0x1D20: return "THGN123N/THGR122NX";
+        case 0x1D20: return "THGR122NX/THGR228N";
+        case 0x1D30: return "THGR968/THGN500";
+        case 0xEC40: return "THN132N/THR228N";
+        case 0x3D00: return "WGR968";
+        case 0x2D10: return "RGR968";
         case 0x1984: return "WGR800";
         case 0x1994: return "WGR800";
         case 0x2914: return "PCR800";

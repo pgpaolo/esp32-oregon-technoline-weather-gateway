@@ -12,6 +12,8 @@
 #include "barometer_manager.h"
 #include "web_manager.h"
 #include "lacrosse_ws23xx.h"
+#include "lightning_manager.h"
+#include "thermo_channel_manager.h"
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -176,7 +178,7 @@ void setup() {
     Serial.print(F(" Oregon + Technoline 433 Gateway ")); Serial.println(FIRMWARE_VERSION);
     Serial.print(F(" Board: ")); Serial.println(BOARD_NAME);
     Serial.println(F(" RF: SX1278 OOK direct RAW EDGE"));
-    Serial.println(F(" Oregon: OSV3 V4.8 multi-decoder"));
+    Serial.println(F(" Oregon: OSV2.1 + OSV3 multi-decoder"));
     Serial.println(F(" Technoline: WS230x / WS-2310 rtl_433-compatible OOK/PWM 52-bit"));
     Serial.println(F(" RF mode: DUAL simultaneo + modalita singole diagnostiche"));
     Serial.println(F(" Web: HTTP + hostname/mDNS configurabile"));
@@ -185,8 +187,12 @@ void setup() {
     pinMode(BOARD_LED_PIN, OUTPUT);
     digitalWrite(BOARD_LED_PIN, BOARD_LED_OFF);
 
+    // Core hardware/services first. Multichannel thermo is deliberately not
+    // part of the critical boot path: the gateway and RF must start even if
+    // its optional NVS namespace is unavailable or contains invalid values.
     initDisplay();
     initBarometer();
+    initLightning();
     initNetwork();
     initMQTT(mqttClient, wifiClient);
     initWeb(station);
@@ -198,6 +204,10 @@ void setup() {
     } else {
         Serial.println(F("[RF] SX1278 pronto: OOK raw edge RX, BitSync OFF"));
     }
+
+    // Optional routing/configuration layer, after RF is already alive.
+    initThermoChannels();
+    Serial.println(F("[BOOT] thermo multichannel initialized"));
 }
 
 void loop() {
@@ -209,7 +219,12 @@ void loop() {
         WeatherReading reading;
         if (parseWeatherPacket(packet, reading)) {
             noteAcceptedOregonFrameForCalibration();
-            applyWeatherReading(station, reading);
+            bool applyThermoPrimary = true;
+            if (reading.type == SensorType::ThermoHygro) {
+                noteThermoChannelReading(reading);
+                applyThermoPrimary = thermoChannelIsPrimary(reading.channel);
+            }
+            applyWeatherReading(station, reading, applyThermoPrimary);
             printPacket(packet, &reading, true);
             recordWebPacket(packet, &reading, true);
             publishWeatherReading(mqttClient, reading, packet);
@@ -248,6 +263,9 @@ void loop() {
     // piu' scarico durante la fase di acquisizione.
     serviceOregonReceiver();
 
+    // AS3935 e' servito solo dopo la seconda passata RF. L'ISR imposta una flag:
+    // nessuna lettura I2C e nessun delay bloccante vengono eseguiti nell'interrupt.
+    serviceLightning(mqttClient);
     serviceMQTT(mqttClient);
     serviceBarometer(station);
 

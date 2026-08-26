@@ -1,9 +1,12 @@
 name: PlatformIO Build
+# Branch CI: verifies the physical firmware.bin size before publishing artifacts.
 
 on:
   push:
     branches:
       - main
+      - release/6.4.0-rc3
+      - develop
   pull_request:
     branches:
       - main
@@ -54,8 +57,42 @@ jobs:
       - name: Show PlatformIO version
         run: pio --version
 
+      - name: Apply PCR800 rain-rate decoder fix
+        run: python scripts/apply_pcr800_rain_rate_fix.py
+
+      - name: Validate PCR800 rain-rate vector
+        run: python scripts/test_pcr800_rain_rate.py
+
+      - name: Validate Oregon V2.1 protocol vectors
+        run: python scripts/test_oregon_v21.py
+
       - name: Build firmware
         run: pio run -e "${{ matrix.environment }}"
+
+      # The PlatformIO pre-scripts intentionally patch generated source in-place.
+      # A second build in the same checkout reproduces the Windows/local workflow
+      # and guards against duplicate generated SD handlers/UI blocks.
+      - name: Rebuild same workspace (SD idempotence)
+        if: matrix.environment == 't3-v161-433'
+        run: pio run -e "${{ matrix.environment }}"
+
+      - name: Verify real firmware.bin size
+        shell: bash
+        run: |
+          BIN=".pio/build/${{ matrix.environment }}/firmware.bin"
+          SIZE=$(stat -c%s "$BIN")
+          echo "firmware.bin size: ${SIZE} bytes"
+          if [ "${{ matrix.environment }}" = "t3-v161-433" ]; then
+            # min_spiffs.csv uses two 0x1E0000 application slots.
+            MAX=1966080
+            MARGIN=$((MAX - SIZE))
+            echo "T3 V1.6.1 app partition: ${MAX} bytes"
+            echo "Real margin: ${MARGIN} bytes"
+            if [ "$SIZE" -gt "$MAX" ]; then
+              echo "ERROR: firmware.bin exceeds the application partition by $((SIZE - MAX)) bytes"
+              exit 1
+            fi
+          fi
 
       - name: Upload firmware artifacts
         if: success()

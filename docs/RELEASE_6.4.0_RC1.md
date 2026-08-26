@@ -19,6 +19,8 @@ V6.4.0-rc1 adds device-management and maintainability features on top of the V6.
 - Cross-platform Git commit embedding fixed for Windows and GitHub Actions
 - Oregon Scientific OSV3 and Technoline / La Crosse WS23xx RF logic retained
 - MQTT/TLS, selectable MQTT fields, RF diagnostics and responsive Web UI retained
+- SdFat microSD datalogger with explicit FAT format and live header write-status badge
+- Expanded OTA application slots through `min_spiffs.csv` while retaining NVS and dual OTA slots
 
 ## Supported targets
 
@@ -39,6 +41,7 @@ After flashing, verify:
 6. OLED Web ON/OFF persistence
 7. configuration export/import
 8. Hardware tab firmware/build/reset metadata
+9. microSD mount, format, CSV write and `SD SCRIVE` header feedback
 
 ## Backup security
 

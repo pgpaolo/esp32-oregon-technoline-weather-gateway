@@ -130,7 +130,7 @@ struct StationState {
     LaCrosseStationState lacrosse{};
 };
 
-void applyWeatherReading(StationState &state, const WeatherReading &reading);
+void applyWeatherReading(StationState &state, const WeatherReading &reading, bool applyThermoToPrimary = true);
 void applyLaCrosseReading(StationState &state, const LaCrosseReading &reading);
 void refreshDerivedWeather(StationState &state);
 bool sensorFresh(uint32_t updatedAtMs, uint32_t nowMs);

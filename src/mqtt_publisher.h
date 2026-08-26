@@ -45,10 +45,20 @@ enum MqttField : uint32_t {
     MQTT_F_BME_TREND      = 1UL << 24,
     MQTT_F_STATE_JSON     = 1UL << 25,
     MQTT_F_RF_META        = 1UL << 26,
-    MQTT_F_SYSTEM         = 1UL << 27
+    MQTT_F_SYSTEM         = 1UL << 27,
+
+    // AS3935 usa i quattro bit ancora liberi della mask generale:
+    // STATE       -> snapshot completo retained;
+    // EVENT       -> IRQ/eventi live non-retained;
+    // LAST_STRIKE -> ultimo fulmine retained, utile a WeeWX/automazioni;
+    // DIAG        -> calibrazione, risonanza e contatori diagnostici retained.
+    MQTT_F_AS_STATE       = 1UL << 28,
+    MQTT_F_AS_EVENT       = 1UL << 29,
+    MQTT_F_AS_LAST_STRIKE = 1UL << 30,
+    MQTT_F_AS_DIAG        = 1UL << 31
 };
 
-static constexpr uint32_t MQTT_FIELDS_ALL = 0x0FFFFFFFUL;
+static constexpr uint32_t MQTT_FIELDS_ALL = 0xFFFFFFFFUL;
 
 struct MqttRuntimeConfig {
     bool enabled{true};
@@ -74,6 +84,7 @@ bool validateMqttConfig(const MqttRuntimeConfig &cfg, bool replacePassword, bool
 bool saveMqttConfig(const MqttRuntimeConfig &cfg, bool replacePassword, bool replaceCaCertificate);
 bool resetMqttConfigToDefaults();
 const char *mqttTlsModeName(MqttTlsMode mode);
+void reconcileThermoMqttRetained(uint8_t previousVisibleMask, uint8_t previousPrimaryChannel);
 
 void publishWeatherReading(PubSubClient &client, const WeatherReading &reading, const OregonPacket &packet);
 void publishLaCrosseReading(PubSubClient &client, const LaCrosseReading &reading, const LaCrossePacket &packet);

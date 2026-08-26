@@ -1,5 +1,7 @@
 # Publishing checklist — v6.4.0-rc1
 
+Documentation/storage update note: the hardware-validated microSD work is published on `codex/sdfat-write-status`. Before promoting a later V6.4 candidate, carry forward `docs/SD_DATALOGGER.md`, the `/api/sd` reference, `min_spiffs.csv`, both PlatformIO build results and the Edition 3 PDF. Do not claim full/read-only-card or long-duration concurrency validation unless those checklist items have been completed.
+
 1. Create branch `release/v6.4.0-rc1`.
 2. Upload/commit the RC1 files and open a Pull Request to `main`.
 3. Wait for all checks:
@@ -20,3 +22,4 @@
    - `firmware-t3-v161-433`
    - `firmware-t3-s3-433`
 10. Promote to stable `v6.4.0` only after real-device validation.
+11. Attach or link `output/pdf/Guida_Codifiche_RF_Oregon_Technoline_V6.4.0_Edizione_3.pdf` with the release documentation.

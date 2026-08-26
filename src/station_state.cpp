@@ -127,7 +127,7 @@ void refreshDerivedWeather(StationState &state) {
     state.windChillValid = state.thermoValid && state.windValid && isfinite(state.windChillC);
 }
 
-void applyWeatherReading(StationState &state, const WeatherReading &reading) {
+void applyWeatherReading(StationState &state, const WeatherReading &reading, bool applyThermoToPrimary) {
     state.validPacketCount++;
     state.lastPacketMs = reading.receivedAtMs;
     state.lastSensorId = reading.sensorId;
@@ -137,7 +137,7 @@ void applyWeatherReading(StationState &state, const WeatherReading &reading) {
     switch (reading.type) {
         case SensorType::ThermoHygro:
             state.thermoPacketCount++;
-            updateSensorStatus(state.thermoSensor, reading);
+            if (applyThermoToPrimary) updateSensorStatus(state.thermoSensor, reading);
             break;
         case SensorType::Wind:
             state.windPacketCount++;
@@ -154,7 +154,7 @@ void applyWeatherReading(StationState &state, const WeatherReading &reading) {
         default: break;
     }
 
-    if (reading.temperatureValid || reading.humidityValid) {
+    if ((reading.type != SensorType::ThermoHygro || applyThermoToPrimary) && (reading.temperatureValid || reading.humidityValid)) {
         if (reading.temperatureValid) state.temperatureC = reading.temperatureC;
         if (reading.humidityValid) state.humidityPct = reading.humidityPct;
         state.thermoUpdatedMs = reading.receivedAtMs;
