@@ -6,7 +6,7 @@
 #endif
 
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION         "6.4.0-rc2"
+#define FIRMWARE_VERSION         "6.4.0-rc3"
 #endif
 #ifndef GIT_COMMIT_HASH
 #define GIT_COMMIT_HASH          "source-archive"
