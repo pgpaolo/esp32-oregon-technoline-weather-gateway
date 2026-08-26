@@ -5,16 +5,11 @@ on:
   push:
     branches:
       - main
-      - feature/oregon-3ch-thermohygro
-      - feature/oregon-v2-compact-web
-      - feature/oregon-v21-legacy-sensors
-      - feature/sd-datalogger
-      - feature/v21-cycle-quality-analyzer
-      - codex/web-provisioning-ota-auth
+      - release/6.4.0-rc3
+      - develop
   pull_request:
     branches:
       - main
-      - feature/v21-uvr128-thgr-quality-fix
   workflow_dispatch:
 
 permissions:
