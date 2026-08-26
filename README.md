@@ -8,17 +8,17 @@
 A standalone **433.92 MHz weather-sensor gateway** for ESP32/LILYGO T3 boards with an SX1278 radio.
 It receives **Oregon Scientific OSV2.1/OSV3** and **Technoline / La Crosse WS23xx** sensors, exposes a responsive Web UI, publishes selected values to MQTT with optional TLS, and can use local BME280 and AS3935 sensors.
 
-Current provisioning/security development branch:
+Current release-candidate branch:
 
 ```text
-codex/web-provisioning-ota-auth
+release/6.4.0-rc3
 ```
 
-The firmware macro on this line is **6.4.0-rc2**. This branch is based on the hardware-validated SdFat line and adds Web provisioning/security/OTA without changing the RF decoder architecture.
+The firmware macro on this line is **6.4.0-rc3**. This release candidate is promoted directly from the hardware/CI-validated Web provisioning, authentication, OTA and SdFat recovery development line without changing the RF decoder architecture.
 
 [Italiano / README_IT](README_IT.md)
 
-## Current branch highlights
+## Current release highlights
 
 - Single SX1278 receiving Oregon + Technoline at **433.92 MHz**.
 - Oregon OSV3 plus bounded Oregon V2.1 support.
@@ -42,9 +42,12 @@ The firmware macro on this line is **6.4.0-rc2**. This branch is based on the ha
 - Hardware-validated microSD datalogger using SdFat, FAT reformat support and a live `SD ON` / `SD SCRIVE` header badge.
 - Automatic microSD mount retry after boot or temporary mount failure: 5 s, 15 s, 60 s, then every 5 minutes. RF acquisition remains independent.
 - Wi-Fi SSID/password configurable from the Web UI and persisted in NVS. New credentials are tried after reboot and automatically roll back if they do not associate.
+- Manual authenticated asynchronous Wi-Fi scan from `RETE / WI-FI`, with SSID/RSSI/channel/security selection and no password disclosure.
 - Recovery AP after prolonged STA loss; it is automatically shut down when the primary Wi-Fi connection returns.
-- Web Basic Authentication enabled by default. On the first boot a random administrator password is generated, stored in NVS, printed to Serial and shown on OLED for 60 seconds when the display is enabled.
+- Web Basic Authentication enabled by default. Factory credentials for this RC are `admin` / `admin`; the password should be changed immediately from `SISTEMA`.
 - Authenticated Web OTA installation of the PlatformIO/GitHub `firmware.bin`, with ESP image-header, OTA-space and obvious board-family checks. microSD is closed before flashing and remounted after a failed upload.
+- Technoline rain derivation adds a compact 5-minute estimated rain rate plus local 1-hour and 24-hour accumulation history without writing the history to flash/NVS.
+- Corrected PCR800 rain-rate BCD decoding, with regression vector around **172.0 mm/h**.
 - Configuration reorganized around `RETE / WI-FI`, sensors, `MQTT / TLS`, display, `ARCHIVIO` and `SISTEMA`.
 - Deterministic gzip Web asset generated during PlatformIO build.
 
@@ -104,6 +107,8 @@ V2.1 details and boundaries: [docs/OREGON_V21.md](docs/OREGON_V21.md).
 - temperature;
 - humidity;
 - rain total;
+- estimated rain rate over a 5-minute local window;
+- local 1-hour and 24-hour rain accumulation after enough runtime history exists;
 - wind speed;
 - gust when announced by the protocol;
 - wind direction;
@@ -125,9 +130,11 @@ Oregon sensor cards use the same RSSI and battery language across thermo/hygro, 
 
 Multiple UVN800 (`D874`) transmitters are kept independent by sensor code, channel and rolling ID. The Dashboard prints the rolling ID on every UV card, including when two units use the same channel. The shared live registry holds up to ten Oregon transmitters across all sensor families.
 
-## Wi-Fi provisioning and recovery
+## Wi-Fi provisioning, scan and recovery
 
 The firmware defaults in `src/config_private.h` remain the initial/fallback values. The Web UI can subsequently store a new SSID and password in NVS without rebuilding the firmware.
+
+The `RETE / WI-FI` page can start a manual asynchronous scan. Results include SSID, RSSI, channel and open/protected state; selecting a result fills the SSID field. The configured Wi-Fi password is never returned by the scan or configuration APIs.
 
 A changed Wi-Fi pair is saved as a trial configuration. After reboot the gateway attempts the new network for 45 seconds. If it cannot connect and a previous valid pair exists, the old credentials are restored automatically. If the STA remains unavailable for one minute, a recovery AP is started so the Web configuration remains locally reachable; the AP is shut down automatically as soon as the primary STA reconnects.
 
@@ -135,7 +142,14 @@ The primary Wi-Fi password is never returned by the HTTP API and is never export
 
 ## Web authentication and OTA
 
-Basic Authentication is enabled by default. On a device without an existing Web password, the firmware generates a random 14-character administrator password and stores it in NVS. It is printed to Serial and, when the OLED is on, displayed for 60 seconds during first boot. Change it from **Configuration > SISTEMA**.
+Basic Authentication is enabled by default. The initial factory credentials for this release candidate are:
+
+```text
+user: admin
+password: admin
+```
+
+They are intended only to make first access and hardware testing predictable. Change the password immediately from **Configuration > SISTEMA**; normal replacement passwords must be at least 8 characters. Devices that previously stored the old generated-password schema are migrated once to the new factory credential scheme, after which user changes are preserved.
 
 After ten failed authentication attempts, the Web layer applies a 30-second temporary lockout.
 
@@ -172,7 +186,7 @@ Full reference: [docs/MQTT.md](docs/MQTT.md).
 
 Display pages and fields are configurable from the Web UI.
 
-The consolidated branch includes a selectable **SENSORI RF / RSSI / BATTERIE** page. It stores no history, tracks up to ten recent Oregon transmitters and displays five compact rows at a time, rotating when necessary.
+The consolidated release includes a selectable **SENSORI RF / RSSI / BATTERIE** page. It stores no history, tracks up to ten recent Oregon transmitters and displays five compact rows at a time, rotating when necessary.
 
 Example:
 
@@ -213,14 +227,14 @@ Updated technical RF PDF: [RF encoding guide V6.4.0 - Edition 3](output/pdf/Guid
 ```bash
 git clone https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway.git
 cd esp32-oregon-technoline-weather-gateway
-git checkout codex/web-provisioning-ota-auth
+git checkout release/6.4.0-rc3
 cp src/config_private.example.h src/config_private.h
 pio run -e t3-v161-433
 pio run -e t3-v161-433 -t upload
 pio device monitor -b 115200
 ```
 
-`src/config_private.h` is ignored by Git. Never commit Wi-Fi/MQTT credentials or private CA material. After the first boot, save the generated Web administrator password shown on Serial/OLED and replace it from **SISTEMA**.
+`src/config_private.h` is ignored by Git. Never commit Wi-Fi/MQTT credentials or private CA material. On first access use `admin / admin`, then replace the Web password from **SISTEMA**.
 
 ## Recommended RF profile
 
@@ -237,22 +251,22 @@ UVR128 recovery uses the minimum raw interval collection needed by the dedicated
 
 ## Build / CI status
 
-The provisioning/security branch is continuously checked through draft PR #20. The validated code cycle passed:
+The release candidate is checked on every push through the PlatformIO matrix:
 
-- Validate: PASS;
-- AS3935 Integration Guard: PASS;
-- Oregon V2.1 host vectors: PASS;
-- `t3-v161-433`: PASS;
-- `t3-s3-433`: PASS;
-- second `t3-v161-433` build in the same workspace: PASS, verifying pre-script idempotence.
+- PCR800 rain-rate regression vector;
+- Oregon V2.1 host vectors;
+- `t3-v161-433` build;
+- `t3-s3-433` build;
+- second `t3-v161-433` build in the same workspace, verifying pre-script idempotence;
+- physical `firmware.bin` size against the real OTA application partition.
 
-The branch uses `min_spiffs.csv`, giving each OTA application slot `0x1E0000` bytes (`1,966,080` bytes). CI verifies the physical `firmware.bin` against that real slot size before publishing artifacts.
+The release uses `min_spiffs.csv`, giving each OTA application slot `0x1E0000` bytes (`1,966,080` bytes). CI verifies the physical `firmware.bin` against that real slot size before publishing artifacts.
 
 Because the firmware embeds the Git commit identifier, documentation-only commits change the generated binary identifier even when application logic is unchanged; use the latest successful workflow for exact current binary sizes.
 
 ## HTTP API
 
-The Web UI uses REST-style endpoints for live state, raw/burst diagnostics, RF settings, MQTT/TLS, network/Wi-Fi, Oregon channels, display, AS3935, microSD, Web security, firmware OTA, backup/restore, restart and soft power-off.
+The Web UI uses REST-style endpoints for live state, raw/burst diagnostics, RF settings, MQTT/TLS, network/Wi-Fi, Wi-Fi scan, Oregon channels, display, AS3935, microSD, Web security, firmware OTA, backup/restore, restart and soft power-off.
 
 Reference: [docs/API.md](docs/API.md).
 
@@ -265,7 +279,7 @@ Reference: [docs/CONFIG_BACKUP.md](docs/CONFIG_BACKUP.md).
 ## Security notes
 
 - Never publish `src/config_private.h`.
-- Change the generated first-boot Web administrator password.
+- Change the factory `admin / admin` Web credential immediately after first access.
 - Basic Authentication on HTTP does not encrypt credentials; prefer LAN/VPN or a trusted HTTPS reverse proxy/terminator.
 - OTA is available only while Web authentication is enabled and after successful authentication.
 - Prefer CA-verified MQTT TLS outside a trusted LAN.
@@ -287,12 +301,12 @@ Attribution and licensing notes are in [NOTICE](NOTICE).
 
 GNU GPL v3 or later (`GPL-3.0-or-later`). See [LICENSE](LICENSE).
 
-## Active development policy
+## Branch policy
 
-The intended simplified branch layout after repository cleanup is:
+The repository is intentionally kept to three active lines:
 
-- `main` - integrated/stable line;
-- `codex/sdfat-write-status` - hardware-validated microSD/SdFat base line;
-- `codex/web-provisioning-ota-auth` - isolated provisioning, authentication, OTA and recovery line under validation.
+- `main` - stable/production line;
+- `release/6.4.0-rc3` - current release candidate under final hardware validation;
+- `develop` - next-development line, initially cloned from the current release candidate.
 
-Historical pull requests remain available as development history after intermediate branches are removed.
+Historical pull requests and commits remain available as development history after old intermediate branches are removed.
