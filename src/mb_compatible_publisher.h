@@ -14,7 +14,7 @@ struct MbCompatibleConfig {
     uint16_t timeoutMs{2500};
     MbCompatibleTlsMode tlsMode{MbCompatibleTlsMode::CaVerified};
     String caCertificate;
-    uint8_t sourcePriority{0}; // 0 Oregon->Technoline, 1 Technoline->Oregon
+    uint8_t sourcePriority{0}; // exclusive source: 0 Oregon, 1 Technoline/La Crosse
 };
 
 void initMbCompatiblePublisher(StationState &state);
