@@ -1,6 +1,6 @@
 # COMPATIBLE MB realtime publisher
 
-Status: **development / hardware test** (`develop`, firmware `6.4.0-dev1`).
+Status: **development / hardware test** (`develop`, firmware `6.4.0-dev2`).
 
 This feature is disabled by default and does not change the Oregon/Technoline RF decoder path. It adds an optional HTTP/HTTPS realtime publisher compatible with the whitespace-separated Meteobridge/Aurora data layout used by `mb.php`-style receivers.
 
@@ -14,9 +14,9 @@ Available settings:
 - **URL endpoint**: fully editable URL, maximum 384 characters.
 - **Intervallo invio**: 10 to 3600 seconds; default 60 seconds.
 - **Timeout HTTP**: 500 to 10000 ms; default 2500 ms.
-- **Sorgente primaria**:
-  - Oregon, with Technoline fallback;
-  - Technoline, with Oregon fallback.
+- **Stazione sorgente** (exclusive):
+  - Oregon Scientific;
+  - Technoline / La Crosse.
 - **HTTPS / TLS**:
   - verified CA mode;
   - insecure diagnostic mode.
@@ -24,7 +24,7 @@ Available settings:
 - **Cancella CA salvata**: removes the stored CA.
 - **Test invio**: queues one transmission without requiring periodic mode to be enabled.
 
-The page reports the last HTTP status, endpoint response, error, last attempt/success age, NTP synchronization state, and generated payload size.
+The page reports the selected source station, last HTTP status, endpoint response, error, last attempt/success age, NTP synchronization state, and generated payload size.
 
 ## Endpoint URL
 
@@ -71,7 +71,7 @@ Currently populated core positions:
 | 8 | rain rate mm/h |
 | 9 | rain today mm |
 | 10 | sea-level pressure hPa |
-| 11 | best available wind direction fallback |
+| 11 | best available wind direction |
 | 12 | Beaufort |
 | 15 | pressure unit `hPa` |
 | 16 | rain unit `mm` |
@@ -82,26 +82,30 @@ Currently populated core positions:
 | 25 | station type `ESP32-Oregon-Technoline` |
 | 38 | firmware version |
 | 42 | heat index °C |
-| 43 | UV index |
+| 43 | UV index (Oregon source only) |
 | 44 | rain last 24 hours mm |
-| 46 | best available wind direction |
+| 46 | wind direction |
 | 47 | rain last hour mm |
 | 81 | controller uptime seconds |
 | 151 | cumulative rain sensor total mm |
 
 No monthly/yearly rainfall, solar radiation, or other unsupported measurements are fabricated.
 
-## Source selection
+## Exclusive source selection
 
-Selection is performed independently for thermo/hygro, wind, and rain using fresh gateway data.
+`6.4.0-dev2` changes source selection from a priority/fallback model to a **strict single-station model**.
 
-With **Oregon first**, a fresh Oregon value is used and Technoline becomes fallback. With **Technoline first**, the order is reversed. BME280 pressure/indoor values and Oregon UV are independent of this priority.
+When **Oregon Scientific** is selected, outdoor temperature/humidity, wind, rain and UV can only come from Oregon sensors. Missing/stale Oregon values stay `--`; Technoline is never used as fallback.
+
+When **Technoline / La Crosse** is selected, outdoor temperature/humidity, wind and rain can only come from the Technoline station. Missing/stale Technoline values stay `--`; Oregon is never used as fallback and Oregon UV is not inserted in the packet.
+
+The BME280 pressure and indoor values are local gateway hardware, not a second weather station, and remain available with either source selection.
 
 For Technoline thermo/hygro, dew point can be derived locally. For Technoline rain, the 5-minute estimated rate and local 1-hour/24-hour histories are used when available.
 
 ## Rain today
 
-The sensor total is cumulative and must not be presented as daily rainfall. The publisher therefore keeps an independent daily baseline for Oregon and Technoline. The baseline is persisted in NVS once per UTC day, and also refreshed if the sensor cumulative counter genuinely resets.
+The sensor total is cumulative and must not be presented as daily rainfall. The publisher therefore keeps an independent daily baseline for Oregon and Technoline. Only the baseline belonging to the selected source is used for the outgoing packet. The baseline is persisted in NVS once per UTC day, and also refreshed if the selected sensor cumulative counter genuinely resets.
 
 The cumulative sensor total remains available separately at index 151.
 
@@ -120,6 +124,8 @@ For `https://` URLs:
 
 For production use, prefer verified HTTPS.
 
+For a plain `http://` endpoint, the CA field is not used.
+
 ## Web API
 
 All endpoints are protected by the same Web Basic Authentication used by the rest of the configuration interface.
@@ -131,7 +137,7 @@ POST /api/mbcompatible/test
 POST /api/mbcompatible/reset
 ```
 
-The GET response reports only whether a CA is configured (`ca_set`); it does not return the stored CA text.
+The GET response reports only whether a CA is configured (`ca_set`); it does not return the stored CA text. It also reports `source_station` (`OREGON` or `TECHNOLINE`). The historical numeric `source_priority` field is retained for backward-compatible configuration storage: `0` now means Oregon only, `1` means Technoline only.
 
 ## Backup / restore
 
@@ -143,21 +149,21 @@ The JSON configuration backup includes:
 - HTTP timeout;
 - TLS mode;
 - CA certificate;
-- source priority.
+- selected source station (stored through the backward-compatible numeric source field).
 
 No new username/password credential is introduced by this publisher.
 
 ## Test sequence
 
-1. Flash a `develop` / `6.4.0-dev1` firmware build.
+1. Flash a `develop` / `6.4.0-dev2` firmware build.
 2. Open **CONFIGURAZIONE > COMPATIBLE MB**.
 3. Enter the complete `mb.php`-compatible URL.
-4. For a first LAN test, use HTTP or the diagnostic HTTPS mode only if necessary.
-5. Select the preferred Oregon/Technoline priority.
+4. For a first test with an `http://` URL, leave the CA field empty.
+5. Select exactly one **Stazione sorgente**: Oregon Scientific or Technoline / La Crosse.
 6. Press **Salva COMPATIBLE MB**.
 7. Press **Test invio**.
 8. Confirm the Web status becomes HTTP 2xx with response `success`.
-9. Verify the receiver sees exactly 192 fields and that available values correspond to the gateway dashboard.
+9. Verify the receiver sees exactly 192 fields and that available values correspond only to the selected station plus local BME280 values.
 10. Enable periodic transmission only after the manual test succeeds.
 
 ## CI regression guards
@@ -167,6 +173,7 @@ GitHub Actions verifies:
 - the packet remains 192 fields;
 - the main Aurora/Meteobridge field indexes do not move;
 - URL `d=` and `{data}` modes remain present;
+- Oregon/Technoline source selection is exclusive and contains no cross-station fallback;
 - HTTP remains on a worker task;
 - both ESP32 targets compile;
 - the T3 V1.6.1 firmware compiles twice in the same workspace to catch pre-build patch duplication.
