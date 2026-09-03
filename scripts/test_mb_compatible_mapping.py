@@ -7,7 +7,7 @@ PATCH = Path("scripts/apply_mb_compatible_publisher.py").read_text(encoding="utf
 assert "MB_FIELD_COUNT = 192" in CPP, "MB packet must stay at 192 fields"
 assert '"d="' in CPP and '"{data}"' in CPP, "endpoint must support automatic d= and {data} placeholder"
 assert "xTaskCreatePinnedToCore" in CPP and "performHttp" in CPP, "HTTP must run outside the RF loop"
-assert 'server.on(\\"/api/mbcompatible\\"' in PATCH, "authenticated MB-compatible API route missing"
+assert 'server.on("/api/mbcompatible"' in PATCH, "authenticated MB-compatible API route missing"
 assert "COMPATIBLE MB" in PATCH, "Web UI label missing"
 
 expected = {
