@@ -6,18 +6,22 @@
 
 **Description**
 
-`ESP32/SX1278 433.92 MHz gateway for Oregon OSV2.1/OSV3 and Technoline WS23xx sensors with Web UI, MQTT/TLS, SdFat microSD logging and OLED.`
+`ESP32/SX1278 433.92 MHz gateway for Oregon OSV2.1/OSV3 and Technoline WS23xx sensors with Web UI, MQTT/TLS, optional MB-compatible HTTP realtime publishing, SdFat microSD logging and OLED.`
 
 **Suggested topics**
 
-`esp32`, `lilygo`, `sx1278`, `433mhz`, `oregon-scientific`, `technoline`, `lacrosse`, `weather-station`, `mqtt`, `platformio`, `sdfat`, `microsd`, `iot`, `bme280`, `rtl-433`
+`esp32`, `lilygo`, `sx1278`, `433mhz`, `oregon-scientific`, `technoline`, `lacrosse`, `weather-station`, `mqtt`, `meteobridge`, `platformio`, `sdfat`, `microsd`, `iot`, `bme280`, `rtl-433`
 
-**Current hardware-validation branch**
+**Active branches**
 
-`codex/sdfat-write-status`
+- `main` - stable line.
+- `release/6.4.0-rc3` - frozen release candidate / hardware validation.
+- `develop` - next development line; current test firmware `6.4.0-dev1` includes **COMPATIBLE MB** realtime publishing.
 
-**Suggested first release tag**
+**COMPATIBLE MB documentation**
 
-`v6.3.0`
+See [`docs/MB_COMPATIBLE.md`](docs/MB_COMPATIBLE.md).
 
-Use `docs/RELEASE_6.3.0.md` as the initial GitHub Release description.
+**Stable release baseline**
+
+The published stable release remains separate from the `develop` test line until hardware validation is completed and an explicit release promotion is performed.
