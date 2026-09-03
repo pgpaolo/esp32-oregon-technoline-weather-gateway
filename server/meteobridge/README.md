@@ -8,6 +8,8 @@ Il ricevitore `mb.php` continua ad accettare il formato Meteobridge/Aurora-compa
 
 I valori mancanti nello standard JSON sono `null`, mai `--` o entità HTML.
 
+> Gli URL e gli identificativi riportati sotto sono esclusivamente esempi. Hostname, percorso di pubblicazione e `station_id` devono essere configurati in base all'installazione reale e non sono codificati nel progetto.
+
 ## Struttura
 
 - `lib/weather_realtime.php`: normalizzatore e storage multi-stazione.
@@ -19,7 +21,7 @@ I valori mancanti nello standard JSON sono `null`, mai `--` o entità HTML.
 Il Meteobridge principale può rimanere configurato senza parametro `station`:
 
 ```text
-https://meteostz-elvella.ddns.net/diga/mbridge/mb.php
+https://weather.example.net/mbridge/mb.php
 ```
 
 In questo modo continua ad alimentare il backend realtime storico usato da Weather34/Aurora e produce anche `legacy-primary.json` nello storage normalizzato.
@@ -29,7 +31,7 @@ In questo modo continua ad alimentare il backend realtime storico usato da Weath
 Nel campo URL di COMPATIBLE MB usare, ad esempio:
 
 ```text
-http://meteostz-elvella.ddns.net/diga/mbridge/mb.php?station=castel-giorgio-2&source=esp32
+https://weather.example.net/mbridge/mb.php?station=station-2&source=esp32
 ```
 
 Il firmware aggiunge automaticamente `&d=<packet>`.
@@ -41,7 +43,7 @@ Quando `station=` è presente, il flusso viene salvato nello storage normalizzat
 Esempio:
 
 ```text
-/diga/mbridge/weather.php?station=castel-giorgio-2
+/mbridge/weather.php?station=station-2
 ```
 
 Risposta:
@@ -50,7 +52,7 @@ Risposta:
 {
   "ok": true,
   "schema": "weather-realtime-v1",
-  "station_id": "castel-giorgio-2",
+  "station_id": "station-2",
   "source": "esp32",
   "age_seconds": 4,
   "stale": false,
@@ -76,8 +78,8 @@ Esempio:
 
 ```text
 legacy-primary.json
-castel-giorgio-2.json
-castel-giorgio-2.daily.json
+station-2.json
+station-2.daily.json
 ```
 
 Creazione directory consigliata:
@@ -93,7 +95,7 @@ La directory può essere cambiata con la variabile ambiente `WEATHER_REALTIME_DI
 Per una stazione secondaria usare preferibilmente un URL relativo:
 
 ```ini
-secondary_station_source = /diga/mbridge/weather.php?station=castel-giorgio-2
+secondary_station_source = /mbridge/weather.php?station=station-2
 secondary_station_refresh_seconds = 60
 ```
 
@@ -104,7 +106,7 @@ Questo evita mixed-content quando Belchertown viene servito via HTTPS.
 | URL ricezione | JSON normalizzato | Realtime legacy W34 |
 |---|---|---|
 | `mb.php` | `legacy-primary.json` | sì |
-| `mb.php?station=castel-giorgio-2` | `castel-giorgio-2.json` | no |
+| `mb.php?station=station-2` | `station-2.json` | no |
 | `mb.php?station=x&legacy=1` | `x.json` | sì |
 
 Usare `legacy=1` per una sola sorgente, così il backend Weather34 non viene sovrascritto da stazioni diverse.
