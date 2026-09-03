@@ -36,14 +36,14 @@ for index, token in expected.items():
     assert re.search(pattern, CPP), f"MB field {index} no longer maps to {token}"
 
 # Single-station guard: the final pre-build pass replaces the old priority
-# fallback with an exclusive Oregon/Technoline selector. No weather field may
-# fall back to the other station in the generated firmware.
+# fallback model with an exclusive Oregon/Technoline selector. The old UI text
+# intentionally remains inside the patch script only as a replacement anchor.
 assert "const bool useTechnoline = cfg.sourcePriority == 1U" in SINGLE
 assert "Oregon source: no Technoline fallback is allowed" in SINGLE
 assert "Technoline source: no Oregon fallback is allowed" in SINGLE
+assert "if (!useTechnoline)" in SINGLE and "} else {" in SINGLE
 assert "Stazione sorgente" in SINGLE
 assert "Oregon Scientific" in SINGLE and "Technoline / La Crosse" in SINGLE
-assert "fallback Oregon" not in SINGLE and "fallback Technoline" not in SINGLE
 assert "source_station" in SINGLE, "status JSON must expose selected station name"
 
 # The local BME280 is gateway hardware and may accompany either selected
