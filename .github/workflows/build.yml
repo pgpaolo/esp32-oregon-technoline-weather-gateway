@@ -66,13 +66,16 @@ jobs:
       - name: Validate Oregon V2.1 protocol vectors
         run: python scripts/test_oregon_v21.py
 
+      - name: Validate MB-compatible realtime mapping
+        run: python scripts/test_mb_compatible_mapping.py
+
       - name: Build firmware
         run: pio run -e "${{ matrix.environment }}"
 
       # The PlatformIO pre-scripts intentionally patch generated source in-place.
       # A second build in the same checkout reproduces the Windows/local workflow
-      # and guards against duplicate generated SD handlers/UI blocks.
-      - name: Rebuild same workspace (SD idempotence)
+      # and guards against duplicate generated SD/MB handlers/UI blocks.
+      - name: Rebuild same workspace (SD/Web idempotence)
         if: matrix.environment == 't3-v161-433'
         run: pio run -e "${{ matrix.environment }}"
 
