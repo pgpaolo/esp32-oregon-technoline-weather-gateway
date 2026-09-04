@@ -57,6 +57,15 @@ jobs:
       - name: Build firmware
         run: pio run -e "${{ matrix.environment }}"
 
+      - name: Verify BME280 I2C hotfix integration
+        run: python scripts/test_bme280_i2c_main_hotfix.py
+
+      - name: Rebuild same workspace (idempotence)
+        run: pio run -e "${{ matrix.environment }}"
+
+      - name: Re-verify hotfix after second build
+        run: python scripts/test_bme280_i2c_main_hotfix.py
+
       - name: Upload firmware artifacts
         if: success()
         uses: actions/upload-artifact@v4
