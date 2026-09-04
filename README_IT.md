@@ -2,16 +2,16 @@
 
 Firmware standalone per **ESP32 / LILYGO T3 + SX1278 433.92 MHz** capace di ricevere sensori **Oregon Scientific OSV2.1/OSV3** e **Technoline / La Crosse WS23xx**, mostrare i dati tramite interfaccia Web autenticata, pubblicarli via MQTT/TLS e integrare sensori locali BME280 e AS3935.
 
-## Rami di sviluppo / release
+## Release candidate attuale
 
 ```text
 main                 stabile / produzione
 release/6.4.0-rc3    RC storico congelato
-release/6.4.0-rc4    release candidate attuale
+release/6.4.0-rc4    release candidate attuale (firmware 6.4.0-rc4)
 develop               sviluppo successivo (6.4.0-dev2)
 ```
 
-`develop` resta identificato come **6.4.0-dev2**. Le modifiche vengono prima validate qui e vengono riportate in `release/6.4.0-rc4` soltanto dopo CI e collaudo hardware.
+`release/6.4.0-rc4` è stata aggiornata integralmente con la soluzione revisionata su `develop` al commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`. RC3 resta congelata e `main` non viene modificato fino a una decisione esplicita di promozione.
 
 ## Funzioni principali
 
@@ -158,12 +158,12 @@ OTA Web richiede autenticazione e controlla immagine ESP, spazio OTA e mismatch 
 
 Documentazione: [docs/WEB_PROVISIONING_OTA_AUTH.md](docs/WEB_PROVISIONING_OTA_AUTH.md).
 
-## Compilazione da develop
+## Compilazione da RC4
 
 ```bash
 git clone https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway.git
 cd esp32-oregon-technoline-weather-gateway
-git checkout develop
+git checkout release/6.4.0-rc4
 cp src/config_private.example.h src/config_private.h
 pio run -e t3-v161-433
 pio run -e t3-v161-433 -t upload
@@ -193,7 +193,10 @@ La matrice verifica:
 - build `t3-v161-433`;
 - build `t3-s3-433`;
 - seconda build T3 V1.6.1 nello stesso workspace per controllare l'idempotenza dei pre-script;
+- guard di integrazione I2C/HW generata;
 - dimensione reale `firmware.bin` rispetto allo slot OTA `0x1E0000`.
+
+La sorgente esatta promossa da `develop` ha superato Validate #192 e PlatformIO Build #268. Anche la branch RC4 deve restare verde dopo i commit di identità/documentazione prima di qualunque merge verso `main`.
 
 Per le dimensioni esatte del firmware usare sempre l'ultima workflow riuscita, perché l'ID Git è incorporato nel binario.
 
@@ -201,6 +204,7 @@ Per le dimensioni esatte del firmware usare sempre l'ultima workflow riuscita, p
 
 API HTTP: [docs/API.md](docs/API.md)  
 Backup configurazione: [docs/CONFIG_BACKUP.md](docs/CONFIG_BACKUP.md)  
+Note RC4: [docs/RELEASE_6.4.0_RC4.md](docs/RELEASE_6.4.0_RC4.md)  
 Sicurezza: [SECURITY.md](SECURITY.md)
 
 Non esporre direttamente il servizio HTTP dell'ESP32 su Internet e preferire MQTT TLS verificato con CA fuori da una LAN affidabile.
