@@ -187,7 +187,13 @@ if 'server.on("/api/barometer/i2c-scan"' not in web:
     if route_anchor not in web:
         raise RuntimeError("BME280 I2C scan: barometer route anchor missing")
     route = '    server.on("/api/barometer/i2c-scan", HTTP_POST, [](){ if (!requireWebAuth()) return; handleBarometerI2cScan(); });\n'
+    # Convert the Python escape above to a real source newline, not the two
+    # literal characters backslash+n (which would break the C++ source).
+    route = route.replace("\\n", "\n")
     web = web.replace(route_anchor, route_anchor + "\n" + route, 1)
+
+if 'handleBarometerI2cScan(); });\\n' in web:
+    raise RuntimeError("BME280 I2C scan: literal \\n leaked into C++ route")
 
 web_path.write_text(web, encoding="utf-8")
 
@@ -219,8 +225,12 @@ if "async function scanBarometerI2c()" not in html:
     js_anchor = "async function loadBarometer()"
     if js_anchor not in html:
         raise RuntimeError("BME280 I2C scan: loadBarometer JS anchor missing")
-    js = r'''async function scanBarometerI2c(){const b=E('baroScanBtn'),e=E('baroI2cScan');if(!e)return;if(b)b.disabled=true;e.textContent='Scanner I2C in corso: 400 kHz + 100 kHz...';try{const r=await fetch('/api/barometer/i2c-scan',{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());const d=await r.json(),hx=v=>'0x'+Number(v).toString(16).toUpperCase().padStart(2,'0'),lst=a=>(Array.isArray(a)&&a.length?a.map(hx).join(', '):'nessuno'),cid=v=>v==null?'--':hx(v);let verdict='';if(d.bus_stuck_initial||d.bus_stuck_final)verdict='BUS BLOCCATO: SDA o SCL e bassa. Controllare corto, pull-up e cablaggio.';else if(d.bme280_0x76||d.bme280_0x77)verdict='BME280 confermato dal chip ID Bosch 0x60.';else{const a400=Array.isArray(d.devices_400khz)?d.devices_400khz:[],a100=Array.isArray(d.devices_100khz)?d.devices_100khz:[],bmeAck=a100.includes(0x76)||a100.includes(0x77)||a400.includes(0x76)||a400.includes(0x77);if(bmeAck)verdict='Dispositivo presente a 0x76/0x77, ma chip ID diverso da 0x60 o non leggibile.';else verdict='Nessun dispositivo a 0x76/0x77: il BME280 non e visibile sul bus.';if(!a400.includes(0x76)&&!a400.includes(0x77)&&(a100.includes(0x76)||a100.includes(0x77)))verdict+=' Risponde solo a 100 kHz: verificare cavetti/pull-up.';}e.textContent='400 kHz: '+lst(d.devices_400khz)+'\n100 kHz: '+lst(d.devices_100khz)+'\nChip ID 0x76: '+cid(d.chip_id_0x76)+' · 0x77: '+cid(d.chip_id_0x77)+'\nSDA/SCL iniziali: '+String(d.sda_initial)+'/'+String(d.scl_initial)+' · finali: '+String(d.sda_final)+'/'+String(d.scl_final)+'\nDurata: '+String(d.duration_ms||0)+' ms\n'+verdict;}catch(err){e.textContent='Scanner I2C fallito: '+String(err);}finally{if(b)b.disabled=false;}}\n'''
+    js = r'''async function scanBarometerI2c(){const b=E('baroScanBtn'),e=E('baroI2cScan');if(!e)return;if(b)b.disabled=true;e.textContent='Scanner I2C in corso: 400 kHz + 100 kHz...';try{const r=await fetch('/api/barometer/i2c-scan',{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());const d=await r.json(),hx=v=>'0x'+Number(v).toString(16).toUpperCase().padStart(2,'0'),lst=a=>(Array.isArray(a)&&a.length?a.map(hx).join(', '):'nessuno'),cid=v=>v==null?'--':hx(v);let verdict='';if(d.bus_stuck_initial||d.bus_stuck_final)verdict='BUS BLOCCATO: SDA o SCL e bassa. Controllare corto, pull-up e cablaggio.';else if(d.bme280_0x76||d.bme280_0x77)verdict='BME280 confermato dal chip ID Bosch 0x60.';else{const a400=Array.isArray(d.devices_400khz)?d.devices_400khz:[],a100=Array.isArray(d.devices_100khz)?d.devices_100khz:[],bmeAck=a100.includes(0x76)||a100.includes(0x77)||a400.includes(0x76)||a400.includes(0x77);if(bmeAck)verdict='Dispositivo presente a 0x76/0x77, ma chip ID diverso da 0x60 o non leggibile.';else verdict='Nessun dispositivo a 0x76/0x77: il BME280 non e visibile sul bus.';if(!a400.includes(0x76)&&!a400.includes(0x77)&&(a100.includes(0x76)||a100.includes(0x77)))verdict+=' Risponde solo a 100 kHz: verificare cavetti/pull-up.';}e.textContent='400 kHz: '+lst(d.devices_400khz)+'\n100 kHz: '+lst(d.devices_100khz)+'\nChip ID 0x76: '+cid(d.chip_id_0x76)+' · 0x77: '+cid(d.chip_id_0x77)+'\nSDA/SCL iniziali: '+String(d.sda_initial)+'/'+String(d.scl_initial)+' · finali: '+String(d.sda_final)+'/'+String(d.scl_final)+'\nDurata: '+String(d.duration_ms||0)+' ms\n'+verdict;}catch(err){e.textContent='Scanner I2C fallito: '+String(err);}finally{if(b)b.disabled=false;}}
+'''
     html = html.replace(js_anchor, js + js_anchor, 1)
+
+if '}\\nasync function loadBarometer' in html:
+    raise RuntimeError("BME280 I2C scan: literal \\n leaked into dashboard JavaScript")
 
 dash_path.write_text(html, encoding="utf-8")
 print("Added authenticated manual I2C scanner UI for BAROMETRO")
