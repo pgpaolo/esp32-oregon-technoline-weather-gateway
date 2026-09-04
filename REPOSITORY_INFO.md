@@ -16,10 +16,10 @@
 
 - `main` — stable/production line.
 - `release/6.4.0-rc3` — frozen historical RC/hardware-validation line.
-- `release/6.4.0-rc4` — current release candidate; updated only after explicit promotion of validated develop changes.
+- `release/6.4.0-rc4` — current release candidate, firmware identity `6.4.0-rc4`, fully refreshed from validated `develop` commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`.
 - `develop` — next-development line, firmware identity `6.4.0-dev2`.
 
-## Current develop additions under validation
+## RC4 feature set
 
 - COMPATIBLE MB with dedicated HTTP/HTTPS worker and strict Oregon/Technoline single-source behavior.
 - Runtime BME280 altitude calibration and selectable pressure units.
@@ -37,8 +37,9 @@
 - [`docs/BAROMETER_BME280.md`](docs/BAROMETER_BME280.md) — BME280, altitude, units, trend and forecast.
 - [`docs/I2C_HARDWARE_DIAGNOSTICS.md`](docs/I2C_HARDWARE_DIAGNOSTICS.md) — shared-bus scanner, cable-margin diagnosis and MCU temperature.
 - [`docs/API.md`](docs/API.md) — embedded HTTP API.
-- [`docs/DEVELOP_6.4.0_RC4_NOTES.md`](docs/DEVELOP_6.4.0_RC4_NOTES.md) — develop-to-RC4 validation notes.
+- [`docs/RELEASE_6.4.0_RC4.md`](docs/RELEASE_6.4.0_RC4.md) — current RC4 release scope and validation reference.
+- [`docs/DEVELOP_6.4.0_RC4_NOTES.md`](docs/DEVELOP_6.4.0_RC4_NOTES.md) — reviewed develop delta now applied to RC4.
 
 ## Promotion policy
 
-`develop` is not merged wholesale into `main`. Hardware/CI-validated changes are first promoted into `release/6.4.0-rc4`; RC4 remains unmerged until final hardware validation and an explicit release decision. The frozen RC3 line is not modified.
+RC4 remains unmerged into `main` until final physical validation and an explicit release decision. The frozen RC3 line is not modified. Future development continues on `develop` and is not implicitly promoted to RC4.
