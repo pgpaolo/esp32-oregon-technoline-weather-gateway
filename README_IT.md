@@ -2,16 +2,18 @@
 
 Firmware standalone per **ESP32 / LILYGO T3 + SX1278 433.92 MHz** capace di ricevere sensori **Oregon Scientific OSV2.1/OSV3** e **Technoline / La Crosse WS23xx**, mostrare i dati tramite interfaccia Web autenticata, pubblicarli via MQTT/TLS e integrare sensori locali BME280 e AS3935.
 
+Autore e maintainer del progetto: **Gianpaolo P.** (`pgpaolo`) · Copyright © 2026 Gianpaolo P.
+
 ## Release candidate attuale
 
 ```text
-main                 stabile / produzione
+main                 stabile / produzione + backport selettivo BME280/I2C (PR #23)
 release/6.4.0-rc3    RC storico congelato
-release/6.4.0-rc4    release candidate attuale (firmware 6.4.0-rc4)
+release/6.4.0-rc4    release candidate completa attuale (firmware 6.4.0-rc4)
 develop               sviluppo successivo (6.4.0-dev2)
 ```
 
-`release/6.4.0-rc4` è stata aggiornata integralmente con la soluzione revisionata su `develop` al commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`. RC3 resta congelata e `main` non viene modificato fino a una decisione esplicita di promozione.
+`release/6.4.0-rc4` è stata aggiornata integralmente con la soluzione revisionata su `develop` al commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`. RC3 resta congelata. `main` contiene ora il backport selettivo BME280/I2C mergiato tramite PR #23, mentre l'insieme completo delle funzioni RC4 resta isolato in questo branch fino a una decisione esplicita di promozione.
 
 ## Funzioni principali
 
@@ -32,7 +34,8 @@ develop               sviluppo successivo (6.4.0-dev2)
 - datalogger microSD SdFat con retry, formattazione FAT e diagnostica;
 - provisioning Wi-Fi, scansione asincrona SSID, trial/rollback credenziali e recovery AP;
 - Basic Authentication Web, backup/ripristino configurazione e OTA autenticato;
-- riavvio e spegnimento software/deep sleep.
+- riavvio e spegnimento software/deep sleep;
+- attribuzione Web discreta con copyright, identificativo GPL e **versione firmware realmente installata**, senza polling aggiuntivo.
 
 ## Hardware supportato
 
@@ -115,6 +118,14 @@ L'interfaccia è organizzata in:
 
 I pannelli dettagliati BME280 e AS3935 partono chiusi e si aprono cliccando il titolo.
 
+Sotto la testata compare inoltre una riga volutamente poco invasiva:
+
+```text
+© 2026 Gianpaolo P. · firmware <versione installata> · GPL-3.0-or-later
+```
+
+La versione viene letta dalla risposta `/api/state` già usata dalla dashboard: **nessuna richiesta HTTP aggiuntiva**.
+
 ## MQTT
 
 I topic legacy restano disponibili. Ogni trasmettitore Oregon può anche pubblicare in un namespace indipendente:
@@ -194,9 +205,10 @@ La matrice verifica:
 - build `t3-s3-433`;
 - seconda build T3 V1.6.1 nello stesso workspace per controllare l'idempotenza dei pre-script;
 - guard di integrazione I2C/HW generata;
+- guard dell'attribuzione progetto e della versione firmware installata;
 - dimensione reale `firmware.bin` rispetto allo slot OTA `0x1E0000`.
 
-La sorgente esatta promossa da `develop` ha superato Validate #192 e PlatformIO Build #268. Anche la branch RC4 deve restare verde dopo i commit di identità/documentazione prima di qualunque merge verso `main`.
+La sorgente esatta promossa da `develop` ha superato Validate #192 e PlatformIO Build #268. Anche il branch RC4 deve restare verde dopo i commit di identità, attribuzione e documentazione prima di qualunque merge verso `main`.
 
 Per le dimensioni esatte del firmware usare sempre l'ultima workflow riuscita, perché l'ID Git è incorporato nel binario.
 
@@ -209,6 +221,15 @@ Sicurezza: [SECURITY.md](SECURITY.md)
 
 Non esporre direttamente il servizio HTTP dell'ESP32 su Internet e preferire MQTT TLS verificato con CA fuori da una LAN affidabile.
 
+## Autore e citazione
+
+Autore e maintainer del progetto: **Gianpaolo P.** (`pgpaolo`)  
+Copyright © 2026 Gianpaolo P.
+
+- attribuzione autore: [AUTHORS.md](AUTHORS.md)
+- metadati di citazione: [CITATION.cff](CITATION.cff)
+- riconoscimenti e componenti upstream: [NOTICE](NOTICE)
+
 ## Licenza
 
-GNU GPL v3 o successiva (`GPL-3.0-or-later`). Vedere [LICENSE](LICENSE) e [NOTICE](NOTICE).
+GNU GPL v3 o successiva (`GPL-3.0-or-later`). Vedere [LICENSE](LICENSE). Il testo della GPL resta invariato; attribuzione del progetto e riconoscimenti delle componenti upstream sono mantenuti separatamente in `AUTHORS.md`, `CITATION.cff` e `NOTICE`.
