@@ -4,12 +4,15 @@
 #include "oregon_receiver.h"
 #include "lacrosse_ws23xx.h"
 
+// Ogni bit abilita una pagina nel ciclo automatico OLED. La pagina AS3935
+// e' indipendente dalle pagine meteo/RF e puo' essere esclusa dalla Web UI.
 static constexpr uint8_t DISPLAY_PAGE_ENVIRONMENT = 1U << 0;
 static constexpr uint8_t DISPLAY_PAGE_WIND_RAIN   = 1U << 1;
 static constexpr uint8_t DISPLAY_PAGE_TECHNOLINE  = 1U << 2;
 static constexpr uint8_t DISPLAY_PAGE_PRESSURE    = 1U << 3;
 static constexpr uint8_t DISPLAY_PAGE_STATUS      = 1U << 4;
-static constexpr uint8_t DISPLAY_PAGE_ALL         = 0x1FU;
+static constexpr uint8_t DISPLAY_PAGE_LIGHTNING   = 1U << 5;
+static constexpr uint8_t DISPLAY_PAGE_ALL         = 0x3FU;
 
 static constexpr uint8_t DISPLAY_ENV_TEMP_HUM = 1U << 0;
 static constexpr uint8_t DISPLAY_ENV_DEW      = 1U << 1;
@@ -43,6 +46,19 @@ static constexpr uint8_t DISPLAY_STATUS_TECH     = 1U << 3;
 static constexpr uint8_t DISPLAY_STATUS_NETWORK  = 1U << 4;
 static constexpr uint8_t DISPLAY_STATUS_ALL      = 0x1FU;
 
+// Campi selezionabili della pagina fulmini:
+// STATUS       = presenza sensore, IRQ e calibrazione;
+// LAST_STRIKE  = distanza stimata ed energia dell'ultimo fulmine;
+// COUNTERS     = conteggi lightning/noise/disturber/IRQ;
+// FILTERS      = AFE indoor/outdoor e soglie di filtraggio;
+// BUS_TUNING   = indirizzo I2C, GPIO IRQ e frequenza di risonanza.
+static constexpr uint8_t DISPLAY_AS_STATUS       = 1U << 0;
+static constexpr uint8_t DISPLAY_AS_LAST_STRIKE  = 1U << 1;
+static constexpr uint8_t DISPLAY_AS_COUNTERS     = 1U << 2;
+static constexpr uint8_t DISPLAY_AS_FILTERS      = 1U << 3;
+static constexpr uint8_t DISPLAY_AS_BUS_TUNING   = 1U << 4;
+static constexpr uint8_t DISPLAY_AS_ALL          = 0x1FU;
+
 struct DisplayRuntimeConfig {
     uint8_t pageMask{DISPLAY_PAGE_ALL};
     uint8_t environmentFields{DISPLAY_ENV_ALL};
@@ -50,6 +66,7 @@ struct DisplayRuntimeConfig {
     uint8_t technolineFields{DISPLAY_TECH_ALL};
     uint8_t pressureFields{DISPLAY_PRESS_ALL};
     uint8_t statusFields{DISPLAY_STATUS_ALL};
+    uint8_t lightningFields{DISPLAY_AS_ALL};
     uint16_t pageIntervalSec{7};
     uint8_t contrast{255};
 };

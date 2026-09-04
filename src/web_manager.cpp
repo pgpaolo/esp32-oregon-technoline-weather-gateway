@@ -15,6 +15,9 @@
 #include "display_manager.h"
 #include "firmware_info.h"
 #include "power_manager.h"
+#include "lightning_manager.h"
+#include "thermo_channel_manager.h"
+#include "web_ui_generated.h"
 
 namespace {
 WebServer server(80);
@@ -49,14 +52,25 @@ uint8_t historyCount = 0;
 // V6.3: sessione di acquisizione. In DUAL entrambi i protocolli restano attivi.
 // I valori meteo restano memorizzati, ma al cambio modalita' la UI considera
 // "acquisito" solo cio' che e' stato ricevuto dopo l'attivazione corrente.
+constexpr uint8_t OREGON_SESSION_SENSOR_MAX = 10;
+struct OregonSessionSensor {
+    SensorType type{SensorType::Unknown};
+    uint16_t code{0};
+    uint8_t channel{0};
+    uint8_t rollingCode{0};
+    uint8_t protocolVersion{0};
+    uint8_t cadenceSamples{0};
+    uint32_t firstMs{0};
+    uint32_t lastMs{0};
+    uint32_t received{0};
+    uint32_t observedCadenceMs{0};
+    float lastRssi{NAN};
+};
+
 struct RfSessionState {
     bool initialized{false};
     RfProtocolMode mode{RfProtocolMode::Oregon};
     uint32_t startedMs{0};
-    uint32_t baseThermo{0};
-    uint32_t baseWind{0};
-    uint32_t baseRain{0};
-    uint32_t baseUv{0};
     uint32_t baseLcTemp{0};
     uint32_t baseLcHum{0};
     uint32_t baseLcRain{0};
@@ -64,6 +78,8 @@ struct RfSessionState {
     uint32_t baseLcGust{0};
     uint32_t baseLcValid{0};
     uint32_t lcFirstValidMs{0};
+    OregonSessionSensor oregon[OREGON_SESSION_SENSOR_MAX]{};
+    uint8_t oregonOverflow{0};
 };
 RfSessionState rfSession{};
 
@@ -72,9 +88,77 @@ bool timestampInSession(uint32_t updatedMs, uint32_t startMs) {
     return static_cast<int32_t>(updatedMs - startMs) >= 0;
 }
 
-uint32_t expectedPackets(uint32_t elapsedMs, uint32_t cadenceMs) {
-    if (cadenceMs == 0 || elapsedMs < cadenceMs) return 0;
-    return elapsedMs / cadenceMs;
+uint32_t expectedPacketsSinceFirst(uint32_t nowMs, uint32_t firstMs, uint32_t cadenceMs) {
+    if (firstMs == 0 || cadenceMs == 0) return 0;
+    return 1UL + static_cast<uint32_t>(nowMs - firstMs) / cadenceMs;
+}
+
+uint32_t nominalOregonCadenceMs(SensorType type, uint16_t code, uint8_t channel) {
+    switch (type) {
+        case SensorType::ThermoHygro:
+            if (code == 0xF824U || code == 0xF8B4U) return 53000UL;
+            if (code == 0x1D20U || code == 0xEC40U) {
+                if (channel == 2U) return 41000UL;
+                if (channel == 3U) return 43000UL;
+                return 39000UL;
+            }
+            return 0UL;
+        case SensorType::Wind:
+            return (code == 0x1984U || code == 0x1994U || code == 0x3D00U) ? 14000UL : 0UL;
+        case SensorType::Rain:
+            return code == 0x2914U ? 47000UL : 0UL;
+        case SensorType::UV:
+            return (code == 0xD874U || code == 0xEC70U) ? 73000UL : 0UL;
+        default:
+            return 0UL;
+    }
+}
+
+uint32_t effectiveOregonCadenceMs(const OregonSessionSensor &sensor) {
+    const uint32_t nominal = nominalOregonCadenceMs(sensor.type, sensor.code, sensor.channel);
+    if (nominal != 0) return nominal;
+    return sensor.cadenceSamples >= 3U ? sensor.observedCadenceMs : 0UL;
+}
+
+void noteOregonSessionSensor(const WeatherReading &reading, uint8_t decodeSource) {
+    OregonSessionSensor *freeSlot = nullptr;
+    OregonSessionSensor *sensor = nullptr;
+    for (uint8_t i = 0; i < OREGON_SESSION_SENSOR_MAX; ++i) {
+        OregonSessionSensor &candidate = rfSession.oregon[i];
+        if (candidate.received == 0) {
+            if (!freeSlot) freeSlot = &candidate;
+            continue;
+        }
+        if (candidate.type == reading.type && candidate.code == reading.sensorCode &&
+            candidate.channel == reading.channel && candidate.rollingCode == reading.rollingCode) {
+            sensor = &candidate;
+            break;
+        }
+    }
+    if (!sensor) sensor = freeSlot;
+    if (!sensor) {
+        if (rfSession.oregonOverflow < 255U) rfSession.oregonOverflow++;
+        return;
+    }
+    if (sensor->received == 0) {
+        sensor->type = reading.type;
+        sensor->code = reading.sensorCode;
+        sensor->channel = reading.channel;
+        sensor->rollingCode = reading.rollingCode;
+        sensor->protocolVersion = decodeSource == static_cast<uint8_t>(OregonDecodeSource::EdgeTimingV21) ? 2U : 3U;
+        sensor->firstMs = reading.receivedAtMs;
+    } else {
+        const uint32_t interval = static_cast<uint32_t>(reading.receivedAtMs - sensor->lastMs);
+        if (interval >= 5000UL && interval <= 180000UL &&
+            nominalOregonCadenceMs(sensor->type, sensor->code, sensor->channel) == 0) {
+            if (sensor->cadenceSamples == 0 || interval < sensor->observedCadenceMs)
+                sensor->observedCadenceMs = interval;
+            if (sensor->cadenceSamples < 255U) sensor->cadenceSamples++;
+        }
+    }
+    sensor->lastMs = reading.receivedAtMs;
+    sensor->lastRssi = reading.rssi;
+    sensor->received++;
 }
 
 int qualityPct(uint32_t received, uint32_t expected) {
@@ -88,10 +172,6 @@ void resetRfSession(bool clearRawHistory = false) {
     rfSession.initialized = true;
     rfSession.mode = getRfProtocolMode();
     rfSession.startedMs = millis();
-    rfSession.baseThermo = station->thermoPacketCount;
-    rfSession.baseWind = station->windPacketCount;
-    rfSession.baseRain = station->rainPacketCount;
-    rfSession.baseUv = station->uvPacketCount;
     rfSession.baseLcTemp = station->lacrosse.temperaturePacketCount;
     rfSession.baseLcHum = station->lacrosse.humidityPacketCount;
     rfSession.baseLcRain = station->lacrosse.rainPacketCount;
@@ -99,6 +179,9 @@ void resetRfSession(bool clearRawHistory = false) {
     rfSession.baseLcGust = station->lacrosse.gustPacketCount;
     rfSession.baseLcValid = station->lacrosse.validPacketCount;
     rfSession.lcFirstValidMs = 0;
+    for (uint8_t i = 0; i < OREGON_SESSION_SENSOR_MAX; ++i)
+        rfSession.oregon[i] = OregonSessionSensor{};
+    rfSession.oregonOverflow = 0;
     if (clearRawHistory) {
         historyHead = 0;
         historyCount = 0;
@@ -162,10 +245,7 @@ void handleState() {
     const bool oregonActive = activeMode != RfProtocolMode::LaCrosse;
     const bool technolineActive = activeMode != RfProtocolMode::Oregon;
 
-    const uint32_t sessionThermo = station->thermoPacketCount - rfSession.baseThermo;
-    const uint32_t sessionWind = station->windPacketCount - rfSession.baseWind;
-    const uint32_t sessionRain = station->rainPacketCount - rfSession.baseRain;
-    const uint32_t sessionUv = station->uvPacketCount - rfSession.baseUv;
+    uint32_t sessionThermo = 0, sessionWind = 0, sessionRain = 0, sessionUv = 0;
     const auto &lcState = station->lacrosse;
     const uint32_t sessionLcTemp = lcState.temperaturePacketCount - rfSession.baseLcTemp;
     const uint32_t sessionLcHum = lcState.humidityPacketCount - rfSession.baseLcHum;
@@ -174,17 +254,43 @@ void handleState() {
     const uint32_t sessionLcGust = lcState.gustPacketCount - rfSession.baseLcGust;
     const uint32_t sessionLcValid = lcState.validPacketCount - rfSession.baseLcValid;
 
-    // Cadenze osservate/nominali dei sensori Oregon usate solo per stimare la
-    // qualita' di acquisizione della sessione corrente.
-    constexpr uint32_t THERMO_CADENCE_MS = 53000UL;
-    constexpr uint32_t WIND_CADENCE_MS = 14000UL;
-    constexpr uint32_t RAIN_CADENCE_MS = 47000UL;
-    constexpr uint32_t UV_CADENCE_MS = 73000UL;
-
-    const uint32_t expThermo = oregonActive ? expectedPackets(sessionElapsedMs, THERMO_CADENCE_MS) : 0;
-    const uint32_t expWind = oregonActive ? expectedPackets(sessionElapsedMs, WIND_CADENCE_MS) : 0;
-    const uint32_t expRain = oregonActive ? expectedPackets(sessionElapsedMs, RAIN_CADENCE_MS) : 0;
-    const uint32_t expUv = oregonActive ? expectedPackets(sessionElapsedMs, UV_CADENCE_MS) : 0;
+    // Aggregati mantenuti per compatibilita' API. La UI usa invece una riga per
+    // trasmettitore (codice + canale + rolling code), evitando che sensori
+    // OSV2.1 e OSV3 falsino reciprocamente ricevuti e attesi.
+    uint32_t expThermo = 0, expWind = 0, expRain = 0, expUv = 0;
+    uint8_t thermoSeenCount = 0;
+    bool thermoQualityAvailable = true, windQualityAvailable = true;
+    bool rainQualityAvailable = true, uvQualityAvailable = true;
+    bool windSeen = false, rainSeen = false, uvSeen = false;
+    for (uint8_t i = 0; i < OREGON_SESSION_SENSOR_MAX; ++i) {
+        const OregonSessionSensor &sensor = rfSession.oregon[i];
+        if (sensor.received == 0) continue;
+        const uint32_t cadence = effectiveOregonCadenceMs(sensor);
+        const uint32_t expected = cadence ? expectedPacketsSinceFirst(now, sensor.firstMs, cadence) : 0;
+        switch (sensor.type) {
+            case SensorType::ThermoHygro:
+                thermoSeenCount++; sessionThermo += sensor.received; expThermo += expected;
+                if (!cadence) thermoQualityAvailable = false;
+                break;
+            case SensorType::Wind:
+                windSeen = true; sessionWind += sensor.received; expWind += expected;
+                if (!cadence) windQualityAvailable = false;
+                break;
+            case SensorType::Rain:
+                rainSeen = true; sessionRain += sensor.received; expRain += expected;
+                if (!cadence) rainQualityAvailable = false;
+                break;
+            case SensorType::UV:
+                uvSeen = true; sessionUv += sensor.received; expUv += expected;
+                if (!cadence) uvQualityAvailable = false;
+                break;
+            default: break;
+        }
+    }
+    thermoQualityAvailable = thermoSeenCount > 0 && thermoQualityAvailable;
+    windQualityAvailable = windSeen && windQualityAvailable;
+    rainQualityAvailable = rainSeen && rainQualityAvailable;
+    uvQualityAvailable = uvSeen && uvQualityAvailable;
 
     const bool acqThermo = oregonActive && timestampInSession(station->thermoUpdatedMs, rfSession.startedMs);
     const bool acqWind = oregonActive && timestampInSession(station->windUpdatedMs, rfSession.startedMs);
@@ -259,14 +365,50 @@ void handleState() {
     out += ",\"wind_received\":" + String(sessionWind);
     out += ",\"rain_received\":" + String(sessionRain);
     out += ",\"uv_received\":" + String(sessionUv);
+    out += ",\"thermo_seen\":"; out += thermoSeenCount ? "true" : "false";
+    out += ",\"wind_seen\":"; out += windSeen ? "true" : "false";
+    out += ",\"rain_seen\":"; out += rainSeen ? "true" : "false";
+    out += ",\"uv_seen\":"; out += uvSeen ? "true" : "false";
+    out += ",\"thermo_channels\":" + String(thermoSeenCount);
     out += ",\"thermo_expected\":" + String(expThermo);
     out += ",\"wind_expected\":" + String(expWind);
     out += ",\"rain_expected\":" + String(expRain);
     out += ",\"uv_expected\":" + String(expUv);
+    out += ",\"thermo_quality_available\":"; out += thermoQualityAvailable ? "true" : "false";
+    out += ",\"wind_quality_available\":"; out += windQualityAvailable ? "true" : "false";
+    out += ",\"rain_quality_available\":"; out += rainQualityAvailable ? "true" : "false";
+    out += ",\"uv_quality_available\":"; out += uvQualityAvailable ? "true" : "false";
     out += ",\"thermo_quality_pct\":" + String(qualityPct(sessionThermo, expThermo));
     out += ",\"wind_quality_pct\":" + String(qualityPct(sessionWind, expWind));
     out += ",\"rain_quality_pct\":" + String(qualityPct(sessionRain, expRain));
     out += ",\"uv_quality_pct\":" + String(qualityPct(sessionUv, expUv));
+    out += ",\"oregon_sensor_overflow\":" + String(rfSession.oregonOverflow);
+    out += ",\"oregon_sensors\":[";
+    bool firstOregonSensor = true;
+    for (uint8_t i = 0; i < OREGON_SESSION_SENSOR_MAX; ++i) {
+        const OregonSessionSensor &sensor = rfSession.oregon[i];
+        if (sensor.received == 0) continue;
+        const uint32_t nominal = nominalOregonCadenceMs(sensor.type, sensor.code, sensor.channel);
+        const uint32_t cadence = effectiveOregonCadenceMs(sensor);
+        const uint32_t expected = cadence ? expectedPacketsSinceFirst(now, sensor.firstMs, cadence) : 0;
+        const int quality = qualityPct(sensor.received, expected);
+        if (!firstOregonSensor) out += ',';
+        firstOregonSensor = false;
+        out += "{\"t\":\"" + String(sensorTypeName(sensor.type)) + "\"";
+        out += ",\"m\":\"" + String(sensorModelName(sensor.code)) + "\"";
+        out += ",\"c\":\"" + hex4(sensor.code) + "\"";
+        out += ",\"ch\":" + String(sensor.channel);
+        out += ",\"id\":" + String(sensor.rollingCode);
+        out += ",\"v\":" + String(sensor.protocolVersion);
+        out += ",\"rx\":" + String(sensor.received);
+        out += ",\"ex\":" + String(expected);
+        out += ",\"q\":" + String(quality);
+        out += ",\"lost\":" + String(expected > sensor.received ? expected - sensor.received : 0UL);
+        out += ",\"cad\":" + String(cadence / 1000UL);
+        out += ",\"rssi\":" + jsonFloat(sensor.lastRssi, 1);
+        out += ",\"src\":\"" + String(nominal ? "nom" : (cadence ? "auto" : "cal")) + "\"}";
+    }
+    out += ']';
     out += ",\"lc_temperature_acquired\":"; out += acqLcTemp ? "true" : "false";
     out += ",\"lc_humidity_acquired\":"; out += acqLcHum ? "true" : "false";
     out += ",\"lc_rain_acquired\":"; out += acqLcRain ? "true" : "false";
@@ -494,6 +636,18 @@ void handleState() {
     appendSensorJson(out, "uv", station->uvSensor, true);
     out += "}";
 
+    const ThermoChannelConfig thermoCfg = getThermoChannelConfig();
+    out += ",\"oregon_thermo\":{\"m\":" + String(thermoEffectiveMask());
+    out += ",\"p\":" + String(thermoCfg.primaryChannel) + ",\"c\":[";
+    for (uint8_t ch = 1; ch <= 3; ++ch) {
+        if (ch > 1) out += ",";
+        const ThermoChannelState ts = getThermoChannelState(ch);
+        out += "[" + jsonFloat(ts.temperatureC, 1) + "," + jsonFloat(ts.humidityPct, 0);
+        out += "," + String(ageSeconds(ts.updatedMs, now)) + "," + jsonFloat(ts.lastRssi, 1);
+        out += ",\"" + hex4(ts.sensor.code) + "\",\"" + String(sensorBatteryName(ts.sensor)) + "\"]";
+    }
+    out += "]}";
+
     out += ",\"rf\":{";
     out += "\"frequency_mhz\":" + String(OREGON_FREQUENCY_MHZ, static_cast<unsigned int>(2));
     out += ",\"rx_bw_khz\":" + String(getRadioBandwidthKhz(), static_cast<unsigned int>(1));
@@ -510,6 +664,14 @@ void handleState() {
     out += ",\"wind_recovery_starts\":" + String(rx.windRecoveryStarts);
     out += ",\"wind_recovery_success\":" + String(rx.windRecoverySuccess);
     out += ",\"strong_frames\":" + String(rx.edgeFrames);
+    out += ",\"v21_preambles\":" + String(rx.v21Preambles);
+    out += ",\"v21_short_preambles\":" + String(rx.v21ShortPreambles);
+    out += ",\"v21_candidates\":" + String(rx.v21Candidates);
+    out += ",\"v21_frames\":" + String(rx.v21Frames);
+    out += ",\"v21_uv_candidates\":" + String(rx.v21UvCandidates);
+    out += ",\"v21_uv_frames\":" + String(rx.v21UvFrames);
+    out += ",\"v21_checksum_fail\":" + String(rx.v21ChecksumFail);
+    out += ",\"v21_pair_errors\":" + String(rx.v21PairErrors);
     out += ",\"weak_frames\":" + String(rx.weakEdgeFrames);
     out += ",\"state_frames\":" + String(rx.stateEdgeFrames);
     out += ",\"state_preambles\":" + String(rx.statePreambles);
@@ -584,6 +746,54 @@ void handleState() {
     server.send(200, "application/json", out);
 }
 
+
+void handleThermoConfigGet() {
+    const ThermoChannelConfig c = getThermoChannelConfig();
+    String out = "{\"enabled_mask\":" + String(c.enabledMask);
+    out += ",\"detected_mask\":" + String(thermoDetectedMask());
+    out += ",\"visible_mask\":" + String(thermoEffectiveMask());
+    out += ",\"primary_channel\":" + String(c.primaryChannel);
+    out += ",\"auto_discover\":"; out += c.autoDiscover ? "true" : "false";
+    out += "}";
+    sendNoCache();
+    server.send(200, "application/json", out);
+}
+
+void handleThermoConfigPost() {
+    const uint8_t previousVisibleMask = thermoEffectiveMask();
+    ThermoChannelConfig c = getThermoChannelConfig();
+    const uint8_t previousPrimaryChannel = c.primaryChannel;
+    if (server.hasArg("enabled_mask")) c.enabledMask = static_cast<uint8_t>(server.arg("enabled_mask").toInt());
+    if (server.hasArg("primary_channel")) c.primaryChannel = static_cast<uint8_t>(server.arg("primary_channel").toInt());
+    if (server.hasArg("auto_discover")) {
+        const String v = server.arg("auto_discover");
+        c.autoDiscover = v == "1" || v == "true" || v == "on";
+    }
+    if (c.primaryChannel < 1U || c.primaryChannel > 3U || (c.enabledMask & 0xF8U)) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid thermo channel configuration\"}");
+        return;
+    }
+    if (!saveThermoChannelConfig(c)) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"thermo NVS verification failed\"}");
+        return;
+    }
+    if (station) syncPrimaryThermoState(*station);
+    reconcileThermoMqttRetained(previousVisibleMask, previousPrimaryChannel);
+    handleThermoConfigGet();
+}
+
+void handleThermoConfigReset() {
+    const uint8_t previousVisibleMask = thermoEffectiveMask();
+    const uint8_t previousPrimaryChannel = getThermoChannelConfig().primaryChannel;
+    if (!resetThermoChannelConfig()) {
+        server.send(500, "application/json", "{\"ok\":false}");
+        return;
+    }
+    if (station) syncPrimaryThermoState(*station);
+    reconcileThermoMqttRetained(previousVisibleMask, previousPrimaryChannel);
+    handleThermoConfigGet();
+}
+
 void handleDisplayPower() {
     if (!server.hasArg("on")) {
         server.send(400, "application/json", "{\"ok\":false,\"error\":\"missing on\"}");
@@ -612,6 +822,7 @@ void handleDisplayConfigGet() {
     out += ",\"technoline_fields\":" + String(c.technolineFields);
     out += ",\"pressure_fields\":" + String(c.pressureFields);
     out += ",\"status_fields\":" + String(c.statusFields);
+    out += ",\"lightning_fields\":" + String(c.lightningFields);
     out += ",\"page_interval_sec\":" + String(c.pageIntervalSec);
     out += ",\"contrast\":" + String(c.contrast);
     out += ",\"current_page\":" + String(displayCurrentPage());
@@ -629,6 +840,7 @@ void handleDisplayConfigPost() {
     if (server.hasArg("technoline_fields")) c.technolineFields = static_cast<uint8_t>(server.arg("technoline_fields").toInt());
     if (server.hasArg("pressure_fields")) c.pressureFields = static_cast<uint8_t>(server.arg("pressure_fields").toInt());
     if (server.hasArg("status_fields")) c.statusFields = static_cast<uint8_t>(server.arg("status_fields").toInt());
+    if (server.hasArg("lightning_fields")) c.lightningFields = static_cast<uint8_t>(server.arg("lightning_fields").toInt());
     if (server.hasArg("page_interval_sec")) {
         const long v = server.arg("page_interval_sec").toInt();
         if (v < 2 || v > 60) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"page interval must be 2..60 seconds\"}"); return; }
@@ -849,8 +1061,25 @@ String configBackupJson(bool includeSecrets) {
     out += ",\n  \"display_technoline_fields\":" + String(d.technolineFields);
     out += ",\n  \"display_pressure_fields\":" + String(d.pressureFields);
     out += ",\n  \"display_status_fields\":" + String(d.statusFields);
+    out += ",\n  \"display_lightning_fields\":" + String(d.lightningFields);
     out += ",\n  \"display_page_interval_sec\":" + String(d.pageIntervalSec);
     out += ",\n  \"display_contrast\":" + String(d.contrast);
+    const ThermoChannelConfig tc = getThermoChannelConfig();
+    out += ",\n  \"thermo_enabled_mask\":" + String(tc.enabledMask);
+    out += ",\n  \"thermo_primary_channel\":" + String(tc.primaryChannel);
+    out += ",\n  \"thermo_auto_discover\":"; out += tc.autoDiscover ? "true" : "false";
+    const LightningConfig l = getLightningConfig();
+    out += ",\n  \"as3935_enabled\":"; out += l.enabled ? "true" : "false";
+    out += ",\n  \"as3935_indoor\":"; out += l.indoor ? "true" : "false";
+    out += ",\n  \"as3935_i2c_address\":" + String(l.i2cAddress);
+    out += ",\n  \"as3935_irq_pin\":" + String(static_cast<int>(l.irqPin));
+    out += ",\n  \"as3935_noise_floor\":" + String(l.noiseFloor);
+    out += ",\n  \"as3935_watchdog_threshold\":" + String(l.watchdogThreshold);
+    out += ",\n  \"as3935_spike_rejection\":" + String(l.spikeRejection);
+    out += ",\n  \"as3935_min_strikes\":" + String(l.minStrikes);
+    out += ",\n  \"as3935_mask_disturbers\":"; out += l.maskDisturbers ? "true" : "false";
+    out += ",\n  \"as3935_tuning_cap\":" + String(l.tuningCap);
+    out += ",\n  \"as3935_auto_tune\":"; out += l.autoTune ? "true" : "false";
     out += ",\n  \"rf_mode\":" + String(static_cast<uint8_t>(getRfProtocolMode()));
     out += ",\n  \"rf_gain_oregon\":" + String(getRadioGainForMode(RfProtocolMode::Oregon));
     out += ",\n  \"rf_gain_technoline\":" + String(getRadioGainForMode(RfProtocolMode::LaCrosse));
@@ -1028,10 +1257,50 @@ void handleConfigImport() {
     if (jsonGetUInt(body, "display_technoline_fields", tmpUInt)) displayCfg.technolineFields = static_cast<uint8_t>(tmpUInt);
     if (jsonGetUInt(body, "display_pressure_fields", tmpUInt)) displayCfg.pressureFields = static_cast<uint8_t>(tmpUInt);
     if (jsonGetUInt(body, "display_status_fields", tmpUInt)) displayCfg.statusFields = static_cast<uint8_t>(tmpUInt);
+    if (jsonGetUInt(body, "display_lightning_fields", tmpUInt)) displayCfg.lightningFields = static_cast<uint8_t>(tmpUInt);
     if (jsonGetUInt(body, "display_page_interval_sec", tmpUInt)) displayCfg.pageIntervalSec = static_cast<uint16_t>(tmpUInt);
     if (jsonGetUInt(body, "display_contrast", tmpUInt)) displayCfg.contrast = static_cast<uint8_t>(tmpUInt);
     if (!validateDisplayConfig(displayCfg)) {
         server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid display backup values\"}");
+        return;
+    }
+
+    const uint8_t previousThermoVisibleMask = thermoEffectiveMask();
+    ThermoChannelConfig thermoCfg = getThermoChannelConfig();
+    const uint8_t previousThermoPrimaryChannel = thermoCfg.primaryChannel;
+    if (jsonGetUInt(body, "thermo_enabled_mask", tmpUInt)) {
+        if (tmpUInt > 7U) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid thermo enabled mask\"}"); return; }
+        thermoCfg.enabledMask = static_cast<uint8_t>(tmpUInt);
+    }
+    if (jsonGetUInt(body, "thermo_primary_channel", tmpUInt)) {
+        if (tmpUInt < 1U || tmpUInt > 3U) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid thermo primary channel\"}"); return; }
+        thermoCfg.primaryChannel = static_cast<uint8_t>(tmpUInt);
+    }
+    if (jsonGetBool(body, "thermo_auto_discover", tmpBool)) thermoCfg.autoDiscover = tmpBool;
+    if (!saveThermoChannelConfig(thermoCfg)) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid thermo channel backup values\"}");
+        return;
+    }
+    if (station) syncPrimaryThermoState(*station);
+    reconcileThermoMqttRetained(previousThermoVisibleMask, previousThermoPrimaryChannel);
+
+    LightningConfig lightningCfg = getLightningConfig();
+    if (jsonGetBool(body, "as3935_enabled", tmpBool)) lightningCfg.enabled = tmpBool;
+    if (jsonGetBool(body, "as3935_indoor", tmpBool)) lightningCfg.indoor = tmpBool;
+    if (jsonGetUInt(body, "as3935_i2c_address", tmpUInt)) lightningCfg.i2cAddress = static_cast<uint8_t>(tmpUInt);
+    if (jsonGetUInt(body, "as3935_irq_pin", tmpUInt)) {
+        if (tmpUInt > 127U) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid AS3935 IRQ in backup\"}"); return; }
+        lightningCfg.irqPin = static_cast<int8_t>(tmpUInt);
+    }
+    if (jsonGetUInt(body, "as3935_noise_floor", tmpUInt)) lightningCfg.noiseFloor = static_cast<uint8_t>(tmpUInt);
+    if (jsonGetUInt(body, "as3935_watchdog_threshold", tmpUInt)) lightningCfg.watchdogThreshold = static_cast<uint8_t>(tmpUInt);
+    if (jsonGetUInt(body, "as3935_spike_rejection", tmpUInt)) lightningCfg.spikeRejection = static_cast<uint8_t>(tmpUInt);
+    if (jsonGetUInt(body, "as3935_min_strikes", tmpUInt)) lightningCfg.minStrikes = static_cast<uint8_t>(tmpUInt);
+    if (jsonGetBool(body, "as3935_mask_disturbers", tmpBool)) lightningCfg.maskDisturbers = tmpBool;
+    if (jsonGetUInt(body, "as3935_tuning_cap", tmpUInt)) lightningCfg.tuningCap = static_cast<uint8_t>(tmpUInt);
+    if (jsonGetBool(body, "as3935_auto_tune", tmpBool)) lightningCfg.autoTune = tmpBool;
+    if (!validateLightningConfig(lightningCfg)) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid AS3935 backup values\"}");
         return;
     }
 
@@ -1068,6 +1337,11 @@ void handleConfigImport() {
     bool displayChanged = false;
     if (!saveDisplayConfig(displayCfg, displayChanged)) {
         server.send(500, "application/json", "{\"ok\":false,\"error\":\"could not save display configuration\"}");
+        return;
+    }
+    bool lightningChanged = false;
+    if (!saveLightningConfig(lightningCfg, lightningChanged)) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"could not save AS3935 configuration\"}");
         return;
     }
 
@@ -1310,6 +1584,110 @@ void handleNetworkConfigReset() {
     server.send(200, "application/json", out);
 }
 
+
+// AS3935_UI_INTEGRATED: il rilevatore fulmini usa lo stesso WebServer della dashboard.
+bool lightningBoolArg(const char *name) {
+    if (!server.hasArg(name)) return false;
+    const String v = server.arg(name);
+    return v == "1" || v == "true" || v == "on" || v == "yes";
+}
+
+bool lightningUIntArg(const char *name, uint32_t &value) {
+    if (!server.hasArg(name)) return false;
+    const String raw = server.arg(name);
+    if (!raw.length()) return false;
+    char *end = nullptr;
+    const unsigned long parsed = strtoul(raw.c_str(), &end, 0);
+    if (!end || *end != '\0') return false;
+    value = static_cast<uint32_t>(parsed);
+    return true;
+}
+
+void handleLightningState() {
+    sendNoCache();
+    server.send(200, "application/json; charset=utf-8", lightningStateJson());
+}
+
+void handleLightningConfigGet() {
+    sendNoCache();
+    server.send(200, "application/json; charset=utf-8", lightningConfigJson());
+}
+
+void handleLightningConfigPost() {
+    LightningConfig c = getLightningConfig();
+    if (server.hasArg("enabled")) c.enabled = lightningBoolArg("enabled");
+    if (server.hasArg("mode")) c.indoor = server.arg("mode") != "outdoor";
+    if (server.hasArg("mask_disturbers")) c.maskDisturbers = lightningBoolArg("mask_disturbers");
+    if (server.hasArg("auto_tune")) c.autoTune = lightningBoolArg("auto_tune");
+
+    uint32_t v = 0;
+    if (server.hasArg("i2c_address")) {
+        if (!lightningUIntArg("i2c_address", v) || v > 255U) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid i2c_address\"}"); return; }
+        c.i2cAddress = static_cast<uint8_t>(v);
+    }
+    if (server.hasArg("irq_pin")) {
+        if (!lightningUIntArg("irq_pin", v) || v > 127U) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid irq_pin\"}"); return; }
+        c.irqPin = static_cast<int8_t>(v);
+    }
+    if (server.hasArg("noise_floor")) {
+        if (!lightningUIntArg("noise_floor", v) || v > 255U) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid noise_floor\"}"); return; }
+        c.noiseFloor = static_cast<uint8_t>(v);
+    }
+    if (server.hasArg("watchdog_threshold")) {
+        if (!lightningUIntArg("watchdog_threshold", v) || v > 255U) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid watchdog_threshold\"}"); return; }
+        c.watchdogThreshold = static_cast<uint8_t>(v);
+    }
+    if (server.hasArg("spike_rejection")) {
+        if (!lightningUIntArg("spike_rejection", v) || v > 255U) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid spike_rejection\"}"); return; }
+        c.spikeRejection = static_cast<uint8_t>(v);
+    }
+    if (server.hasArg("min_strikes")) {
+        if (!lightningUIntArg("min_strikes", v) || v > 255U) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid min_strikes\"}"); return; }
+        c.minStrikes = static_cast<uint8_t>(v);
+    }
+    if (server.hasArg("tuning_cap")) {
+        if (!lightningUIntArg("tuning_cap", v) || v > 255U) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid tuning_cap\"}"); return; }
+        c.tuningCap = static_cast<uint8_t>(v);
+    }
+
+    if (!validateLightningConfig(c)) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"configuration rejected\"}");
+        return;
+    }
+    bool changed = false;
+    if (!saveLightningConfig(c, changed)) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"NVS save failed\"}");
+        return;
+    }
+    sendNoCache();
+    String out = "{\"ok\":true,\"changed\":";
+    out += changed ? "true" : "false";
+    out += ",\"state\":" + lightningStateJson() + "}";
+    server.send(200, "application/json; charset=utf-8", out);
+}
+
+void handleLightningReset() {
+    bool changed = false;
+    if (!resetLightningConfigToDefaults(changed)) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"reset failed\"}");
+        return;
+    }
+    sendNoCache();
+    String out = "{\"ok\":true,\"changed\":";
+    out += changed ? "true" : "false";
+    out += "}";
+    server.send(200, "application/json", out);
+}
+
+void handleLightningReinit() {
+    const bool ok = reinitializeLightning();
+    sendNoCache();
+    String out = "{\"ok\":";
+    out += ok ? "true" : "false";
+    out += ",\"state\":" + lightningStateJson() + "}";
+    server.send(ok ? 200 : 503, "application/json", out);
+}
+
 void handleBursts() {
     RfBurstRecord rows[16];
     const uint8_t count = getRfBurstHistory(rows, 16);
@@ -1339,235 +1717,28 @@ void handleBursts() {
 }
 
 void handleRoot() {
-    static const char PAGE[] PROGMEM = R"HTML(
-<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Oregon + Technoline Gateway</title>
-<style>
-:root{color-scheme:dark;--bg:#08111f;--panel:#0d1829;--panel2:#101d30;--panel3:#0a1525;--border:#26384e;--text:#e8eef8;--muted:#8fa7c5;--ok:#30d99a;--warn:#f0b24a;--bad:#ff7070;--blue:#83b7ff;--oregon:#3fd39b;--tech:#55aef6;--bme:#f0b24a}
-*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#08111f 0,#07101c 100%);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif}main{max-width:1580px;margin:auto;padding:14px}.top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.brand{min-width:280px;flex:1}.title{font-weight:800;font-size:1.28rem;letter-spacing:.01em}.sub,.muted{color:var(--muted);font-size:.83rem}.headerActions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.statusPill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--border);background:#0d1829;padding:8px 11px;border-radius:999px;font-size:.78rem;font-weight:700;color:var(--muted)}.statusPill:before{content:'';width:8px;height:8px;border-radius:50%;background:#65758a;box-shadow:0 0 0 3px #65758a18}.statusPill.ok{color:#91e8c4;border-color:#1d664f}.statusPill.ok:before{background:var(--ok);box-shadow:0 0 0 3px #30d99a20}.statusPill.wait{color:#f2cb7c;border-color:#6a5424}.statusPill.wait:before{background:var(--warn)}.statusPill.bad{color:#ff9b9b;border-color:#71323a}.statusPill.bad:before{background:var(--bad)}
-.mainTabs{display:flex;gap:8px;margin-top:14px;padding:5px;border:1px solid var(--border);border-radius:13px;background:#0a1525;overflow:auto}.mainTab{border:0;background:transparent;color:var(--muted);padding:9px 16px;border-radius:9px;cursor:pointer;font-weight:800;white-space:nowrap}.mainTab.active{background:#16304a;color:#eef7ff;box-shadow:inset 0 0 0 1px #3c6b91}.mainPage{display:none}.mainPage.active{display:block}
-.panel{border:1px solid var(--border);border-radius:14px;background:var(--panel);overflow:hidden;margin-top:12px;box-shadow:0 8px 28px #00000012}.panelHead{padding:13px 15px;border-bottom:1px solid var(--border);font-weight:750;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.stationOregon .panelHead{box-shadow:inset 3px 0 0 var(--oregon)}.stationTechnoline .panelHead{box-shadow:inset 3px 0 0 var(--tech)}.stationBme .panelHead{box-shadow:inset 3px 0 0 var(--bme)}
-.weatherGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding:14px}.bmeGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.card{position:relative;border:1px solid var(--border);border-radius:14px;background:linear-gradient(180deg,#101d30 0,#0e1a2b 100%);overflow:hidden;min-width:0}.card.good{border-color:#235448}.cardTitle{padding:12px 13px;font-weight:750;display:flex;align-items:center;justify-content:space-between;gap:8px;border-bottom:1px solid var(--border);min-height:52px}.cardTitle:before{content:'';width:7px;height:7px;border-radius:50%;background:#65758a;flex:0 0 auto}.card.fresh .cardTitle:before{background:var(--ok);box-shadow:0 0 0 3px #30d99a1c}.card.aging .cardTitle:before{background:var(--warn);box-shadow:0 0 0 3px #f0b24a1c}.card.stale .cardTitle:before{background:var(--bad);box-shadow:0 0 0 3px #ff70701c}.card.nodata .cardTitle:before{background:#65758a}.stationOregon .cardTitle{border-top:2px solid #3fd39b40}.stationTechnoline .cardTitle{border-top:2px solid #55aef640}.stationBme .cardTitle{border-top:2px solid #f0b24a40}.spark{width:92px;height:25px;margin-left:auto}.body{padding:4px 13px 10px}.row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid #1c2b3e}.row:last-child{border-bottom:0}.body>.row:first-child{padding:12px 0}.body>.row:first-child .value{font-size:1.42rem;line-height:1.1;color:#f4f8ff}.name{color:#b5c8e1;font-size:.9rem}.value{font-weight:700;text-align:right}.age{font-size:.68rem;color:var(--muted);margin-top:4px;text-align:right}.forecast{padding:10px 0;font-size:1rem;font-weight:700}.foot{background:#0a1525;padding:8px 13px;color:var(--muted);font-size:.7rem;line-height:1.4}.uvCard{grid-column:auto}
-.windCard .body{display:grid;grid-template-columns:minmax(0,1fr) 112px;column-gap:8px}.windCard .row{grid-column:1}.windCard .compassBlock{grid-column:2;grid-row:1/6;align-self:center}.compassBlock{display:flex;justify-content:center;padding:4px}.windCompass{width:104px;height:104px;filter:drop-shadow(0 3px 8px #0005)}.compassRing{fill:#0a1525;stroke:#65758a;stroke-width:4}.compassTick{stroke:#3c5068;stroke-width:1.5}.compassAxis{stroke:#235f45;stroke-width:2}.compassNeedleN{fill:#ff5c64}.compassNeedleS{fill:#73b9ff}.compassCardinal{fill:#dce8f8;font-size:10px;font-weight:800;text-anchor:middle;dominant-baseline:middle}.compassDeg{fill:#70e2ad;font-size:14px;font-weight:800;text-anchor:middle}.compassDir{fill:#9fb5d0;font-size:8px;font-weight:700;text-anchor:middle}
-.diagGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:12px}.diag{padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--panel2);line-height:1.55;min-width:0}.rawWrap{overflow:auto;padding:0 12px 12px}table{width:100%;border-collapse:collapse;font:12px ui-monospace,SFMono-Regular,Consolas,monospace}th,td{padding:7px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap}.ok{color:#70e2ad}.bad{color:#ff9b9b}.battOK{color:#70e2ad}.battLOW{color:#ff7070;font-weight:800}.battNA{color:var(--muted)}a{color:var(--blue)}details summary{cursor:pointer;padding:13px 15px;font-weight:750}.diagSection{border:1px solid var(--border);border-radius:12px;background:#0b1727;margin:12px;overflow:hidden}.diagSection>summary{background:#0e1b2d}.diagSection[open]>summary{border-bottom:1px solid var(--border)}
-.modeBox{display:flex;align-items:center;gap:8px;border:1px solid var(--border);background:var(--panel);padding:7px;border-radius:12px;flex-wrap:wrap}.modeLabel{color:var(--muted);font-size:.76rem;margin-right:3px}.modeBtn{border:1px solid var(--border);background:#111d2d;color:var(--text);padding:8px 13px;border-radius:9px;cursor:pointer;font-weight:750}.modeBtn:hover{border-color:#4c6c91;background:#15243a}.modeBtn.active{background:#17634f;border-color:#2ad09a;color:#fff}.modeBtn:disabled{opacity:.55;cursor:wait}.dangerBtn{border-color:#60343b!important;color:#ffc0c4!important;background:#28191e!important}.dangerBtn:hover{border-color:#a94e59!important;background:#3a1d24!important}.rfControls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:14px}.stationInactive{opacity:.38;filter:saturate(.5)}.acqBar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:8px 14px;background:#0a1525;border-bottom:1px solid var(--border);font-size:.76rem}.badge{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:999px;border:1px solid var(--border);background:#111d2d}.badge.ok{border-color:#17634f;color:#70e2ad}.badge.wait{border-color:#6a5424;color:#f0c56c}.badge.off{color:var(--muted)}.card.waiting{border-color:#6a5424}.value.waitingText{color:#f0c56c}.qrow{display:grid;grid-template-columns:1fr 62px 70px 70px;gap:8px;padding:4px 0;border-bottom:1px solid #1c2b3e}.qrow:last-child{border-bottom:0}.qhdr{color:var(--muted);font-size:.72rem}.qgood{color:#70e2ad}.qwarn{color:#f0c56c}.qbad{color:#ff9b9b}
-.cfgPanel{padding-bottom:2px}.cfgGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:14px}.cfgGrid label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:.78rem}.cfgGrid input[type=text],.cfgGrid input[type=password],.cfgGrid input[type=number],.cfgGrid select,.cfgGrid textarea{background:#081423;border:1px solid var(--border);color:var(--text);border-radius:8px;padding:9px}.cfgGrid textarea{min-height:150px;resize:vertical;font:11px ui-monospace,SFMono-Regular,Consolas,monospace}.cfgWide{grid-column:1/-1}.fieldGrid{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:8px;padding:0 14px 14px}.fieldGroup{border:1px solid var(--border);border-radius:10px;padding:10px;background:#0b1727}.fieldGroup b{display:block;margin-bottom:7px}.fieldCheck{display:flex;gap:7px;align-items:center;color:#b5c8e1;font-size:.78rem;padding:3px 0}.cfgGrid .checkLine{flex-direction:row;align-items:center}.cfgActions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:0 14px 14px}.cfgTabs{display:flex;gap:8px;padding:12px 14px 0;overflow:auto}.cfgTab{border:1px solid var(--border);background:#111d2d;color:var(--text);padding:8px 14px;border-radius:9px;cursor:pointer;font-weight:700;white-space:nowrap}.cfgTab.active{background:#174d66;border-color:#4aaad8}.cfgPage{display:none}.cfgPage.active{display:block}.cfgNote{padding:0 14px 12px;color:var(--muted);font-size:.78rem;line-height:1.45}
-.resourceHeroGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:14px 14px 0}.resourceHero{border:1px solid var(--border);border-radius:13px;background:linear-gradient(180deg,#122238,#0d1929);padding:14px}.resourceHero .heroLabel{color:var(--muted);font-size:.78rem;text-transform:uppercase;letter-spacing:.08em}.resourceHero .heroValue{font-size:1.7rem;font-weight:850;margin-top:5px}.resourceHero .heroState{font-size:.72rem;color:var(--ok);margin-top:4px}.resourceGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:14px}.resourceLine{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #1c2b3e}.resourceLine:last-child{border-bottom:0}.meter{height:7px;background:#081423;border:1px solid var(--border);border-radius:99px;overflow:hidden;margin-top:7px}.meter>span{display:block;height:100%;width:0;background:#30d99a;transition:width .25s}
-@media(max-width:1220px){.weatherGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.bmeGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.diagGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.fieldGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.rfControls{grid-template-columns:1fr 1fr}}
-@media(max-width:760px){main{padding:9px}.title{font-size:1.08rem}.sub{font-size:.75rem}.headerActions{width:100%}.statusPill{padding:7px 9px}.mainTabs{position:sticky;top:0;z-index:5}.weatherGrid,.bmeGrid{grid-template-columns:1fr;padding:10px}.diagGrid,.resourceGrid,.resourceHeroGrid,.fieldGrid,.cfgGrid,.rfControls{grid-template-columns:1fr}.windCard .body{grid-template-columns:minmax(0,1fr) 100px}.windCompass{width:94px;height:94px}.spark{width:82px}.modeBox{align-items:flex-start}.modeBtn{padding:8px 10px}}
-</style></head><body><main>
-<div class="top"><div class="brand"><div class="title">Oregon + Technoline 433 Gateway</div><div class="sub">LILYGO T3 · SX1278 OOK 433.92 MHz · decoder Oregon OSV3 + Technoline WS230x</div></div><div class="headerActions"><span id="hdrRf" class="statusPill wait">RF --</span><span id="net" class="statusPill wait">Wi-Fi...</span><span id="hdrMqtt" class="statusPill wait">MQTT...</span><button id="displayBtn" class="modeBtn" onclick="toggleDisplay()" title="Accende o spegne il display OLED; RF, Wi-Fi, Web e MQTT restano attivi">OLED --</button><button class="modeBtn dangerBtn" onclick="powerOffDevice()" title="Arresta servizi e periferiche e mette ESP32 in deep sleep">⏻ SPEGNI</button><button class="modeBtn dangerBtn" onclick="restartDevice()" title="Riavvia ESP32 senza cancellare la configurazione">⟳ RIAVVIA</button></div></div>
-<div class="mainTabs"><button id="mainTabDashboard" class="mainTab active" onclick="showMainTab('dashboard')">DASHBOARD</button><button id="mainTabHardware" class="mainTab" onclick="showMainTab('hardware')">HARDWARE</button><button id="mainTabConfig" class="mainTab" onclick="showMainTab('config')">CONFIGURAZIONE</button><button id="mainTabDiag" class="mainTab" onclick="showMainTab('diag')">DIAGNOSTICA</button></div>
-<section id="mainDashboard" class="mainPage active"><div class="panel stationOregon" id="oregonPanel"><div class="panelHead">Dati meteo live · Oregon OSV3 <span id="oregonModeBadge" class="badge off">RF non in ascolto</span></div><div class="acqBar"><b>Acquisizione Oregon</b><span id="sessionAge" class="badge off">--</span><span id="acqThermo" class="badge wait">THGN attesa</span><span id="acqWind" class="badge wait">WGR attesa</span><span id="acqRain" class="badge wait">PCR attesa</span><span id="acqUv" class="badge wait">UVN attesa</span></div><div class="weatherGrid">
-<section class="card good"><div class="cardTitle">Temperatura e umidita<svg class="spark" id="spTemp"></svg></div><div class="body">
-<div class="row"><div class="name">Temperatura esterna</div><div><div class="value" id="temp">--</div><div class="age" id="ageT"></div></div></div>
-<div class="row"><div class="name">Umidita esterna</div><div class="value" id="hum">--</div></div>
-<div class="row"><div class="name">Heat index esterno</div><div class="value" id="hi">N/A</div></div>
-<div class="row"><div class="name">Punto di rugiada</div><div class="value" id="dew">--</div></div>
-</div><div class="foot" id="footT"></div></section>
-
-<section class="card good windCard"><div class="cardTitle">Vento<svg class="spark" id="spWind"></svg></div><div class="body">
-<div class="row"><div class="name">Velocita media</div><div><div class="value" id="wind">--</div><div class="age" id="ageW"></div></div></div>
-<div class="row"><div class="name">Raffica / massimo</div><div class="value" id="gust">--</div></div>
-<div class="row"><div class="name">Direzione</div><div class="value" id="dir">--</div></div>
-<div class="row"><div class="name">Wind chill</div><div class="value" id="wc">N/A</div></div><div class="compassBlock"><svg class="windCompass" viewBox="0 0 120 120" aria-label="Bussola vento Oregon"><circle class="compassRing" cx="60" cy="60" r="49"/><line class="compassAxis" x1="60" y1="13" x2="60" y2="107"/><line class="compassAxis" x1="13" y1="60" x2="107" y2="60"/><text class="compassCardinal" x="60" y="6">N</text><text class="compassCardinal" x="114" y="60">E</text><text class="compassCardinal" x="60" y="114">S</text><text class="compassCardinal" x="6" y="60">W</text><g id="oregonCompassNeedle"><polygon class="compassNeedleN" points="60,12 55,60 65,60"/><polygon class="compassNeedleS" points="60,108 55,60 65,60"/></g><circle cx="60" cy="60" r="5" fill="#dce8f8"/><text id="oregonCompassDeg" class="compassDeg" x="60" y="55">--°</text><text id="oregonCompassDir" class="compassDir" x="60" y="72">--</text></svg></div></div><div class="foot" id="footW"></div></section>
-
-<section class="card good"><div class="cardTitle">Pioggia<svg class="spark" id="spRain"></svg></div><div class="body">
-<div class="row"><div class="name">Intensita</div><div><div class="value" id="rate">--</div><div class="age" id="ageR"></div></div></div>
-<div class="row"><div class="name">Ultima ora</div><div class="value" id="r1h">--</div></div>
-<div class="row"><div class="name">Ultime 24 ore</div><div class="value" id="r24">--</div></div>
-<div class="row"><div class="name">Totale sensore</div><div class="value" id="rtot">--</div></div>
-<div class="row"><div class="name">Incremento ultimo frame</div><div class="value" id="rinc">--</div></div></div><div class="foot" id="footR"></div></section>
-
-<section class="card good uvCard"><div class="cardTitle">Radiazione UV<svg class="spark" id="spUv"></svg></div><div class="body"><div class="row"><div class="name">Indice UV</div><div><div class="value" id="uv">--</div><div class="age" id="ageU"></div></div></div></div><div class="foot" id="footU"></div></section>
-</div></div>
-
-<div class="panel stationTechnoline" id="lacrossePanel"><div class="panelHead">Dati meteo live · Technoline WS230x <span id="technolineModeBadge" class="badge off">RF non in ascolto</span></div><div class="acqBar"><b>Acquisizione Technoline</b><span id="lcSessionAge" class="badge off">--</span><span id="lcAcqT" class="badge wait">TEMP attesa</span><span id="lcAcqH" class="badge wait">HUM attesa</span><span id="lcAcqW" class="badge wait">WIND attesa</span><span id="lcAcqG" class="badge wait">GUST attesa</span><span id="lcAcqR" class="badge wait">RAIN attesa</span></div><div class="weatherGrid">
-<section class="card good"><div class="cardTitle">Temperatura e umidita<svg class="spark" id="spLcTemp"></svg></div><div class="body">
-<div class="row"><div class="name">Temperatura esterna</div><div><div class="value" id="lcTemp">--</div><div class="age" id="lcAgeT"></div></div></div>
-<div class="row"><div class="name">Umidita esterna</div><div class="value" id="lcHum">--</div></div>
-<div class="row"><div class="name">Modello / ID</div><div class="value" style="font-size:14px"><span id="lcModel">--</span> · <span id="lcId">--</span></div></div>
-</div><div class="foot" id="lcFootTH"></div></section>
-
-<section class="card good windCard"><div class="cardTitle">Vento<svg class="spark" id="spLcWind"></svg></div><div class="body">
-<div class="row"><div class="name">Velocita</div><div><div class="value" id="lcWind">--</div><div class="age" id="lcAgeW"></div></div></div>
-<div class="row"><div class="name">Raffica</div><div class="value" id="lcGust">--</div></div>
-<div class="row"><div class="name">Direzione</div><div class="value" id="lcDir">--</div></div>
-<div class="row"><div class="name">Prossimo update</div><div class="value" id="lcNext">--</div></div>
-<div class="compassBlock"><svg class="windCompass" viewBox="0 0 120 120" aria-label="Bussola vento Technoline"><circle class="compassRing" cx="60" cy="60" r="49"/><line class="compassAxis" x1="60" y1="13" x2="60" y2="107"/><line class="compassAxis" x1="13" y1="60" x2="107" y2="60"/><text class="compassCardinal" x="60" y="6">N</text><text class="compassCardinal" x="114" y="60">E</text><text class="compassCardinal" x="60" y="114">S</text><text class="compassCardinal" x="6" y="60">W</text><g id="lcCompassNeedle"><polygon class="compassNeedleN" points="60,12 55,60 65,60"/><polygon class="compassNeedleS" points="60,108 55,60 65,60"/></g><circle cx="60" cy="60" r="5" fill="#dce8f8"/><text id="lcCompassDeg" class="compassDeg" x="60" y="55">--°</text><text id="lcCompassDir" class="compassDir" x="60" y="72">--</text></svg></div></div><div class="foot" id="lcFootW"></div></section>
-
-<section class="card good"><div class="cardTitle">Pioggia<svg class="spark" id="spLcRain"></svg></div><div class="body">
-<div class="row"><div class="name">Totale sensore</div><div><div class="value" id="lcRain">--</div><div class="age" id="lcAgeR"></div></div></div>
-<div class="row"><div class="name">Incremento ultimo frame</div><div class="value" id="lcRainInc">--</div></div>
-</div><div class="foot" id="lcFootR"></div></section>
-
-<section class="card good uvCard nodata"><div class="cardTitle">Radiazione UV</div><div class="body">
-<div class="row"><div class="name">Indice UV</div><div class="value">N/D</div></div>
-<div class="row"><div class="name">WS-2305</div><div class="value">non trasmesso</div></div>
-</div><div class="foot">Il protocollo WS-23xx non contiene un dato UV.</div></section>
-</div></div>
-<div class="panel stationBme" id="bmePanel"><div class="panelHead">Sensore locale · BME280 <span id="bmeBadge" class="badge off">rilevamento...</span></div><div class="weatherGrid bmeGrid">
-<section class="card good"><div class="cardTitle">Ambiente locale<svg class="spark" id="spBmeTemp"></svg></div><div class="body">
-<div class="row"><div class="name">Temperatura interna</div><div><div class="value" id="tin">--</div><div class="age" id="bmeAge"></div></div></div>
-<div class="row"><div class="name">Umidita interna</div><div class="value" id="hin">--</div></div>
-<div class="row"><div class="name">Origine</div><div class="value">I²C locale</div></div>
-</div><div class="foot" id="bmeFootEnv">Indipendente dai protocolli RF.</div></section>
-<section class="card good"><div class="cardTitle">Barometro<svg class="spark" id="spPress"></svg></div><div class="body">
-<div class="row"><div class="name">Pressione stazione</div><div><div class="value" id="psta">--</div><div class="age" id="ageP"></div></div></div>
-<div class="row"><div class="name">Pressione al livello del mare</div><div class="value" id="psea">--</div></div>
-<div class="row"><div class="name">Trend normalizzato 3 h</div><div class="value" id="ptrend">--</div></div>
-<div class="forecast" id="forecast">In acquisizione</div>
-</div><div class="foot" id="footP"></div></section>
-</div></div>
-</section>
-<section id="mainHardware" class="mainPage">
-<div class="panel"><div class="panelHead">Hardware Monitor <span class="muted">aggiornamento live · nessuna scrittura flash</span></div>
-<div class="resourceHeroGrid"><div class="resourceHero"><div class="heroLabel">CPU</div><div class="heroValue" id="sysCpu">--</div><div class="heroState">ESP32 runtime</div></div><div class="resourceHero"><div class="heroLabel">RAM utilizzata</div><div class="heroValue" id="sysHeapPct">--</div><div class="heroState">heap dinamico</div></div><div class="resourceHero"><div class="heroLabel">Wi-Fi</div><div class="heroValue" id="sysWifi">--</div><div class="heroState">RSSI collegamento</div></div></div>
-<div class="resourceGrid">
-<section class="card"><div class="cardTitle">CPU / SoC</div><div class="body"><div class="resourceLine"><span class="name">Chip</span><span class="value" id="sysChip">--</span></div><div class="resourceLine"><span class="name">Core</span><span class="value" id="sysCores">--</span></div><div class="resourceLine"><span class="name">Uptime</span><span class="value" id="sysUptime">--</span></div><div class="resourceLine"><span class="name">Display OLED</span><span class="value" id="sysDisplay">--</span></div><div class="resourceLine"><span class="name">Pulsante OLED</span><span class="value" id="sysDisplayButton">--</span></div></div></section>
-<section class="card"><div class="cardTitle">Firmware / boot</div><div class="body"><div class="resourceLine"><span class="name">Firmware</span><span class="value" id="sysFirmware">--</span></div><div class="resourceLine"><span class="name">Git commit</span><span class="value" id="sysGit">--</span></div><div class="resourceLine"><span class="name">Build</span><span class="value" id="sysBuild">--</span></div><div class="resourceLine"><span class="name">Ultimo reset</span><span class="value" id="sysReset">--</span></div><div class="resourceLine"><span class="name">Board</span><span class="value" id="sysBoard">--</span></div></div></section>
-<section class="card"><div class="cardTitle">Memoria RAM</div><div class="body"><div class="resourceLine"><span class="name">Heap usato</span><span class="value" id="sysHeapUsed">--</span></div><div class="resourceLine"><span class="name">Heap libero</span><span class="value" id="sysHeapFree">--</span></div><div class="resourceLine"><span class="name">Minimo libero</span><span class="value" id="sysHeapMin">--</span></div><div class="meter"><span id="sysHeapBar"></span></div></div></section>
-<section class="card"><div class="cardTitle">Flash / radio</div><div class="body"><div class="resourceLine"><span class="name">Sketch / flash</span><span class="value" id="sysFlash">--</span></div><div class="resourceLine"><span class="name">Spazio OTA libero</span><span class="value" id="sysOta">--</span></div><div class="resourceLine"><span class="name">RF ring overflow</span><span class="value" id="sysOvf">--</span></div><div class="meter"><span id="sysFlashBar"></span></div></div></section>
-<section class="card"><div class="cardTitle">Rete</div><div class="body"><div class="resourceLine"><span class="name">Hostname</span><span class="value" id="sysHostname">--</span></div><div class="resourceLine"><span class="name">mDNS</span><span class="value" id="sysMdns">--</span></div><div class="resourceLine"><span class="name">IP</span><span class="value" id="sysIp">--</span></div></div></section>
-</div><div class="cfgNote">Il monitor usa i dati gia presenti in <code>/api/state</code>. Non aggiunge polling, storage o scritture NVS.</div></div>
-</section>
-<section id="mainConfig" class="mainPage">
-<div class="panel cfgPanel"><div class="panelHead">Configurazione dispositivo <span class="muted">NVS solo su modifica</span></div><div class="cfgTabs"><button id="tabNet" class="cfgTab active" onclick="showCfgTab('net')">RETE / IP</button><button id="tabMqtt" class="cfgTab" onclick="showCfgTab('mqtt')">MQTT / TLS</button><button id="tabDisplay" class="cfgTab" onclick="showCfgTab('display')">DISPLAY</button><button id="tabBackup" class="cfgTab" onclick="showCfgTab('backup')">BACKUP / RESTORE</button></div><div id="cfgNet" class="cfgPage active">
-<div class="cfgGrid">
-<label><span>Hostname dispositivo</span><input id="netHostname" type="text" maxlength="32" placeholder="oregon-gateway"></label>
-<label><span>Indirizzo mDNS</span><input id="netMdns" type="text" readonly></label>
-<label class="checkLine"><input id="netStatic" type="checkbox"><span>Usa IP statico</span></label>
-<label><span>IP scheda</span><input id="netIp" type="text" maxlength="15" placeholder="192.168.1.220"></label>
-<label><span>Gateway</span><input id="netGw" type="text" maxlength="15" placeholder="192.168.1.1"></label>
-<label><span>Subnet mask</span><input id="netMask" type="text" maxlength="15" placeholder="255.255.255.0"></label>
-<label><span>DNS</span><input id="netDns" type="text" maxlength="15" placeholder="192.168.1.1"></label>
-<label><span>IP attuale</span><input id="netActual" type="text" readonly></label>
-</div><div class="cfgActions"><button class="modeBtn" onclick="saveNetwork()">Salva e riavvia</button><button class="modeBtn" onclick="resetNetwork()">Default firmware</button><span id="netSummary" class="muted"></span></div>
-<div class="cfgNote">Hostname: 1-32 caratteri, solo a-z, 0-9 e trattino; viene convertito in minuscolo. Le modifiche di rete diventano attive dopo il riavvio. mDNS consente l'accesso come <code>http://hostname.local/</code> sui client che supportano Bonjour/mDNS. I dati meteo non vengono mai scritti in flash.</div>
-</div>
-<div id="cfgMqtt" class="cfgPage">
-<div class="cfgGrid">
-<label><span>Abilitato</span><input id="mqEnabled" type="checkbox"></label>
-<label><span>Broker / host</span><input id="mqBroker" type="text" maxlength="96" placeholder="192.168.1.100"></label>
-<label><span>Porta</span><input id="mqPort" type="number" min="1" max="65535" value="1883"></label>
-<label><span>Utente</span><input id="mqUser" type="text" maxlength="64"></label>
-<label><span>Password</span><input id="mqPassword" type="password" maxlength="96" placeholder="lascia vuoto per mantenere"></label>
-<label><span>Client ID</span><input id="mqClient" type="text" maxlength="64"></label>
-<label><span>Base topic</span><input id="mqTopic" type="text" maxlength="96" placeholder="weatherstation"></label>
-<label><span>TLS</span><select id="mqTlsMode" onchange="updateTlsUi()"><option value="0">Disabilitato</option><option value="1">TLS + verifica CA</option><option value="2">TLS senza verifica (test)</option></select></label>
-<label class="checkLine"><input id="mqClearPass" type="checkbox"><span>cancella password salvata</span></label>
-<label class="cfgWide" id="mqCaLabel"><span>CA certificate PEM</span><textarea id="mqCa" maxlength="3900" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"></textarea></label>
-</div>
-<div class="cfgActions"><b>Campi da pubblicare</b><button class="modeBtn" onclick="mqttSelectAll(true)">Tutti</button><button class="modeBtn" onclick="mqttSelectAll(false)">Nessuno</button></div>
-<div class="fieldGrid">
-<div class="fieldGroup"><b>Oregon</b>
-<label class="fieldCheck"><input data-mqbit="0" type="checkbox">Temperatura</label><label class="fieldCheck"><input data-mqbit="1" type="checkbox">Umidita</label><label class="fieldCheck"><input data-mqbit="2" type="checkbox">Heat index</label><label class="fieldCheck"><input data-mqbit="3" type="checkbox">Punto di rugiada</label><label class="fieldCheck"><input data-mqbit="4" type="checkbox">Vento medio</label><label class="fieldCheck"><input data-mqbit="5" type="checkbox">Raffica/current</label><label class="fieldCheck"><input data-mqbit="6" type="checkbox">Direzione vento</label><label class="fieldCheck"><input data-mqbit="7" type="checkbox">Wind chill</label><label class="fieldCheck"><input data-mqbit="8" type="checkbox">Pioggia totale</label><label class="fieldCheck"><input data-mqbit="9" type="checkbox">Intensita pioggia</label><label class="fieldCheck"><input data-mqbit="10" type="checkbox">Pioggia 1 h</label><label class="fieldCheck"><input data-mqbit="11" type="checkbox">Pioggia 24 h</label><label class="fieldCheck"><input data-mqbit="12" type="checkbox">Incremento pioggia</label><label class="fieldCheck"><input data-mqbit="13" type="checkbox">UV</label>
-</div>
-<div class="fieldGroup"><b>Technoline</b>
-<label class="fieldCheck"><input data-mqbit="14" type="checkbox">Temperatura</label><label class="fieldCheck"><input data-mqbit="15" type="checkbox">Umidita</label><label class="fieldCheck"><input data-mqbit="16" type="checkbox">Pioggia</label><label class="fieldCheck"><input data-mqbit="17" type="checkbox">Vento</label><label class="fieldCheck"><input data-mqbit="18" type="checkbox">Gust</label><label class="fieldCheck"><input data-mqbit="19" type="checkbox">Direzione vento</label>
-</div>
-<div class="fieldGroup"><b>BME280 locale</b>
-<label class="fieldCheck"><input data-mqbit="20" type="checkbox">Temperatura</label><label class="fieldCheck"><input data-mqbit="21" type="checkbox">Umidita</label><label class="fieldCheck"><input data-mqbit="22" type="checkbox">Pressione stazione</label><label class="fieldCheck"><input data-mqbit="23" type="checkbox">Altimetro</label><label class="fieldCheck"><input data-mqbit="24" type="checkbox">Trend 3 h</label>
-</div>
-<div class="fieldGroup"><b>Gateway</b>
-<label class="fieldCheck"><input data-mqbit="25" type="checkbox">JSON state completo</label><label class="fieldCheck"><input data-mqbit="26" type="checkbox">Metadati RF / RAW / batterie</label><label class="fieldCheck"><input data-mqbit="27" type="checkbox">Risorse ESP32</label>
-</div>
-</div>
-<div class="cfgActions"><button class="modeBtn" onclick="saveMqtt()">Salva MQTT / TLS</button><button class="modeBtn" onclick="resetMqtt()">Default firmware</button><span id="mqttSummary" class="muted"></span></div>
-<div class="cfgNote">TLS verificato usa la CA PEM inserita qui. La modalita TLS senza verifica cifra il traffico ma non autentica il broker: usala solo per test. Password, CA e mask campi vengono scritti in NVS soltanto se cambiano.</div>
-</div>
-<div id="cfgDisplay" class="cfgPage">
-<div class="cfgGrid">
-<label class="checkLine"><input id="dispOn" type="checkbox"><span>OLED acceso</span></label>
-<label><span>Cambio pagina (secondi)</span><input id="dispInterval" type="number" min="2" max="60" value="7"></label>
-<label><span>Contrasto OLED (8-255)</span><input id="dispContrast" type="number" min="8" max="255" value="255"></label>
-</div>
-<div class="cfgActions"><b>Pagine da mostrare</b><button class="modeBtn" onclick="displaySelectPages(true)">Tutte</button><button class="modeBtn" onclick="displaySelectPages(false)">Nessuna</button></div>
-<div class="fieldGrid">
-<div class="fieldGroup"><b>Pagine OLED</b>
-<label class="fieldCheck"><input data-dpagebit="0" type="checkbox">Esterno</label><label class="fieldCheck"><input data-dpagebit="1" type="checkbox">Vento / Pioggia</label><label class="fieldCheck"><input data-dpagebit="2" type="checkbox">Technoline</label><label class="fieldCheck"><input data-dpagebit="3" type="checkbox">Barometro</label><label class="fieldCheck"><input data-dpagebit="4" type="checkbox">RF / Status</label>
-</div>
-<div class="fieldGroup"><b>Esterno</b>
-<label class="fieldCheck"><input data-denvbit="0" type="checkbox">Temperatura + umidita</label><label class="fieldCheck"><input data-denvbit="1" type="checkbox">Punto di rugiada</label><label class="fieldCheck"><input data-denvbit="2" type="checkbox">Heat index + UV</label><label class="fieldCheck"><input data-denvbit="3" type="checkbox">Stato batterie</label>
-</div>
-<div class="fieldGroup"><b>Vento / Pioggia</b>
-<label class="fieldCheck"><input data-dwindbit="0" type="checkbox">Vento + raffica</label><label class="fieldCheck"><input data-dwindbit="1" type="checkbox">Direzione</label><label class="fieldCheck"><input data-dwindbit="2" type="checkbox">Pioggia</label><label class="fieldCheck"><input data-dwindbit="3" type="checkbox">Stato batterie</label>
-</div>
-<div class="fieldGroup"><b>Technoline</b>
-<label class="fieldCheck"><input data-dtechbit="0" type="checkbox">Temperatura + umidita</label><label class="fieldCheck"><input data-dtechbit="1" type="checkbox">Vento + Gust</label><label class="fieldCheck"><input data-dtechbit="2" type="checkbox">Direzione</label><label class="fieldCheck"><input data-dtechbit="3" type="checkbox">Pioggia</label><label class="fieldCheck"><input data-dtechbit="4" type="checkbox">ID + pacchetti</label>
-</div>
-<div class="fieldGroup"><b>Barometro</b>
-<label class="fieldCheck"><input data-dpressbit="0" type="checkbox">Pressione stazione</label><label class="fieldCheck"><input data-dpressbit="1" type="checkbox">Altimetro</label><label class="fieldCheck"><input data-dpressbit="2" type="checkbox">Trend 3 h</label><label class="fieldCheck"><input data-dpressbit="3" type="checkbox">Previsione</label>
-</div>
-<div class="fieldGroup"><b>RF / Status</b>
-<label class="fieldCheck"><input data-dstatusbit="0" type="checkbox">Conteggi Oregon</label><label class="fieldCheck"><input data-dstatusbit="1" type="checkbox">Decoder / WGR scan</label><label class="fieldCheck"><input data-dstatusbit="2" type="checkbox">Timing / run</label><label class="fieldCheck"><input data-dstatusbit="3" type="checkbox">Statistiche Technoline</label><label class="fieldCheck"><input data-dstatusbit="4" type="checkbox">IP / rete</label>
-</div>
-</div>
-<div class="cfgActions"><button class="modeBtn" onclick="saveDisplayConfig()">Salva DISPLAY</button><button class="modeBtn" onclick="resetDisplayConfig()">Default firmware</button><span id="displaySummary" class="muted"></span></div>
-<div class="cfgNote">Le pagine disabilitate vengono saltate automaticamente. Intervallo e campi sono persistenti in NVS e vengono scritti solo quando cambiano. Se il Gust Technoline non e' stato ricevuto il display mostra <code>G --</code>, mai uno zero artificiale.</div>
-</div>
-<div id="cfgBackup" class="cfgPage">
-<div class="cfgGrid">
-<label class="checkLine"><input id="backupSecrets" type="checkbox"><span>Includi password MQTT nel backup</span></label>
-<label class="cfgWide"><span>File backup da ripristinare</span><input id="backupFile" type="file" accept="application/json,.json"></label>
-</div>
-<div class="cfgActions"><button class="modeBtn" onclick="exportConfig()">Esporta configurazione</button><button class="modeBtn dangerBtn" onclick="importConfig()">Importa e riavvia</button><span id="backupSummary" class="muted">Backup schema 1 · JSON</span></div>
-<div class="cfgNote"><b>Incluso:</b> hostname/IP, MQTT/TLS, campi MQTT, configurazione OLED (pagine, campi, intervallo, contrasto) e configurazione RF persistente. <b>Non incluso:</b> SSID/password Wi-Fi, che in questa versione restano nel firmware/config_private.h. Per sicurezza la password MQTT e' esclusa salvo selezione esplicita. L'import valida il file e riavvia il gateway.</div>
-</div>
-</div>
-</section>
-<section id="mainDiag" class="mainPage">
-<div class="panel"><div class="panelHead">Controlli RF <span class="muted">le modifiche agiscono sugli stessi endpoint della versione precedente</span></div><div class="rfControls">
-<div class="modeBox"><span class="modeLabel">RICEZIONE</span><button id="modeDual" class="modeBtn" onclick="setRfMode('dual')">DUAL</button><button id="modeOregon" class="modeBtn" onclick="setRfMode('oregon')">OREGON</button><button id="modeTechnoline" class="modeBtn" onclick="setRfMode('technoline')">TECHNOLINE</button></div>
-<div class="modeBox"><span class="modeLabel">GUADAGNO</span><button id="gain0" class="modeBtn" onclick="setRfGain(0)">AGC AUTO ✓</button><button id="gain1" class="modeBtn" onclick="setRfGain(1)">MAX</button><button id="gain2" class="modeBtn" onclick="setRfGain(2)">ALTO</button><button id="gain3" class="modeBtn" onclick="setRfGain(3)">MEDIO</button></div>
-<div class="modeBox"><span class="modeLabel">PROFILO RF</span><button id="profStable" class="modeBtn" onclick="setRfProfile('stable')">STABILE</button><button id="profWide" class="modeBtn" onclick="setRfProfile('wide')">AMPIO</button><button id="profMax" class="modeBtn" onclick="setRfProfile('max')">MAX RF</button><button id="profAuto" class="modeBtn" onclick="setRfProfile('auto')">AUTO SCAN</button></div>
-<div class="modeBox"><span class="modeLabel">STRUMENTI</span><button id="burstExtra" class="modeBtn" onclick="toggleBurstExtra()">BURST EXTRA OFF</button><button id="wgrProbe" class="modeBtn" onclick="toggleWgrProbe()">WGR PROBE OFF</button></div>
-</div></div>
-<details class="diagSection" open><summary>Decoder, timing e qualita ricezione</summary><div class="diagGrid"><div class="diag" id="pkts"></div><div class="diag" id="rf"></div><div class="diag" id="timing"></div><div class="diag" id="quality"></div><div class="diag" id="qualityLc"></div></div></details>
-<details class="diagSection"><summary>Burst Analyzer / WGR Probe</summary><div class="diagGrid"><div class="diag" id="burstDiag"></div><div class="diag" id="wgrDiag"></div></div><div class="rawWrap"><div class="top" style="padding:5px 0 10px"><b>Burst RF rilevati</b><span class="muted">indipendenti dal checksum Oregon</span></div><table><thead><tr><th>ms</th><th>Durata</th><th>Edges</th><th>RSSI</th><th>Match</th><th>OSV3-like</th><th>Classe</th><th>Rec.</th><th>ON S/L</th><th>OFF S/L</th></tr></thead><tbody id="bursts"></tbody></table></div></details>
-<details class="diagSection"><summary>Frame grezzi</summary><div class="rawWrap"><div class="top" style="padding:5px 0 10px"><b>Ultimi frame grezzi</b><a href="/api/raw.txt" target="_blank">raw.txt</a></div><table><thead><tr><th>ms</th><th>Esito</th><th>Proto</th><th>Src</th><th>Tipo</th><th>RSSI</th><th>Raw HEX</th><th>Decodificato</th></tr></thead><tbody id="raw"></tbody></table></div></details>
-</section></main><script>
-const E=id=>document.getElementById(id);const f=(v,d=1,u='')=>v==null?'--':Number(v).toFixed(d)+u;const age=v=>(v==null||v>4290000)?'mai':(v<60?v+' s fa':Math.floor(v/60)+' min fa');const batt=x=>!x||!x.battery_known?'<span class=\"battNA\">BAT N/D</span>':(x.battery_low?'<span class=\"battLOW\">BAT LOW</span>':'<span class=\"battOK\">BAT OK</span>');const setBadge=(id,ok,label)=>{const e=E(id);e.className='badge '+(ok?'ok':'wait');e.textContent=label};const qClass=q=>q<0?'':(q>=85?'qgood':(q>=60?'qwarn':'qbad'));const qText=q=>q<0?'--':q+'%';const showOrWait=(el,ok,value)=>{el.classList.toggle('waitingText',!ok);el.textContent=ok?value:'IN ATTESA'};
-const hist={temp:[],bmeTemp:[],press:[],wind:[],rain:[],uv:[],lcTemp:[],lcWind:[],lcRain:[]};let modeBusy=false;async function setRfMode(mode){if(modeBusy)return;modeBusy=true;for(const id of ['modeDual','modeOregon','modeTechnoline'])E(id).disabled=true;try{const r=await fetch('/api/rfmode?mode='+encodeURIComponent(mode),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());await refresh();}catch(e){alert('Cambio modalita RF fallito: '+e)}finally{modeBusy=false;for(const id of ['modeDual','modeOregon','modeTechnoline'])E(id).disabled=false}}async function setRfGain(g){if(modeBusy)return;modeBusy=true;for(let i=0;i<4;i++)E('gain'+i).disabled=true;try{const r=await fetch('/api/rfgain?gain='+g,{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());await refresh();}catch(e){alert('Cambio guadagno fallito: '+e)}finally{modeBusy=false;for(let i=0;i<4;i++)E('gain'+i).disabled=false}}async function setRfProfile(p){if(modeBusy)return;modeBusy=true;for(const id of ['profStable','profWide','profMax','profAuto'])E(id).disabled=true;try{const r=await fetch('/api/rfprofile?profile='+encodeURIComponent(p),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());await refresh();}catch(e){alert('Cambio profilo RF fallito: '+e)}finally{modeBusy=false;for(const id of ['profStable','profWide','profMax','profAuto'])E(id).disabled=false}}async function toggleBurstExtra(){if(modeBusy)return;modeBusy=true;try{const cur=E('burstExtra').classList.contains('active');const r=await fetch('/api/burstextra?enabled='+(cur?'0':'1'),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());await refresh();}catch(e){alert('BURST EXTRA: '+e)}finally{modeBusy=false}}async function toggleWgrProbe(){if(modeBusy)return;modeBusy=true;try{const cur=E('wgrProbe').classList.contains('active');const r=await fetch('/api/wgrprobe?enabled='+(cur?'0':'1'),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error(await r.text());await refresh();}catch(e){alert('WGR PROBE: '+e)}finally{modeBusy=false}}
-let mainTab='dashboard';function showMainTab(t){mainTab=t;for(const x of ['dashboard','hardware','config','diag']){const on=t===x;E('main'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on);E('mainTab'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on)}if(t==='config')loadNetwork();if(t==='config')loadMqtt();}function showCfgTab(t){for(const x of ['net','mqtt','display','backup']){const on=t===x;E('cfg'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on);E('tab'+x[0].toUpperCase()+x.slice(1)).classList.toggle('active',on)}if(t==='net')loadNetwork();else if(t==='mqtt')loadMqtt();else if(t==='display')loadDisplay();}function setFresh(id,sec,available=true){const e=E(id),c=e&&e.closest('.card');if(!c)return;c.classList.remove('fresh','aging','stale','nodata');if(!available||sec==null||Number(sec)>4290000){c.classList.add('nodata');return}const v=Number(sec);c.classList.add(v<=90?'fresh':(v<=240?'aging':'stale'))}
-async function loadNetwork(){try{const n=await (await fetch('/api/network',{cache:'no-store'})).json();E('netHostname').value=n.hostname||'';E('netMdns').value=n.mdns?('http://'+n.mdns+'/'):'-';E('netStatic').checked=!!n.use_static;E('netIp').value=n.ip||'';E('netGw').value=n.gateway||'';E('netMask').value=n.subnet||'';E('netDns').value=n.dns||'';E('netActual').value=n.actual_ip||'-';E('netSummary').textContent=(n.use_static?'IP statico':'DHCP')+' · '+(n.mdns_active?'mDNS attivo':'mDNS in attesa');}catch(e){E('netSummary').textContent='errore lettura rete'}}
-async function saveNetwork(){const q=new URLSearchParams();q.set('hostname',E('netHostname').value.trim().toLowerCase());q.set('use_static',E('netStatic').checked?'1':'0');q.set('ip',E('netIp').value);q.set('gateway',E('netGw').value);q.set('subnet',E('netMask').value);q.set('dns',E('netDns').value);q.set('reboot','1');const r=await fetch('/api/network?'+q.toString(),{method:'POST',cache:'no-store'});if(!r.ok){alert('Rete: '+await r.text());return}const j=await r.json();if(j.changed){alert('Configurazione salvata. Riavvio in corso. Prova http://'+j.mdns+'/ oppure l\'IP configurato.');}else{E('netSummary').textContent='Nessuna modifica: zero scritture NVS';}}
-async function resetNetwork(){if(!confirm('Ripristinare IP/rete ai valori compilati nel firmware?'))return;const r=await fetch('/api/network/reset',{method:'POST',cache:'no-store'});if(!r.ok){alert('Reset rete fallito');return}const j=await r.json();if(j.changed)alert('Rete ripristinata. Riavvio in corso.');else E('netSummary').textContent='Gia ai default: zero scritture NVS';}
-function exportConfig(){const secrets=E('backupSecrets').checked?'1':'0';if(secrets&&!confirm('Il file conterra la password MQTT in chiaro. Continuare?'))return;window.location='/api/config/export?secrets='+secrets;}async function importConfig(){const file=E('backupFile').files[0];if(!file){alert('Seleziona un file JSON di backup.');return}if(file.size>12000){alert('Backup troppo grande.');return}if(!confirm('Importare la configurazione e riavviare il gateway?'))return;E('backupSummary').textContent='Importazione in corso...';try{const txt=await file.text();const r=await fetch('/api/config/import',{method:'POST',headers:{'Content-Type':'application/json'},body:txt,cache:'no-store'});const body=await r.text();if(!r.ok)throw new Error(body);const j=JSON.parse(body);E('backupSummary').textContent='Configurazione importata · riavvio in corso';alert('Backup importato correttamente. Il gateway si riavviera.');}catch(e){E('backupSummary').textContent='Importazione fallita';alert('Import backup fallito: '+e)}}
-function mqttSelectAll(v){document.querySelectorAll('[data-mqbit]').forEach(x=>x.checked=!!v)}function mqttSetMask(mask){const m=Number(mask)>>>0;document.querySelectorAll('[data-mqbit]').forEach(x=>x.checked=(m&(1<<Number(x.dataset.mqbit)))!==0)}function mqttGetMask(){let m=0;document.querySelectorAll('[data-mqbit]').forEach(x=>{if(x.checked)m|=(1<<Number(x.dataset.mqbit))});return m>>>0}function updateTlsUi(){const mode=Number(E('mqTlsMode').value);E('mqCaLabel').style.display=mode===1?'flex':'none'}async function loadMqtt(){try{const m=await (await fetch('/api/mqtt',{cache:'no-store'})).json();E('mqEnabled').checked=!!m.enabled;E('mqBroker').value=m.broker||'';E('mqPort').value=m.port||1883;E('mqUser').value=m.user||'';E('mqClient').value=m.client_id||'';E('mqTopic').value=m.base_topic||'';E('mqTlsMode').value=String(m.tls_mode||0);E('mqCa').value=m.ca_certificate||'';mqttSetMask(m.fields_mask==null?268435455:m.fields_mask);E('mqPassword').value='';E('mqClearPass').checked=false;E('mqPassword').placeholder=m.has_password?'password salvata · vuoto = mantieni':'nessuna password';updateTlsUi();E('mqttSummary').textContent=(m.enabled?(m.connected?' · CONNESSO':' · non connesso'):' · disabilitato')+' · '+(m.broker||'-')+':'+m.port+' · '+(m.tls_name||'OFF');const hm=E('hdrMqtt');hm.className='statusPill '+(!m.enabled?'wait':(m.connected?'ok':'bad'));hm.textContent=!m.enabled?'MQTT OFF':(m.connected?'MQTT OK':'MQTT KO');}catch(e){E('mqttSummary').textContent=' · errore';const hm=E('hdrMqtt');if(hm){hm.className='statusPill bad';hm.textContent='MQTT ERR'}}}
-async function saveMqtt(){const q=new URLSearchParams();q.set('enabled',E('mqEnabled').checked?'1':'0');q.set('broker',E('mqBroker').value);q.set('port',E('mqPort').value);q.set('user',E('mqUser').value);q.set('client_id',E('mqClient').value);q.set('base_topic',E('mqTopic').value);q.set('tls_mode',E('mqTlsMode').value);q.set('ca_certificate',E('mqCa').value);q.set('fields_mask',String(mqttGetMask()));if(E('mqPassword').value)q.set('password',E('mqPassword').value);if(E('mqClearPass').checked)q.set('clear_password','1');const r=await fetch('/api/mqtt',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:q.toString(),cache:'no-store'});if(!r.ok){alert('MQTT: '+await r.text());return}await loadMqtt();}
-async function resetMqtt(){if(!confirm('Ripristinare i valori MQTT compilati nel firmware?'))return;const r=await fetch('/api/mqtt/reset',{method:'POST',cache:'no-store'});if(!r.ok){alert('Reset MQTT fallito');return}await loadMqtt();}
-function dSet(attr,mask){const m=Number(mask)>>>0;document.querySelectorAll('['+attr+']').forEach(x=>x.checked=(m&(1<<Number(x.getAttribute(attr))))!==0)}
-function dGet(attr){let m=0;document.querySelectorAll('['+attr+']').forEach(x=>{if(x.checked)m|=(1<<Number(x.getAttribute(attr)))});return m>>>0}
-function displaySelectPages(v){document.querySelectorAll('[data-dpagebit]').forEach(x=>x.checked=!!v)}function bindDisplayFieldAutoPages(){const groups=[['data-denvbit',0],['data-dwindbit',1],['data-dtechbit',2],['data-dpressbit',3],['data-dstatusbit',4]];for(const [attr,bit] of groups){document.querySelectorAll('['+attr+']').forEach(x=>x.addEventListener('change',()=>{if(x.checked){const p=document.querySelector('[data-dpagebit=\"'+bit+'\"]');if(p)p.checked=true;}}));}}
-async function loadDisplay(){try{const d=await (await fetch('/api/display/config',{cache:'no-store'})).json();E('dispOn').checked=!!d.on;E('dispInterval').value=d.page_interval_sec||7;E('dispContrast').value=d.contrast||255;dSet('data-dpagebit',d.page_mask==null?31:d.page_mask);dSet('data-denvbit',d.environment_fields==null?15:d.environment_fields);dSet('data-dwindbit',d.wind_rain_fields==null?15:d.wind_rain_fields);dSet('data-dtechbit',d.technoline_fields==null?31:d.technoline_fields);dSet('data-dpressbit',d.pressure_fields==null?15:d.pressure_fields);dSet('data-dstatusbit',d.status_fields==null?31:d.status_fields);E('displaySummary').textContent=(d.on?'OLED ON':'OLED OFF')+' · pagina '+(Number(d.current_page)+1)+' · cambio '+d.page_interval_sec+' s · contrasto '+d.contrast+' · NVS '+(d.nvs_ok?'OK':'KO');}catch(e){E('displaySummary').textContent='errore lettura display'}}
-async function saveDisplayConfig(){const pageMask=dGet('data-dpagebit');if(!pageMask){alert('Seleziona almeno una pagina OLED.');return}const q=new URLSearchParams();q.set('on',E('dispOn').checked?'1':'0');q.set('page_mask',String(pageMask));q.set('environment_fields',String(dGet('data-denvbit')));q.set('wind_rain_fields',String(dGet('data-dwindbit')));q.set('technoline_fields',String(dGet('data-dtechbit')));q.set('pressure_fields',String(dGet('data-dpressbit')));q.set('status_fields',String(dGet('data-dstatusbit')));q.set('page_interval_sec',E('dispInterval').value);q.set('contrast',E('dispContrast').value);const r=await fetch('/api/display/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:q.toString(),cache:'no-store'});if(!r.ok){alert('DISPLAY: '+await r.text());return}const j=await r.json();displayOn=!!j.display_on;updateDisplayUi();await loadDisplay();}
-async function resetDisplayConfig(){if(!confirm('Ripristinare pagine/campi/intervallo/contrasto OLED ai default firmware?'))return;const r=await fetch('/api/display/reset',{method:'POST',cache:'no-store'});if(!r.ok){alert('Reset DISPLAY fallito');return}await loadDisplay();}
-async function powerOffDevice(){if(!confirm('Spegnere il controller? Entrera in DEEP SLEEP: RF, Wi-Fi, Web, MQTT, OLED e BME280 verranno arrestati.'))return;try{const r=await fetch('/api/poweroff',{method:'POST',cache:'no-store'});const t=await r.text();if(!r.ok)throw new Error(t);const j=JSON.parse(t);alert('Controller in spegnimento. Per riaccenderlo: '+(j.wake_hint||'usa RESET/EN.'));}catch(e){alert('Spegnimento fallito: '+e)}}
-async function restartDevice(){if(!confirm('Riavviare ora la scheda ESP32?'))return;const r=await fetch('/api/restart',{method:'POST',cache:'no-store'});if(r.ok)alert('Riavvio ESP32 avviato. La pagina tornera disponibile tra pochi secondi.');else alert('Riavvio fallito');}let displayOn=true,displayBusy=false;async function toggleDisplay(){if(displayBusy)return;displayBusy=true;const btn=E('displayBtn'),target=!displayOn;if(btn)btn.disabled=true;try{const r=await fetch('/api/display?on='+(target?1:0),{method:'POST',cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const j=await r.json();displayOn=!!j.display_on;}catch(e){alert('Comando display fallito: '+e)}finally{if(btn)btn.disabled=false;updateDisplayUi();}}function updateDisplayUi(){const btn=E('displayBtn'),st=E('sysDisplay'),cfg=E('dispOn');if(btn){btn.textContent=displayOn?'OLED ON':'OLED OFF';btn.classList.toggle('active',!displayOn);btn.title=displayOn?'Clic per spegnere il display OLED':'Clic per riaccendere il display OLED';}if(st){st.textContent=displayOn?'ON':'POWER SAVE';st.className='value '+(displayOn?'ok':'muted');}if(cfg&&!(mainTab==='config'&&E('cfgDisplay')&&E('cfgDisplay').classList.contains('active')))cfg.checked=displayOn;}function setCompass(prefix,deg,label){const g=E(prefix+'CompassNeedle'),d=E(prefix+'CompassDeg'),n=E(prefix+'CompassDir');if(!g||deg==null||!Number.isFinite(Number(deg))){if(g)g.style.opacity=.25;if(d)d.textContent='--°';if(n)n.textContent='--';return}const v=((Number(deg)%360)+360)%360;g.style.opacity=1;g.setAttribute('transform','rotate('+v+' 60 60)');d.textContent=Math.round(v)+'°';n.textContent=label||''}function fmtBytes(v){const n=Number(v||0);if(n>=1048576)return (n/1048576).toFixed(2)+' MB';if(n>=1024)return (n/1024).toFixed(1)+' KB';return n+' B'}function fmtUptime(sec){let s=Number(sec||0),d=Math.floor(s/86400);s%=86400;let h=Math.floor(s/3600);s%=3600;let m=Math.floor(s/60);return (d?d+' g ':'')+String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')}
-function push(k,v){if(v==null)return;hist[k].push(Number(v));if(hist[k].length>60)hist[k].shift()}function spark(id,a){const el=document.getElementById(id);if(!el||a.length<2){if(el)el.innerHTML='';return}let mn=Math.min(...a),mx=Math.max(...a);if(mx===mn)mx=mn+1;let pts=a.map((v,i)=>((i/(a.length-1))*112+1).toFixed(1)+','+(26-((v-mn)/(mx-mn))*22).toFixed(1)).join(' ');el.innerHTML='<polyline points="'+pts+'" fill="none" stroke="#83b7ff" stroke-width="2"/>'}
-async function refresh(){try{const s=await (await fetch('/api/state',{cache:'no-store'})).json(),w=s.weather,bme=s.bme280||{},p=s.packets,r=s.rf,a=s.fresh,ss=s.sensors,lc=s.lacrosse,lcr=s.lacrosse_rf,sess=s.session,b=s.burst,wp=s.wgr_probe||{},sys=s.system||{};
-const net=E('net'),temp=E('temp'),hum=E('hum'),hi=E('hi'),dew=E('dew'),tin=E('tin'),hin=E('hin'),ageT=E('ageT'),footT=E('footT'),psta=E('psta'),psea=E('psea'),ptrend=E('ptrend'),forecast=E('forecast'),ageP=E('ageP'),footP=E('footP'),wind=E('wind'),gust=E('gust'),dir=E('dir'),wc=E('wc'),ageW=E('ageW'),footW=E('footW'),rate=E('rate'),r1h=E('r1h'),r24=E('r24'),rtot=E('rtot'),rinc=E('rinc'),ageR=E('ageR'),footR=E('footR'),uv=E('uv'),ageU=E('ageU'),footU=E('footU'),pkts=E('pkts'),rf=E('rf'),timing=E('timing'),quality=E('quality'),qualityLc=E('qualityLc'),burstDiag=E('burstDiag'),wgrDiag=E('wgrDiag'),bursts=E('bursts'),raw=E('raw');
-net.className='statusPill '+(s.wifi.connected?'ok':'bad');net.textContent=s.wifi.connected?'Wi-Fi '+s.wifi.rssi+' dBm':'Wi-Fi KO';const hr=E('hdrRf');hr.className='statusPill '+(s.rf_mode?'ok':'wait');hr.textContent='RF '+String(s.rf_mode||'--').toUpperCase();E('sysChip').textContent=(sys.chip||'ESP32')+' rev '+(sys.revision??'-');E('sysCpu').textContent=(sys.cpu_mhz??'--')+' MHz';E('sysCores').textContent=sys.cores??'--';E('sysUptime').textContent=fmtUptime(sys.uptime_s);E('sysFirmware').textContent=sys.firmware||'--';E('sysGit').textContent=sys.git_commit||'--';E('sysBuild').textContent=sys.build||'--';E('sysReset').textContent=sys.reset_reason||'--';E('sysBoard').textContent=sys.board||'--';E('sysDisplayButton').textContent=sys.display_button_enabled?('GPIO '+sys.display_button_pin+' · pressione breve'):'disabilitato';E('sysHeapUsed').textContent=fmtBytes(sys.heap_used)+' / '+fmtBytes(sys.heap_size);E('sysHeapFree').textContent=fmtBytes(sys.heap_free);E('sysHeapMin').textContent=fmtBytes(sys.heap_min_free);const heapPct=sys.heap_size?Math.min(100,Math.max(0,Number(sys.heap_used)*100/Number(sys.heap_size))):0;E('sysHeapBar').style.width=heapPct.toFixed(1)+'%';E('sysHeapPct').textContent=heapPct.toFixed(1)+'%';E('sysFlash').textContent=fmtBytes(sys.sketch_size)+' / '+fmtBytes(sys.flash_size);E('sysOta').textContent=fmtBytes(sys.free_sketch_space);E('sysWifi').textContent=(sys.wifi_rssi??'--')+' dBm';E('sysOvf').textContent=sys.rf_overflows??0;E('sysHostname').textContent=s.wifi.hostname||'--';E('sysMdns').textContent=s.wifi.mdns||'--';E('sysIp').textContent=s.wifi.ip||'--';displayOn=sys.display_on!==false;updateDisplayUi();const flashPct=sys.flash_size?Math.min(100,Math.max(0,Number(sys.sketch_size)*100/Number(sys.flash_size))):0;E('sysFlashBar').style.width=flashPct.toFixed(1)+'%';const isDual=s.rf_mode==='dual',isO=s.rf_mode==='oregon'||isDual,isT=s.rf_mode==='technoline'||isDual;E('modeDual').classList.toggle('active',isDual);E('modeOregon').classList.toggle('active',s.rf_mode==='oregon');E('modeTechnoline').classList.toggle('active',s.rf_mode==='technoline');E('oregonPanel').classList.toggle('stationInactive',!isO);E('lacrossePanel').classList.toggle('stationInactive',!isT);for(let i=0;i<4;i++)E('gain'+i).classList.toggle('active',Number(r.rx_gain)===i);const profMap={STABILE:'profStable','AMPIO-AGC':'profWide','MAX-125':'profMax','AUTO-SCAN':'profAuto'};for(const id of ['profStable','profWide','profMax','profAuto']){E(id).classList.toggle('active',profMap[r.frontend_profile]===id);E(id).disabled=!isO||modeBusy||(id==='profAuto'&&isDual)}const mb=E('oregonModeBadge');mb.className='badge '+(isO?'ok':'off');mb.textContent=isO?(isDual?'RF OREGON · DUAL':'RF OREGON IN ASCOLTO'):'RF non in ascolto · seleziona OREGON/DUAL';E('sessionAge').textContent=isO?'attiva da '+age(sess.age_s).replace(' fa',''):'sessione sospesa';E('sessionAge').className='badge '+(isO?'ok':'off');setBadge('acqThermo',sess.thermo_acquired,'THGN '+(sess.thermo_acquired?'OK':'attesa'));setBadge('acqWind',sess.wind_acquired,'WGR '+(sess.wind_acquired?'OK':'attesa'));setBadge('acqRain',sess.rain_acquired,'PCR '+(sess.rain_acquired?'OK':'attesa'));setBadge('acqUv',sess.uv_acquired,'UVN '+(sess.uv_acquired?'OK':'attesa'));const tmb=E('technolineModeBadge');tmb.className='badge '+(isT?'ok':'off');tmb.textContent=isT?(isDual?'RF TECHNOLINE · DUAL':'RF TECHNOLINE IN ASCOLTO'):'RF non in ascolto';E('lcSessionAge').textContent=isT?'attiva da '+age(sess.age_s).replace(' fa',''):'sessione sospesa';E('lcSessionAge').className='badge '+(isT?'ok':'off');setBadge('lcAcqT',sess.lc_temperature_acquired,'TEMP '+(sess.lc_temperature_acquired?'OK':'attesa'));setBadge('lcAcqH',sess.lc_humidity_acquired,'HUM '+(sess.lc_humidity_acquired?'OK':'attesa'));setBadge('lcAcqW',sess.lc_wind_acquired,'WIND '+(sess.lc_wind_acquired?'OK':'attesa'));const lcGustExpected=(Number(sess.lc_expected_mask||0)&16)!==0;if(lcGustExpected)setBadge('lcAcqG',sess.lc_gust_acquired,'GUST '+(sess.lc_gust_acquired?'OK':'attesa'));else{E('lcAcqG').className='badge off';E('lcAcqG').textContent='GUST non annunciata'}setBadge('lcAcqR',sess.lc_rain_acquired,'RAIN '+(sess.lc_rain_acquired?'OK':'attesa'));E('burstExtra').classList.toggle('active',!!b.enabled);E('burstExtra').textContent=b.enabled?'BURST EXTRA ON':'BURST EXTRA OFF';E('wgrProbe').classList.toggle('active',!!wp.enabled);E('wgrProbe').textContent=wp.enabled?'WGR PROBE ON':'WGR PROBE OFF';
-if(isO&&!sess.thermo_acquired){showOrWait(temp,false,'');showOrWait(hum,false,'');showOrWait(hi,false,'');showOrWait(dew,false,'');ageT.textContent='ultimo dato '+age(a.thermo_age_s)}else{showOrWait(temp,true,f(w.temperature_c,1,' °C'));showOrWait(hum,true,f(w.humidity_pct,0,' %'));showOrWait(hi,true,w.heat_index_c==null?'N/A':f(w.heat_index_c,1,' °C'));showOrWait(dew,true,f(w.dew_point_c,1,' °C'));ageT.textContent=age(a.thermo_age_s)}footT.innerHTML='AF: '+p.AF+' · sessione '+sess.thermo_received+' · '+ss.thermo.model+' '+ss.thermo.code+' · '+batt(ss.thermo);setFresh('ageT',a.thermo_age_s,isO&&sess.thermo_acquired);
-const bmeOk=!!bme.detected;E('bmeBadge').className='badge '+(bmeOk?'ok':'off');E('bmeBadge').textContent=bmeOk?'BME280 locale OK':'BME280 non rilevato';tin.textContent=f(bme.temperature_c,1,' °C');hin.textContent=f(bme.humidity_pct,0,' %');E('bmeAge').textContent=age(bme.age_s);psta.textContent=f(bme.pressure_station_hpa,1,' hPa');psea.textContent=f(bme.altimeter_hpa,1,' hPa');ptrend.textContent=bme.trend_hpa_3h==null?'in acquisizione':((bme.trend_hpa_3h>=0?'+':'')+f(bme.trend_hpa_3h,1,' hPa/3h'));forecast.textContent=bme.forecast||'In acquisizione';ageP.textContent=age(bme.age_s);footP.textContent=bmeOk?(bme.model+' · quota '+f(bme.altitude_m,0,' m')+' · trend '+(bme.trend||'N/D')):'BME280 non rilevato';E('bmeFootEnv').textContent=bmeOk?'Sensore hardware locale · indipendente da Oregon e Technoline':'BME280 non rilevato sul bus I²C';setFresh('bmeAge',bme.age_s,bmeOk);setFresh('ageP',bme.age_s,bmeOk);
-if(isO&&!sess.wind_acquired){showOrWait(wind,false,'');showOrWait(gust,false,'');showOrWait(dir,false,'');showOrWait(wc,false,'');ageW.textContent='ultimo dato '+age(a.wind_age_s)}else{showOrWait(wind,true,f(w.wind_average_kmh,1,' km/h'));showOrWait(gust,true,f(w.wind_gust_kmh,1,' km/h'));showOrWait(dir,true,w.wind_direction_deg==null?'--':f(w.wind_direction_deg,1,'° ')+w.wind_direction);showOrWait(wc,true,w.wind_chill_c==null?'N/A':f(w.wind_chill_c,1,' °C'));ageW.textContent=age(a.wind_age_s)}footW.innerHTML='A1: '+p.A1+' · sessione '+sess.wind_received+' · '+ss.wind.model+' '+ss.wind.code+' · '+batt(ss.wind)+' · WGR scan '+r.wind_recovery_success+'/'+r.wind_recovery_starts+' · csKO '+r.wind_scan_checksum_fail;setCompass('oregon',isO&&sess.wind_acquired?w.wind_direction_deg:null,w.wind_direction||'');setFresh('ageW',a.wind_age_s,isO&&sess.wind_acquired);
-if(isO&&!sess.rain_acquired){showOrWait(rate,false,'');showOrWait(r1h,false,'');showOrWait(r24,false,'');showOrWait(rtot,false,'');showOrWait(rinc,false,'');ageR.textContent='ultimo dato '+age(a.rain_age_s)}else{showOrWait(rate,true,f(w.rain_rate_mmh,2,' mm/h'));showOrWait(r1h,true,f(w.rain_last_hour_mm,2,' mm'));showOrWait(r24,true,f(w.rain_last_24h_mm,2,' mm'));showOrWait(rtot,true,f(w.rain_total_mm,2,' mm'));showOrWait(rinc,true,f(w.rain_increment_mm,2,' mm'));ageR.textContent=age(a.rain_age_s)}footR.innerHTML='A2: '+p.A2+' · sessione '+sess.rain_received+' · '+ss.rain.model+' '+ss.rain.code+' · '+batt(ss.rain)+' · storico 1h/24h locale';setFresh('ageR',a.rain_age_s,isO&&sess.rain_acquired);
-if(isO&&!sess.uv_acquired){showOrWait(uv,false,'');ageU.textContent='ultimo dato '+age(a.uv_age_s)}else{showOrWait(uv,true,w.uv<0?'--':Number(w.uv).toFixed(1));ageU.textContent=age(a.uv_age_s)}footU.innerHTML='AD: '+p.AD+' · sessione '+sess.uv_received+' · '+ss.uv.model+' '+ss.uv.code+' · '+batt(ss.uv);setFresh('ageU',a.uv_age_s,isO&&sess.uv_acquired);
-if(isT&&!sess.lc_temperature_acquired){showOrWait(E('lcTemp'),false,'')}else{showOrWait(E('lcTemp'),true,f(lc.temperature_c,1,' °C'))}if(isT&&!sess.lc_humidity_acquired){showOrWait(E('lcHum'),false,'')}else{showOrWait(E('lcHum'),true,f(lc.humidity_pct,0,' %'))}E('lcAgeT').textContent='T '+age(lc.temperature_age_s)+' · H '+age(lc.humidity_age_s);E('lcModel').textContent=lc.model;E('lcId').textContent='0x'+Number(lc.sensor_id||0).toString(16).padStart(2,'0').toUpperCase();if(isT&&!sess.lc_wind_acquired){showOrWait(E('lcWind'),false,'')}else{showOrWait(E('lcWind'),true,f(lc.wind_kmh,1,' km/h'))}if(isT&&!sess.lc_gust_acquired&&lcGustExpected){showOrWait(E('lcGust'),false,'')}else if(!lcGustExpected&&!sess.lc_gust_acquired){E('lcGust').classList.remove('waitingText');E('lcGust').textContent='non annunciata'}else{showOrWait(E('lcGust'),true,f(lc.gust_kmh,1,' km/h'))}if(isT&&!sess.lc_wind_acquired){showOrWait(E('lcDir'),false,'')}else{showOrWait(E('lcDir'),true,lc.direction_deg==null?'--':f(lc.direction_deg,1,'° ')+lc.direction)}E('lcAgeW').textContent='W '+age(lc.wind_age_s)+' · G '+age(lc.gust_age_s);E('lcNext').textContent=lc.next_update;if(isT&&!sess.lc_rain_acquired){showOrWait(E('lcRain'),false,'');showOrWait(E('lcRainInc'),false,'')}else{showOrWait(E('lcRain'),true,f(lc.rain_total_mm,2,' mm'));showOrWait(E('lcRainInc'),true,f(lc.rain_increment_mm,2,' mm'))}E('lcAgeR').textContent=age(lc.rain_age_s);E('lcFootTH').textContent='T '+lc.temperature_packets+' · H '+lc.humidity_packets+' · sessione '+sess.lc_temperature_received+'/'+sess.lc_humidity_received+' · BAT N/D';setFresh('lcAgeT',lc.temperature_age_s,isT&&sess.lc_temperature_acquired);E('lcFootW').textContent='W '+lc.wind_packets+' · G '+lc.gust_packets+' · sessione '+sess.lc_wind_received+'/'+sess.lc_gust_received+' · GUST '+(lcGustExpected?'annunciata':'non annunciata')+' · next '+lc.next_update;setFresh('lcAgeW',lc.wind_age_s,isT&&(sess.lc_wind_acquired||sess.lc_gust_acquired));setCompass('lc',isT&&(sess.lc_wind_acquired||sess.lc_gust_acquired)?lc.direction_deg:null,lc.direction||'');E('lcFootR').textContent='Rain '+lc.rain_packets+' · sessione '+sess.lc_rain_received+' · incremento locale';setFresh('lcAgeR',lc.rain_age_s,isT&&sess.lc_rain_acquired);
-push('temp',w.temperature_c);push('bmeTemp',bme.temperature_c);push('press',bme.pressure_station_hpa);push('wind',w.wind_average_kmh);push('rain',w.rain_rate_mmh);push('uv',w.uv<0?null:w.uv);push('lcTemp',lc.temperature_c);push('lcWind',lc.wind_kmh);push('lcRain',lc.rain_total_mm);spark('spTemp',hist.temp);spark('spBmeTemp',hist.bmeTemp);spark('spPress',hist.press);spark('spWind',hist.wind);spark('spRain',hist.rain);spark('spUv',hist.uv);spark('spLcTemp',hist.lcTemp);spark('spLcWind',hist.lcWind);spark('spLcRain',hist.lcRain);
-pkts.innerHTML='<b>Pacchetti validi</b><br>AF termo: '+p.AF+'<br>A1 vento: <b>'+p.A1+'</b><br>A2 pioggia: '+p.A2+'<br>AD UV: '+p.AD+'<br>DROP parser/checksum: '+p.rejected;
-rf.innerHTML='<b>Decoder RF Oregon</b><br>legacy strong: '+r.strong_frames+' frame<br>state-aware: <b>'+r.state_frames+'</b> frame · pre '+r.state_preambles+' · cand '+r.state_candidates+'<br>state checksum OK/fail: '+r.state_checksum_ok+'/'+r.state_checksum_fail+'<br><b>WGR800 1984 V3.0</b>: nessun preambolo speciale<br>WGR window OK/header/checksum KO: <b>'+r.wind_recovery_success+'</b>/'+r.wind_recovery_starts+'/'+r.wind_scan_checksum_fail+'<br>Burst Analyzer: <span class=muted>solo diagnostica, non decodifica</span><br>raw A1: <b>'+r.raw_A1+'</b> · duplicati '+r.duplicates;
-timing.innerHTML='<b>Timing RF · modo '+s.rf_mode.toUpperCase()+'</b><br>ON short/long: '+r.on_short_avg_us+'/'+r.on_long_avg_us+' µs<br>OFF short/long: '+r.off_short_avg_us+'/'+r.off_long_avg_us+' µs<br>state err timing/manchester: '+r.state_timing_errors+'/'+r.state_manchester_errors+'<br>legacy short/long: '+r.short_avg_us+'/'+r.long_avg_us+' µs<br>BW '+r.rx_bw_khz.toFixed(1)+' kHz · gain '+r.rx_gain+' ('+r.gain_name+') · profilo <b>'+r.frontend_profile+'</b> · O/T '+r.gain_oregon+'/'+r.gain_lacrosse+' · ovf '+r.overflows+(r.rx_gain===0?' · <span class=ok>AGC</span>':' · <span class=bad>gain fisso</span>')+'<br><b>TECH live PWM · doppio decoder</b><br><b>PracticalArduino leader 00001:</b> start '+lcr.leader_starts+' (lost0 '+lcr.leader_lost_zero+') · frame '+lcr.leader_frames+' · <span class=ok>OK '+lcr.leader_valid+'</span> · KO '+lcr.leader_invalid+'<br>progress L0/L1 '+lcr.leader_bits_0+'/'+lcr.leader_bits_1+' · reset '+lcr.leader_resets+' · reject '+lcr.leader_rejects+'<br><b>rtl_433 pulse-window:</b> OK '+lcr.stream_valid+' · windows '+lcr.stream_windows+' · header '+lcr.stream_header_matches+' · pulses '+lcr.stream_pulses+' · H '+lcr.active_hypothesis+'<br>fail H/C/P/S '+lcr.header_fail+'/'+lcr.complement_fail+'/'+lcr.parity_fail+'/'+lcr.checksum_fail+' · short/long '+lcr.short_us+'/'+lcr.long_us+' µs<br>BURST recovery '+lcr.burst_valid+'/'+lcr.burst_attempts+' · missing-edge '+lcr.burst_recovered_missing_edge+' · reject '+lcr.burst_rejects+'<br>raw intervalli &lt;200/200-599/600-1099/1100-1799/1800-3499/≥3500: '+(lcr.interval_bins||[]).join('/');const stepRemain=b.auto_active?Math.max(0,Math.ceil((b.auto_step_duration_ms-(Number(s.uptime_s)*1000-b.auto_step_started_ms))/1000)):0;burstDiag.innerHTML='<b>RF Burst Analyzer / Recovery</b><br>stato: '+(b.enabled?'<span class=ok>ON</span>':'<span class=muted>OFF · percorso live invariato</span>')+'<br>burst totali: '+b.total+' · OSV3-like: <b>'+b.osv3_like+'</b> · TECH-like '+b.technoline_like+' · scartati '+b.discarded+'<br>profilo: <b>'+r.frontend_profile+'</b> · BW '+r.rx_bw_khz.toFixed(1)+' kHz · gain '+r.rx_gain+(b.auto_active?'<br><span class=ok>AUTO SCAN step '+(b.auto_step+1)+'/4 · ~'+stepRemain+' s residui</span>':'')+'<br><span class=muted>BURST EXTRA è opzionale: attivalo solo per diagnostica/recovery. In DUAL i decoder Oregon e Technoline live lavorano sempre insieme.</span>';wgrDiag.innerHTML='<b>WGR800 1984 · RF Probe</b><br>stato: '+(wp.enabled?'<span class=ok>ON · RAM-only</span>':'<span class=muted>OFF · nessun overhead</span>')+'<br>burst/osv3: '+wp.bursts_total+'/'+wp.osv3_like+' · classificati AF/A1/A2/AD '+wp.classified_af+'/'+wp.classified_a1+'/'+wp.classified_a2+'/'+wp.classified_ad+'<br>OSV3 non classificati: <b>'+wp.unclassified_osv3+'</b> · cadenza ~14 s: <b>'+wp.cadence14+'</b><br>ultimo non classificato: Δ '+(wp.last_unclassified_delta_ms?Math.round(wp.last_unclassified_delta_ms/1000*10)/10+' s':'-')+' · '+wp.last_unclassified_duration_ms+' ms · '+wp.last_unclassified_edges+' edge · match '+wp.last_unclassified_match_pct+'% · RSSI '+f(wp.last_unclassified_rssi,1)+'<br><span class=muted>Se crescono “OSV3 non classificati” e “cadenza ~14 s” mentre A1 resta a zero, la portante WGR arriva ma il Manchester/frame non viene ricostruito. Se restano a zero, indagare il trasmettitore/RF.</span>';quality.innerHTML=isO?('<b>Qualita sessione Oregon</b><div class="qrow qhdr"><span>Sensore</span><span>Rx</span><span>Attesi</span><span>Qualita</span></div>'+'<div class="qrow"><span>THGN ~53s</span><span>'+sess.thermo_received+'</span><span>'+sess.thermo_expected+'</span><span class="'+qClass(sess.thermo_quality_pct)+'">'+qText(sess.thermo_quality_pct)+'</span></div>'+'<div class="qrow"><span>WGR ~14s</span><span>'+sess.wind_received+'</span><span>'+sess.wind_expected+'</span><span class="'+qClass(sess.wind_quality_pct)+'">'+qText(sess.wind_quality_pct)+'</span></div>'+'<div class="qrow"><span>PCR ~47s</span><span>'+sess.rain_received+'</span><span>'+sess.rain_expected+'</span><span class="'+qClass(sess.rain_quality_pct)+'">'+qText(sess.rain_quality_pct)+'</span></div>'+'<div class="qrow"><span>UVN ~73s</span><span>'+sess.uv_received+'</span><span>'+sess.uv_expected+'</span><span class="'+qClass(sess.uv_quality_pct)+'">'+qText(sess.uv_quality_pct)+'</span></div><div class="muted" style="margin-top:7px">Sessione azzerata al cambio protocollo/gain.</div>'):'<b>Qualita sessione Oregon</b><br><span class="muted">OREGON non in ascolto.</span>';qualityLc.innerHTML=isT?('<b>Qualita sessione Technoline</b><div class="qrow qhdr"><span>Dato</span><span>Rx</span><span>Ultimo</span><span>Stato</span></div>'+ '<div class="qrow"><span>Decoder leader</span><span>'+lcr.leader_valid+'/'+lcr.leader_frames+'</span><span>-</span><span class="'+qClass(sess.lc_decoder_quality_pct)+'">'+qText(sess.lc_decoder_quality_pct)+'</span></div>'+ '<div class="qrow"><span>Temperatura</span><span>'+sess.lc_temperature_received+'</span><span>'+age(lc.temperature_age_s)+'</span><span>'+(sess.lc_temperature_acquired?'<span class=qgood>OK</span>':'attesa')+'</span></div>'+ '<div class="qrow"><span>Umidita</span><span>'+sess.lc_humidity_received+'</span><span>'+age(lc.humidity_age_s)+'</span><span>'+(sess.lc_humidity_acquired?'<span class=qgood>OK</span>':'attesa')+'</span></div>'+ '<div class="qrow"><span>Pioggia</span><span>'+sess.lc_rain_received+'</span><span>'+age(lc.rain_age_s)+'</span><span>'+(sess.lc_rain_acquired?'<span class=qgood>OK</span>':'attesa')+'</span></div>'+ '<div class="qrow"><span>Vento/Gust</span><span>'+sess.lc_wind_received+'/'+sess.lc_gust_received+'</span><span>'+age(lc.wind_age_s)+'</span><span>'+((sess.lc_wind_acquired||sess.lc_gust_acquired)?'<span class=qgood>OK</span>':'attesa')+'</span></div>'+ '<div class="muted" style="margin-top:7px">Tipi annunciati GWRH/T: mask 0x'+Number(sess.lc_expected_mask||0).toString(16).toUpperCase()+' · copertura tipi sessione <span class="'+qClass(sess.lc_type_coverage_pct)+'">'+qText(sess.lc_type_coverage_pct)+'</span> · next '+(sess.lc_cadence_ms?Math.round(sess.lc_cadence_ms/1000)+' s':'N/D')+'.</div>'):'<b>Qualita sessione Technoline</b><br><span class="muted">TECHNOLINE non in ascolto.</span>';if(mainTab==='diag'){const rr=await (await fetch('/api/raw',{cache:'no-store'})).json();raw.innerHTML=rr.map(e=>'<tr><td>'+e.ms+'</td><td class="'+(e.accepted?'ok':'bad')+'">'+(e.accepted?'OK':'DROP')+'</td><td>'+e.protocol+'</td><td>'+e.source+'</td><td>'+e.type+'</td><td>'+f(e.rssi,1)+'</td><td>'+e.hex+'</td><td>'+e.decoded+'</td></tr>').join('');if(b.enabled||b.auto_active){const bb=await (await fetch('/api/bursts',{cache:'no-store'})).json();bursts.innerHTML=bb.map(x=>'<tr><td>'+x.ms+'</td><td>'+x.duration_ms+' ms</td><td>'+x.edges+'</td><td>'+f(x.rssi,1)+'</td><td>'+x.match_pct+'%</td><td class="'+(x.osv3_like?'ok':'muted')+'">'+(x.osv3_like?'SI':'no')+'</td><td>'+(x.technoline_like?'TECH-like':(x.osv3_like?'OREGON-like':'rumore'))+'</td><td class="'+(x.adaptive_recovered?'ok':'muted')+'">'+(x.adaptive_recovered?'REC':'-')+'</td><td>'+x.on_short_us+'/'+x.on_long_us+'</td><td>'+x.off_short_us+'/'+x.off_long_us+'</td></tr>').join('')}else{bursts.innerHTML='<tr><td colspan=10 class=muted>BURST EXTRA disattivato · nessun overhead diagnostico sul percorso RF live</td></tr>';}}
-}catch(e){net.textContent='Web: '+e}}
-bindDisplayFieldAutoPages();loadNetwork();loadMqtt();refresh();setInterval(refresh,2000);setInterval(()=>{const editing=mainTab==='config'&&E('cfgMqtt')&&E('cfgMqtt').classList.contains('active');if(!editing)loadMqtt();},10000);
-</script></body></html>)HTML";
     sendNoCache();
-    server.send_P(200, "text/html; charset=utf-8", PAGE);
+    server.sendHeader("Content-Encoding", "gzip");
+    server.send_P(200, PSTR("text/html; charset=utf-8"), reinterpret_cast<PGM_P>(WEB_UI_GZ), WEB_UI_GZ_LEN);
 }
 
-void fillDecoded(char *dst, size_t size, const WeatherReading *r) {
-    if (!r) { snprintf(dst, size, "checksum/parser KO"); return; }
+void fillDecoded(char *dst, size_t size, const OregonPacket &packet, const WeatherReading *r) {
+    if (!r) {
+        if (!validateOregonChecksum(packet)) {
+            snprintf(dst, size, "checksum KO");
+            return;
+        }
+        WeatherReading partial;
+        (void)parseWeatherPacket(packet, partial);
+        if (partial.sensorCode) {
+            snprintf(dst, size, "parser KO | %s %04X ch%u id%u BAT=%s",
+                     sensorModelName(partial.sensorCode), partial.sensorCode, partial.channel,
+                     partial.rollingCode, batteryStatusName(partial));
+        } else {
+            snprintf(dst, size, "parser KO");
+        }
+        return;
+    }
     char value[78]{};
     switch (r->type) {
         case SensorType::ThermoHygro:
@@ -1582,8 +1753,8 @@ void fillDecoded(char *dst, size_t size, const WeatherReading *r) {
         default:
             snprintf(value, sizeof(value), "unknown"); break;
     }
-    snprintf(dst, size, "%s | %s %04X ch%u BAT=%s", value, sensorModelName(r->sensorCode),
-             r->sensorCode, r->channel, batteryStatusName(*r));
+    snprintf(dst, size, "%s | %s %04X ch%u id%u BAT=%s", value, sensorModelName(r->sensorCode),
+             r->sensorCode, r->channel, r->rollingCode, batteryStatusName(*r));
 }
 } // namespace
 
@@ -1613,10 +1784,18 @@ void initWeb(StationState &stateRef) {
     server.on("/api/network/reset", HTTP_POST, handleNetworkConfigReset);
     server.on("/api/config/export", HTTP_GET, handleConfigExport);
     server.on("/api/config/import", HTTP_POST, handleConfigImport);
+    server.on("/api/thermo/config", HTTP_GET, handleThermoConfigGet);
+    server.on("/api/thermo/config", HTTP_POST, handleThermoConfigPost);
+    server.on("/api/thermo/reset", HTTP_POST, handleThermoConfigReset);
     server.on("/api/display", HTTP_POST, handleDisplayPower);
     server.on("/api/display/config", HTTP_GET, handleDisplayConfigGet);
     server.on("/api/display/config", HTTP_POST, handleDisplayConfigPost);
     server.on("/api/display/reset", HTTP_POST, handleDisplayConfigReset);
+    server.on("/api/as3935/state", HTTP_GET, handleLightningState);
+    server.on("/api/as3935/config", HTTP_GET, handleLightningConfigGet);
+    server.on("/api/as3935/config", HTTP_POST, handleLightningConfigPost);
+    server.on("/api/as3935/reset", HTTP_POST, handleLightningReset);
+    server.on("/api/as3935/reinit", HTTP_POST, handleLightningReinit);
     server.on("/api/poweroff", HTTP_POST, handleDevicePowerOff);
     server.on("/api/restart", HTTP_POST, handleDeviceRestart);
     server.onNotFound([](){ server.send(404, "text/plain", "Not found"); });
@@ -1654,6 +1833,10 @@ void serviceWeb() {
 
 void recordWebPacket(const OregonPacket &packet, const WeatherReading *reading, bool accepted) {
 #if WEB_ENABLE
+    if (accepted && reading) {
+        ensureRfSession();
+        noteOregonSessionSensor(*reading, packet.decodeSource);
+    }
     RawEntry &e = history[historyHead];
     e = RawEntry{};
     e.ms = packet.receivedAtMs;
@@ -1668,7 +1851,7 @@ void recordWebPacket(const OregonPacket &packet, const WeatherReading *reading, 
     e.batteryKnown = reading ? reading->batteryStatusValid : false;
     e.batteryLow = reading ? reading->batteryLow : false;
     snprintf(e.type, sizeof(e.type), "%s", reading ? sensorTypeName(reading->type) : "rejected");
-    fillDecoded(e.decoded, sizeof(e.decoded), reading);
+    fillDecoded(e.decoded, sizeof(e.decoded), packet, reading);
 
     size_t pos = 0;
     for (uint8_t i = 0; i < packet.length && pos + 4 < sizeof(e.hex); ++i) {

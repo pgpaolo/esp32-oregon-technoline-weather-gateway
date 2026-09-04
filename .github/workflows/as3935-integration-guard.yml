@@ -1,0 +1,47 @@
+name: AS3935 Integration Guard
+
+on:
+  pull_request:
+  push:
+    branches:
+      - feature/as3935-lightning
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify integrated Web UI and no port 81 server
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e src/lightning_web.cpp
+          test ! -e src/lightning_web.h
+          ! grep -R "initLightningWeb\|serviceLightningWeb\|WebServer server(81)\|LIGHTNING_WEB_PORT" src
+          grep -q 'server.on("/api/as3935/state"' src/web_manager.cpp
+          grep -q 'server.on("/api/as3935/config"' src/web_manager.cpp
+          grep -q 'id="lightningPanel"' web/dashboard.html
+          grep -q 'id="cfgLightning"' web/dashboard.html
+      - name: Verify OLED AS3935 integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'DISPLAY_PAGE_LIGHTNING' src/display_manager.h
+          grep -q 'DISPLAY_AS_LAST_STRIKE' src/display_manager.h
+          grep -q 'lightningFields' src/display_manager.h
+          grep -q 'renderLightning' src/display_manager.cpp
+          grep -q 'data-dpagebit="5"' web/dashboard.html
+          grep -q 'data-dasbit="4"' web/dashboard.html
+          grep -q 'lightning_fields' src/web_manager.cpp
+      - name: Verify selectable AS3935 MQTT fields
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'MQTT_F_AS_STATE.*1UL << 28' src/mqtt_publisher.h
+          grep -q 'MQTT_F_AS_EVENT.*1UL << 29' src/mqtt_publisher.h
+          grep -q 'MQTT_F_AS_LAST_STRIKE.*1UL << 30' src/mqtt_publisher.h
+          grep -q 'MQTT_F_AS_DIAG.*1UL << 31' src/mqtt_publisher.h
+          grep -q 'MQTT_FIELDS_ALL = 0xFFFFFFFFUL' src/mqtt_publisher.h
+          grep -q 'as3935/last_strike' src/lightning_manager.cpp
+          grep -q 'as3935/diagnostics' src/lightning_manager.cpp
+          grep -q 'data-mqbit="31"' web/dashboard.html

@@ -1,88 +1,214 @@
 # Gateway meteo ESP32 Oregon Scientific + Technoline 433 MHz
 
-Firmware standalone per **ESP32 / LILYGO T3 + SX1278 433.92 MHz** capace di ricevere contemporaneamente sensori **Oregon Scientific OSV3** e **Technoline / La Crosse WS23xx**, mostrare i dati tramite interfaccia Web e pubblicarli via MQTT.
+Firmware standalone per **ESP32 / LILYGO T3 + SX1278 433.92 MHz** capace di ricevere sensori **Oregon Scientific OSV2.1/OSV3** e **Technoline / La Crosse WS23xx**, mostrare i dati tramite interfaccia Web autenticata, pubblicarli via MQTT/TLS e integrare sensori locali BME280 e AS3935.
 
-Firmware release candidate: **V6.4.0-rc1** (release stabile: **V6.3.0**)
+## Release candidate attuale
+
+```text
+main                 stabile / produzione
+release/6.4.0-rc3    RC storico congelato
+release/6.4.0-rc4    release candidate attuale (firmware 6.4.0-rc4)
+develop               sviluppo successivo (6.4.0-dev2)
+```
+
+`release/6.4.0-rc4` è stata aggiornata integralmente con la soluzione revisionata su `develop` al commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`. RC3 resta congelata e `main` non viene modificato fino a una decisione esplicita di promozione.
 
 ## Funzioni principali
 
-- ricezione RF simultanea Oregon + Technoline sullo stesso SX1278;
-- dashboard Web responsive;
-- bussole vento compatte per entrambe le stazioni;
-- indicatori di freschezza dei dati;
-- tab Hardware con CPU, RAM/heap, flash, spazio OTA, RSSI Wi-Fi e uptime;
-- diagnostica RF, RAW frame e burst analyzer;
+- ricezione RF Oregon + Technoline sullo stesso SX1278 a **433.92 MHz**;
+- Oregon OSV3 e supporto Oregon V2.1 delimitato/validato;
+- recovery dedicato UVR128 / EC70;
+- termoigrometri Oregon CH1-CH3 con canale principale configurabile e auto-rilevamento;
+- più trasmettitori UV indipendenti, inclusi UVN800 (`D874`) e UVR128 (`EC70`);
+- Technoline WS23xx: temperatura, umidità, pioggia, vento e gust;
+- stato RSSI/batteria uniforme dove il protocollo lo consente;
+- MQTT con gruppi selezionabili e TLS opzionale verificato con CA;
+- **COMPATIBLE MB** a 192 campi con sorgente Oregon/Technoline esclusiva;
+- display OLED configurabile;
 - BME280 locale opzionale;
-- MQTT con selezione dei singoli campi da pubblicare;
-- MQTT TLS configurabile da Web;
-- hostname configurabile e mDNS (`hostname.local`) persistenti in NVS;
-- configurazione rete/MQTT persistente in NVS;
-- backup e ripristino JSON della configurazione;
-- pulsante di riavvio ESP32;
-- **OLED ON/OFF** da Web con power-save persistente;
-- pressione breve del pulsante PRG/BOOT configurato per OLED ON/OFF;
-- versione firmware, Git commit, data build, board e motivo ultimo reset nel tab Hardware.
+- AS3935 opzionale con Web, MQTT e OLED;
+- monitor hardware CPU, heap, flash, uptime, reset/build e temperatura interna MCU quando disponibile;
+- nuova pagina **CONFIGURAZIONE > I2C / HW** con scanner manuale e verifica chip-ID BME280;
+- datalogger microSD SdFat con retry, formattazione FAT e diagnostica;
+- provisioning Wi-Fi, scansione asincrona SSID, trial/rollback credenziali e recovery AP;
+- Basic Authentication Web, backup/ripristino configurazione e OTA autenticato;
+- riavvio e spegnimento software/deep sleep.
 
-## Hardware principale
+## Hardware supportato
 
-- LILYGO T3 / LoRa32 V1.6.1
-- ESP32
-- SX1278 433 MHz
-- OLED SSD1306 128×64
+### LILYGO T3 / LoRa32 V1.6.1
 
-È presente anche un ambiente PlatformIO opzionale per LILYGO T3-S3 + SX1278.
+- ESP32;
+- SX1278 433 MHz;
+- OLED SSD1306 128x64;
+- ambiente PlatformIO `t3-v161-433`.
 
-## Compilazione rapida
+### LILYGO T3-S3 V1.2/V1.3
+
+Ambiente PlatformIO `t3-s3-433`.
+
+Pinout e note: [docs/HARDWARE.md](docs/HARDWARE.md).
+
+## BME280 e bus I2C
+
+Il BME280 viene rilevato automaticamente a `0x76` o `0x77`. Sul T3 V1.6.1:
+
+```text
+SDA = GPIO21
+SCL = GPIO22
+```
+
+OLED, BME280 e AS3935 condividono lo stesso controller I2C. Il collaudo hardware ha dimostrato che il problema di mancato rilevamento del BME280 era dovuto a **cavi I2C troppo lunghi / capacità del bus**, non al driver BME280.
+
+Per aumentare il margine, il bus condiviso normale resta quindi a:
+
+```text
+100 kHz
+Wire timeout 80 ms
+```
+
+Anche con SDA/SCL entrambe alte a riposo, fronti degradati da cavi troppo lunghi possono impedire gli ACK. È quindi preferibile mantenere SDA/SCL corti.
+
+Il BME280 usa retry non bloccanti dopo circa 5 s, 15 s, 60 s e poi ogni 5 minuti. Sei letture di pressione consecutive non valide riavviano la discovery.
+
+Documentazione: [docs/BAROMETER_BME280.md](docs/BAROMETER_BME280.md).
+
+## Diagnostica I2C / hardware
+
+Lo scanner completo non è più dentro BAROMETRO. È disponibile in:
+
+```text
+CONFIGURAZIONE > I2C / HW
+```
+
+La scansione è solo manuale:
+
+1. scansione a **100 kHz**, velocità reale di esercizio;
+2. lettura del registro Bosch `0xD0` su `0x76/0x77` (`0x60` identifica un BME280);
+3. scansione a **400 kHz** come test di margine/stress;
+4. ripristino automatico di 100 kHz / 80 ms.
+
+La pagina mostra anche stato/indirizzo BME280 e AS3935, pin SDA/SCL e **temperatura interna MCU ESP32** quando disponibile. Quest'ultima è una temperatura del chip indicativa, **non una misura dell'ambiente**.
+
+Documentazione: [docs/I2C_HARDWARE_DIAGNOSTICS.md](docs/I2C_HARDWARE_DIAGNOSTICS.md).
+
+## AS3935
+
+Sul T3 V1.6.1 il default è indirizzo I2C `0x03`, IRQ GPIO34. Il firmware usa l'indirizzo configurato in modo deterministico e mostra stato sensore, IRQ, calibrazione/risonanza, ultimo evento, distanza/energia e contatori.
+
+## Barometro e previsione
+
+Il BME280 fornisce pressione di stazione, pressione riportata al livello del mare, temperatura/umidità locale e trend. La quota è configurabile e persistente; il default del progetto è 584 m.
+
+La Web UI può visualizzare hPa, mbar, inHg, mmHg o kPa. I dati interni, MQTT, COMPATIBLE MB e Weather Realtime API restano in hPa.
+
+La testata Web include una previsione grafica in stile WMR200. Il protocollo Oregon disponibile documenta le categorie ma non la formula proprietaria: il gateway usa quindi pressione al livello del mare, trend 3 h e temperatura esterna quando richiesta per una classificazione coerente con le categorie WMR200.
+
+## Interfaccia Web
+
+L'interfaccia è organizzata in:
+
+1. **Dashboard** — Oregon, Technoline e sensori locali;
+2. **Hardware** — CPU/SoC, RAM, flash, uptime, temperatura MCU e rete/runtime;
+3. **Configurazione** — rete/Wi-Fi, Oregon, MQTT/TLS, display, BAROMETRO, I2C/HW, AS3935, microSD/archivio, backup/ripristino e sistema/sicurezza/OTA;
+4. **Diagnostica** — RF mode/gain/profile, qualità sessione, RAW e burst.
+
+I pannelli dettagliati BME280 e AS3935 partono chiusi e si aprono cliccando il titolo.
+
+## MQTT
+
+I topic legacy restano disponibili. Ogni trasmettitore Oregon può anche pubblicare in un namespace indipendente:
+
+```text
+<base>/oregon/sensor/<CODE>/ch<CHANNEL>/id<ROLLING>/...
+```
+
+La maschera persistente a 32 bit seleziona i gruppi Oregon, Technoline, BME280, AS3935 e gateway/sistema.
+
+Documentazione: [docs/MQTT.md](docs/MQTT.md).
+
+## COMPATIBLE MB
+
+COMPATIBLE MB genera esattamente 192 campi separati da spazi verso un ricevitore configurabile in stile `mb.php`; i campi non disponibili valgono `--`.
+
+La sorgente è esclusiva: scegliendo Oregon non viene usato Technoline come fallback e viceversa. Il BME280 è locale al gateway e può contribuire indipendentemente con pressione/dati interni.
+
+La trasmissione HTTP/HTTPS usa un worker FreeRTOS dedicato, quindi il loop RF non attende il server remoto.
+
+## microSD
+
+La microSD onboard usa SdFat sul bus HSPI dedicato. I record vengono messi in coda RAM e scritti fuori dal percorso RF critico. In caso di mount fallito i retry sono circa 5 s, 15 s, 60 s e poi ogni 5 minuti. La formattazione è sempre esplicita/manuale.
+
+Documentazione: [docs/SD_DATALOGGER.md](docs/SD_DATALOGGER.md).
+
+## Wi-Fi, autenticazione e OTA
+
+SSID/password Wi-Fi sono configurabili via Web e persistiti in NVS. Le nuove credenziali sono provate come configurazione trial e possono essere ripristinate automaticamente se l'associazione fallisce. Dopo perdita prolungata della STA può partire un recovery AP.
+
+Basic Authentication è attiva di default. Credenziali iniziali:
+
+```text
+utente: admin
+password: admin
+```
+
+Cambiarle subito da **CONFIGURAZIONE > SISTEMA**. Basic Auth su HTTP non cifra il traffico: usare LAN/VPN affidabile o un terminatore HTTPS sicuro.
+
+OTA Web richiede autenticazione e controlla immagine ESP, spazio OTA e mismatch evidente di famiglia T3 prima di riavviare.
+
+Documentazione: [docs/WEB_PROVISIONING_OTA_AUTH.md](docs/WEB_PROVISIONING_OTA_AUTH.md).
+
+## Compilazione da RC4
 
 ```bash
+git clone https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway.git
+cd esp32-oregon-technoline-weather-gateway
+git checkout release/6.4.0-rc4
 cp src/config_private.example.h src/config_private.h
 pio run -e t3-v161-433
 pio run -e t3-v161-433 -t upload
 pio device monitor -b 115200
 ```
 
-`src/config_private.h` contiene le credenziali locali ed è escluso da Git tramite `.gitignore`.
+`src/config_private.h` è ignorato da Git. Non pubblicare credenziali Wi-Fi/MQTT o CA private.
 
-## Interfaccia Web
+## Profilo RF consigliato
 
-La UI è divisa in:
+| Impostazione | Valore |
+|---|---|
+| Modalità RF | `DUAL` |
+| Frequenza | `433.92 MHz` |
+| Gain | `AGC` |
+| Profilo RF | `STABILE` |
+| Burst Extra | OFF in uso normale |
+| WGR Probe | OFF in uso normale |
 
-- **Dashboard** — Oregon, Technoline e BME280;
-- **Hardware** — risorse ESP32, firmware/build/reset e stato display;
-- **Configurazione** — hostname/rete, MQTT/TLS e backup/restore;
-- **Diagnostica** — RF, gain, profili, RAW e burst.
+## CI / validazione release
 
-Il display OLED può essere spento dalla Web oppure commutato con una pressione breve del pulsante PRG/BOOT configurato. In questo stato U8g2 usa il power-save e il firmware sospende i refresh del display; RF, MQTT, Wi-Fi e Web continuano a funzionare. L'hostname è modificabile dalla Web e, se mDNS è disponibile sulla rete client, il gateway è raggiungibile anche come `http://<hostname>.local/`.
+La matrice verifica:
 
-## Backup configurazione
+- regressione rain-rate PCR800;
+- vettori Oregon V2.1;
+- mapping COMPATIBLE MB;
+- build `t3-v161-433`;
+- build `t3-s3-433`;
+- seconda build T3 V1.6.1 nello stesso workspace per controllare l'idempotenza dei pre-script;
+- guard di integrazione I2C/HW generata;
+- dimensione reale `firmware.bin` rispetto allo slot OTA `0x1E0000`.
 
-La Web UI può esportare e reimportare un file JSON con hostname/IP, MQTT/TLS, maschera campi MQTT, stato OLED e configurazione RF persistente. La password MQTT è esclusa per default e viene inclusa solo su scelta esplicita; SSID e password Wi-Fi non vengono esportati perché restano nel firmware/configurazione privata. L'import valida i valori e riavvia il gateway. Dettagli: [docs/CONFIG_BACKUP.md](docs/CONFIG_BACKUP.md).
+La sorgente esatta promossa da `develop` ha superato Validate #192 e PlatformIO Build #268. Anche la branch RC4 deve restare verde dopo i commit di identità/documentazione prima di qualunque merge verso `main`.
 
-## MQTT
+Per le dimensioni esatte del firmware usare sempre l'ultima workflow riuscita, perché l'ID Git è incorporato nel binario.
 
-Il firmware supporta pubblicazione selettiva dei campi Oregon, Technoline, BME280, stato JSON, metadati RF e risorse ESP32.
+## API, backup e sicurezza
 
-Dettagli: [docs/MQTT.md](docs/MQTT.md).
+API HTTP: [docs/API.md](docs/API.md)  
+Backup configurazione: [docs/CONFIG_BACKUP.md](docs/CONFIG_BACKUP.md)  
+Note RC4: [docs/RELEASE_6.4.0_RC4.md](docs/RELEASE_6.4.0_RC4.md)  
+Sicurezza: [SECURITY.md](SECURITY.md)
 
-## Consumo energetico
+Non esporre direttamente il servizio HTTP dell'ESP32 su Internet e preferire MQTT TLS verificato con CA fuori da una LAN affidabile.
 
-La scheda dispone di un ingresso ADC per la tensione batteria, ma **non possiede un monitor di corrente integrato** utilizzato dal firmware. Per misurare realmente mA e W è consigliabile un INA219/INA226 su I²C.
+## Licenza
 
-## Sicurezza
-
-Non pubblicare mai `src/config_private.h`. La modalità MQTT TLS senza verifica deve essere usata solo per prove. La pagina Web deve restare su rete fidata o essere protetta da VPN/reverse proxy autenticato.
-
-## Licenza e attribuzioni
-
-Il progetto viene distribuito sotto **GNU GPL v3 o successiva**. Il decoder WS23xx utilizza conoscenze e logica derivate da `rtl_433` e `PracticalArduino WeatherStationReceiver`; vedere [NOTICE](NOTICE).
-
-### Nota pulsante OLED e board
-
-Il controllo OLED dalla Web UI e' disponibile su entrambe le board. Il toggle fisico e' abilitato di default solo su T3-S3, dove LILYGO dichiara `BUTTON_PIN = 0`. Sul T3 V1.6.1 resta disabilitato per default e puo' essere abilitato esplicitamente in `config_private.h` dopo verifica della revisione hardware.
-
-## Spegnimento software del controller
-
-La Web UI espone il pulsante **SPEGNI**. Il comando esegue un arresto controllato e porta l'ESP32 in **deep sleep** senza scollegare il cavo di alimentazione. Prima dello sleep il firmware pubblica MQTT `offline`, spegne l'OLED, porta il BME280 e l'SX1278 in sleep e disabilita il Wi-Fi.
-
-Sul **T3 V1.6.1** il risveglio predefinito avviene con **RESET/EN**; il progetto non presume l'esistenza di un pulsante utente applicativo su quella revisione. Sul **T3-S3** il BOOT/User button GPIO0 puo' essere usato come sorgente di wake oltre a RESET/EN. Lo stato deep sleep riduce fortemente i consumi ma non equivale a un'interruzione fisica dell'alimentazione; per consumo praticamente nullo serve un load-switch/latch hardware esterno.
-
+GNU GPL v3 o successiva (`GPL-3.0-or-later`). Vedere [LICENSE](LICENSE) e [NOTICE](NOTICE).

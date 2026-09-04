@@ -5,6 +5,7 @@ on:
     branches:
       - 'main'
       - 'develop'
+      - 'release/6.4.0-rc4'
   pull_request:
     branches:
       - 'main'
@@ -19,12 +20,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       - name: Validate repository
         shell: bash
         run: |
           set -euo pipefail
           test -f README.md
+          test -f README_IT.md
           test -f LICENSE
+          test -f docs/I2C_HARDWARE_DIAGNOSTICS.md
+          test -f scripts/test_generated_i2c_hardware_diagnostics.py
           git diff --check
           echo "Repository validation completed successfully."

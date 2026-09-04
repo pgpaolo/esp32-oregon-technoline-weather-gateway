@@ -1,4 +1,4 @@
-# Hostname, HTTPS and microSD roadmap
+# Hostname, HTTPS and microSD status
 
 ## Hostname / mDNS
 
@@ -18,7 +18,7 @@ The current V6.3 web stack uses Arduino `WebServer` on TCP/80. Direct HTTPS requ
 
 For a browser-trusted LAN certificate, use an internal CA and a DNS name covered by the certificate SAN. A `.local` self-signed certificate will still show a browser trust warning unless its issuing CA is trusted by the client.
 
-## LILYGO T3 V1.6.1 microSD
+## LILYGO T3 V1.6.1 microSD - implemented
 
 The board exposes an onboard microSD interface on a separate SPI pin set from the SX1278:
 
@@ -27,4 +27,8 @@ The board exposes an onboard microSD interface on a separate SPI pin set from th
 - SD SCLK: GPIO14
 - SD CS: GPIO13
 
-The microSD is a good target for RF logs, CSV/JSON exports and long-lived diagnostics. Private TLS keys are better kept in internal protected storage rather than on removable media.
+The current `codex/sdfat-write-status` branch implements the microSD datalogger with Greiman SdFat on dedicated HSPI. It writes valid RF/local-sensor records to UTC daily CSV files, supports explicit FAT formatting and exposes mount/write/error state through the Configuration page and top header badge.
+
+The card path is output-only and serviced outside the RF-critical decoder path. Missing or failed storage does not stop Oregon/Technoline reception, MQTT, OLED or the Web server.
+
+Private TLS keys remain better suited to protected internal storage rather than removable media.
