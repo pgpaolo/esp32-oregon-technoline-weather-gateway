@@ -12,13 +12,20 @@ Firmware identity:
 6.4.0-rc4
 ```
 
+Project author and maintainer:
+
+```text
+Gianpaolo P. (pgpaolo)
+Copyright © 2026 Gianpaolo P.
+```
+
 This RC4 branch has been fully refreshed from the reviewed `develop` solution at commit:
 
 ```text
 68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3
 ```
 
-The previous `release/6.4.0-rc3` branch remains frozen and unchanged. `main` is not modified by this refresh.
+The previous `release/6.4.0-rc3` branch remains frozen and unchanged. Since the RC4 refresh, `main` has received only the selective BME280/I2C reliability backport through PR #23; the complete RC4 feature set remains isolated in this release branch.
 
 ## Main additions compared with RC3
 
@@ -99,6 +106,24 @@ RC4 provides WMR200-style forecast categories from sea-level pressure, 3-hour pr
 - larger forecast tile beside the gateway title;
 - responsive layout for narrow screens.
 
+### Project attribution / installed version
+
+RC4 keeps the GPL-3.0-or-later license unchanged and adds clearer project attribution instead of introducing a custom license.
+
+The Web title area contains a deliberately low-profile line:
+
+```text
+© 2026 Gianpaolo P. · firmware <installed version> · GPL-3.0-or-later
+```
+
+The installed version is read from the existing `/api/state` response already used by the dashboard, so this adds no additional Web polling.
+
+Repository-level attribution is also recorded in:
+
+- [`AUTHORS.md`](../AUTHORS.md);
+- [`CITATION.cff`](../CITATION.cff);
+- [`NOTICE`](../NOTICE).
+
 ### Existing RC3 baseline retained
 
 RC4 keeps the validated RF/platform baseline, including Oregon OSV2.1/OSV3 + Technoline WS23xx reception, UVR128/EC70 recovery, Oregon CH1-CH3, multi-UV presentation, PCR800 rain-rate correction, Technoline derived rain values, MQTT/TLS, Web auth/provisioning/OTA, SdFat microSD logging, OLED pages and AS3935 integration.
@@ -118,12 +143,12 @@ The exact `develop` source promoted into this RC4 refresh completed successfully
 - generated I2C/HW integration guard: **success**;
 - physical firmware-size guard: **success**.
 
-The release branch must pass its own RC4 CI after the version/documentation promotion commits before any merge to `main` is considered.
+Current RC4 CI additionally validates that the attribution block is generated exactly once and that the installed firmware version is bound to the existing state payload. The release branch must remain green after these authorship/documentation commits before any merge to `main` is considered.
 
 ## Branch policy
 
-- `main` remains stable/production;
-- `release/6.4.0-rc4` is the current release candidate;
+- `main` remains stable/production and currently contains the selective BME280/I2C backport from PR #23;
+- `release/6.4.0-rc4` is the current complete release candidate;
 - `release/6.4.0-rc3` remains frozen;
 - `develop` remains the next-development line.
 
