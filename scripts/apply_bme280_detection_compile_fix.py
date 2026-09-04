@@ -19,10 +19,21 @@ if marker not in text:
 
 if prototype not in text:
     text = text.replace(marker, marker + prototype, 1)
-    path.write_text(text, encoding="utf-8")
     print("Added BME280 tryBme forward declaration")
 else:
     print("BME280 tryBme forward declaration already present")
+
+# The deep I2C scanner uses the board-level SDA/SCL definitions directly.
+# barometer_manager.cpp historically only included config.h, so make the pin
+# source explicit here instead of relying on an indirect include.
+if '#include "board_config.h"' not in text:
+    include_anchor = '#include "config.h"\n'
+    if include_anchor not in text:
+        raise RuntimeError("BME280 I2C scan: config include anchor missing")
+    text = text.replace(include_anchor, include_anchor + '#include "board_config.h"\n', 1)
+    print("Added board_config.h for BME280 I2C scanner pin definitions")
+
+path.write_text(text, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
