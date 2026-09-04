@@ -1,11 +1,12 @@
 name: PlatformIO Build
-# Branch CI: verifies the physical firmware.bin size before publishing artifacts.
+# Branch CI: verifies generated integrations and physical firmware.bin size.
 
 on:
   push:
     branches:
       - main
       - release/6.4.0-rc3
+      - release/6.4.0-rc4
       - develop
   pull_request:
     branches:
@@ -72,12 +73,15 @@ jobs:
       - name: Build firmware
         run: pio run -e "${{ matrix.environment }}"
 
-      # The PlatformIO pre-scripts intentionally patch generated source in-place.
-      # A second build in the same checkout reproduces the Windows/local workflow
-      # and guards against duplicate generated SD/MB handlers/UI blocks.
+      # PlatformIO pre-scripts intentionally patch generated source in-place.
+      # A second build in the same checkout reproduces the local/Windows flow
+      # and detects duplicate generated handlers, routes and UI blocks.
       - name: Rebuild same workspace (SD/Web idempotence)
         if: matrix.environment == 't3-v161-433'
         run: pio run -e "${{ matrix.environment }}"
+
+      - name: Validate generated I2C/HW integration
+        run: python scripts/test_generated_i2c_hardware_diagnostics.py
 
       - name: Verify real firmware.bin size
         shell: bash
