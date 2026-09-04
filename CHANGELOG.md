@@ -2,173 +2,109 @@
 
 All notable project changes are documented here.
 
-## Unreleased - SdFat microSD and write-status branch
+## Unreleased - develop / 6.4.0-dev2
 
-This development line is consolidated in:
+This line is the reviewed development source for the next refresh of `release/6.4.0-rc4`. `release/6.4.0-rc3` remains frozen.
 
-```text
-codex/sdfat-write-status
-```
+### BME280 / shared I2C
 
-It supersedes the intermediate AS3935, Oregon multichannel and legacy V2.1 feature branches. PR #15 now targets `main` directly.
+- Added persistent BME280 station altitude and Web pressure-unit configuration while keeping canonical hPa internally.
+- Added WMR200-style forecast categories based on sea-level pressure, 3-hour trend and outdoor temperature where required.
+- Added non-blocking BME280 discovery/recovery: boot attempt, then approximately 5 s, 15 s, 60 s and every 5 minutes.
+- A previously working BME280 is marked offline after six consecutive invalid pressure reads and rediscovery restarts automatically.
+- Physical testing established excessive I2C cable length/capacitance as the cause of the observed missing BME280 ACKs.
+- Consolidated the shared OLED/BME280/AS3935 runtime bus at **100 kHz** with an **80 ms** Wire timeout for additional signal margin.
+- Removed the experimental boot-time AS3935 address auto-scan; the sensor again uses its configured address deterministically. The valid configurable range remains `0x00..0x03`, with project default `0x03` on T3 V1.6.1.
+- Kept BME280 preference for `0x77` with `0x76` fallback.
+
+### I2C / hardware diagnostics
+
+- Moved the manual full-bus scanner out of BAROMETRO into dedicated **CONFIGURAZIONE > I2C / HW**.
+- Runtime scan is performed first at 100 kHz; 400 kHz is a manual stress/margin test only.
+- Added direct Bosch BME280 chip-ID (`0xD0`) verification at `0x76`/`0x77`; `0x60` confirms BME280.
+- The scanner checks initial/final SDA/SCL state and always restores the normal 100 kHz / 80 ms bus configuration.
+- Generic scanning does not probe I2C general-call address `0x00`.
+- Added authenticated hardware-info and I2C-scan endpoints.
+- Added ESP32 internal MCU/die temperature to the Hardware monitor and hardware diagnostics page when a plausible reading is available; this value is explicitly not treated as ambient temperature.
+- Consolidated duplicate BME-only scanner documentation into `docs/I2C_HARDWARE_DIAGNOSTICS.md`.
+
+### Web UI / barometer presentation
+
+- BME280 and AS3935 detailed Dashboard sections are collapsible and closed by default.
+- Added a larger pressure/forecast tile beside the gateway title.
+- BAROMETRO now remains focused on altitude, pressure units, BME-specific retry/ACK diagnostics and preview values.
+- Dedicated I2C/HW configuration keeps full-bus diagnostics separate from meteorological configuration.
+
+### COMPATIBLE MB / server normalization
+
+- Added COMPATIBLE MB 192-field publishing through a separate FreeRTOS HTTP/HTTPS worker.
+- Added exclusive Oregon/Technoline source selection with no cross-station fallback inside one packet.
+- Added generic server-side Weather Realtime API v1 adapter/reference implementation under `server/meteobridge/`.
+
+### Validation expectations before RC4 refresh
+
+- Both `t3-v161-433` and `t3-s3-433` must compile.
+- The same T3 V1.6.1 workspace must compile a second time to verify pre-script idempotence.
+- PCR800, Oregon V2.1 and COMPATIBLE MB host-side checks must remain green.
+- Physical T3 V1.6.1 must show BME280 chip ID `0x60` with final short I2C wiring.
+- I2C/HW scanner must restore the 100 kHz runtime bus after the 400 kHz stress pass.
+- RF, Web, MQTT, OLED, AS3935 and microSD behavior must remain unaffected by the diagnostics changes.
+
+## 6.4.0-rc3 / RC4 baseline work
 
 ### microSD / Web status
 
-- Replaced the Arduino-ESP32 `SD` transport with Greiman SdFat 2.3.1 after hardware showed a valid `CMD0` response followed by library initialization failure.
-- Kept the official LILYGO HSPI pin mapping, using 4 MHz first and one clean 400 kHz fallback.
-- Added explicit FAT formatting through SdFat, including the card-ready/filesystem-invalid state that previously prevented the formatter from starting.
-- Added SdFat error-code/data diagnostics to the Web API and format-failure messages.
-- Added the top-bar `SD OFF` / `SD PRONTA` / `SD ON` / `SD SCRIVE` / `SD KO` / `SD ERR` badge with queue, error, current-file and write-count tooltip.
-- Confirmed mount and format on the physical T3 V1.6.1 setup.
-- Switched both targets to `min_spiffs.csv`: NVS and two OTA slots remain, while each application slot grows to 1,966,080 bytes.
-- Rebuilt both PlatformIO targets and reran the Oregon V2.1 vector suite after the storage change.
+- Replaced Arduino-ESP32 `SD` transport with Greiman SdFat 2.3.1.
+- Added explicit FAT formatting, SdFat error diagnostics and non-blocking mount retries.
+- Added live SD status/write badge.
+- Switched both targets to `min_spiffs.csv`, preserving NVS and two OTA slots while giving each application slot 1,966,080 bytes.
 
 ### Oregon RF / UVR128
 
-- Added bounded Oregon Scientific V2.1 decoding for EC40/1D20/1D30 thermo sensors, WGR968 wind, RGR968 rain and UVR128 UV.
-- Added dedicated UVR128/EC70 recovery for real SX1278 captures with clipped short preamble or uncertain initial phase.
-- Recovery scans bounded burst intervals across candidate starts and both physical polarities, but still requires EC70 identity, valid Manchester pairs and normal V2.1 checksum.
-- Confirmed real UVR128 reception on target hardware.
+- Added bounded Oregon Scientific V2.1 support for supported thermo, wind, rain and UV sensors.
+- Added dedicated UVR128/EC70 recovery for clipped preamble / uncertain initial phase captures.
 - Preserved separate OSV3, Technoline and normal V2.1 decoder paths.
-- Added/kept V2.1 diagnostics and host-side protocol vectors; Build #92 reported 6 valid vectors accepted and 6 corrupt vectors rejected.
+- Added host-side Oregon V2.1 protocol vectors and runtime diagnostics.
 
-### Oregon CH1-CH3
+### Oregon CH1-CH3 / multi-sensor Dashboard
 
-- Added separate live state for Oregon thermo/hygro CH1, CH2 and CH3.
-- Added configurable primary channel for legacy temperature/humidity and derived station values.
-- Added channel auto-discovery and persistent manual enable mask.
-- Accepted both observed channel conventions: one-hot `1/2/4` and direct `1/2/3`.
-- Added per-channel MQTT topics while preserving legacy primary-channel aliases.
-- Added backup/restore of thermo-channel configuration.
+- Added independent CH1-CH3 thermo/hygro state, configurable primary channel and auto-discovery.
+- Added per-transmitter Oregon MQTT namespaces keyed by sensor code, channel and rolling ID.
+- Fixed D874/UVN800 UV parsing when battery/flag bits are non-zero.
+- Added simultaneous UVN800/UVR128 presentation and transmitter-aware session quality.
+- Unified RSSI and battery presentation across supported sensor families.
 
-### Multi-sensor Dashboard
+### MQTT / AS3935 / OLED
 
-- Fixed D874/UVN800 parsing when battery/flag bits are non-zero: the UV field is now reconstructed from payload nibbles 9/10 instead of incorrectly including the flags nibble.
-- Split RAW diagnostics into `checksum KO` and `parser KO`, and added rolling ID to accepted/rejected Oregon descriptions.
-- Added compact simultaneous UV display for UVN800 (`D874`), UVR128 (`EC70`) and future supported UV transmitters.
-- Displayed the rolling ID on each UV card so multiple UVN800 units of the same model and channel remain visibly distinct.
-- Made Oregon session quality transmitter-aware using sensor type/code/channel/rolling ID.
-- Unified RSSI presentation across Oregon thermo, wind, rain, UV and Technoline:
-  - green >= -100 dBm;
-  - yellow -115..-101 dBm;
-  - red < -115 dBm;
-  - grey when unavailable.
-- Unified battery presentation where available: `BAT OK`, `BAT LOW`, `BAT N/D`.
-- Technoline reports real RSSI but intentionally shows battery as unavailable because WS23xx does not transmit battery state.
-- Reorganized the Technoline Dashboard to temperature/humidity, wind and rain; removed the invalid Technoline UV card.
+- Preserved legacy MQTT topics and 32-bit persistent field mask while adding grouped sensor publishing.
+- Added optional AS3935 local lightning detector with Web, MQTT, OLED, backup/restore and deep-sleep integration.
+- Added configurable OLED pages including compact RF/RSSI/battery status.
 
-### MQTT
+### Web provisioning / security / OTA
 
-- Kept existing legacy topics for compatibility.
-- Added generic per-transmitter Oregon namespaces:
-  `oregon/sensor/<CODE>/ch<CHANNEL>/id<ROLLING>/...`.
-- Added separate UV compatibility namespaces for supported UV codes such as D874 and EC70.
-- Reorganized Web MQTT selection by Oregon thermo/hygro, wind, rain, UV, Technoline, BME280, AS3935 and gateway/system.
-- Preserved the existing 32-bit persistent field mask; no extra per-rolling-ID enable bits were added.
-- RF metadata can publish model/type/protocol/RSSI/battery in per-transmitter namespaces.
-
-### AS3935
-
-- Integrated optional local AS3935 lightning detector on the shared I2C bus.
-- Classic T3 V1.6.1 defaults: address `0x03`, IRQ GPIO34.
-- Added Web state/config/reinit/reset, calibration/resonance diagnostics, lightning distance/energy and counters.
-- Added selectable AS3935 OLED page.
-- Added four selectable MQTT groups using the remaining upper bits of the existing 32-bit mask: state, event, last strike and diagnostics.
-- Added AS3935 configuration to backup/restore and deep-sleep power-down behavior.
-
-### OLED
-
-- Added configurable **Sensori RF / RSSI / batterie** page.
-- Added compact live registry for up to ten recent Oregon transmitters; displays five rows and rotates automatically when required.
-- Added common G/Y/R RSSI and B+/B!/B- battery notation.
-- Kept a compact UV summary on the normal external page.
-- Added the same RSSI notation to the Technoline OLED page; battery remains B- because it is not transmitted.
-
-### Web / flash
-
-- Moved the full Dashboard source to `web/dashboard.html` and gzip-compresses it during build.
-- Reused compact live/session structures instead of adding telemetry history for the new sensor-status views.
-- Replaced the previous near-full application layout with `min_spiffs.csv`; the project does not use SPIFFS and retains NVS plus two OTA slots.
-
-### Validation reference
-
-Current SdFat branch validation:
-
-- Validate: PASS;
-- AS3935 Integration Guard: PASS;
-- `t3-v161-433`: PASS;
-- `t3-s3-433`: PASS.
-
-T3 V1.6.1:
-
-- RAM: 100,592 / 327,680 B = 30.7%;
-- application ELF: 1,276,881 / 1,966,080 B = 64.9%;
-- real firmware.bin: 1,283,584 B;
-- application-partition margin: 689,199 B.
-
-T3-S3:
-
-- RAM: 99,552 / 327,680 B = 30.4%;
-- application ELF: 1,220,809 / 1,966,080 B = 62.1%;
-- real firmware.bin: 1,221,232 B.
+- Added configurable hostname/mDNS, Wi-Fi provisioning, SSID scan, credential trial/rollback and recovery AP.
+- Added Basic Authentication, temporary lockout, security configuration and authenticated OTA.
+- Added JSON configuration backup/restore with secret-handling safeguards.
 
 ## 6.4.0-rc2
 
 - Added Web `SPEGNI` control with controlled ESP32 deep sleep.
 - Before deep sleep MQTT, OLED, BME280 and SX1278 are stopped/parked and Wi-Fi is disabled.
-- T3-S3: optional default wake from BOOT/User GPIO0 or RESET/EN.
-- T3 V1.6.1: default wake through RESET/EN without assuming a user button not guaranteed by the pinout.
-- Soft power-off is not an electrical disconnect; a load switch/latch is needed for near-zero current.
+- T3-S3 supports optional BOOT/User GPIO0 or RESET/EN wake; T3 V1.6.1 uses conservative RESET/EN wake.
 
-## [6.4.0-rc1] - 2026-08-19
+## 6.4.0-rc1 - 2026-08-19
 
-### Added
+- Added persistent hostname/mDNS and richer Hardware firmware/build/reset information.
+- Added JSON configuration export/import.
+- Added physical OLED-button support with board-aware defaults.
+- Added Git commit injection into firmware builds.
+- Hardened backup secret handling.
 
-- Configurable device hostname persisted in NVS.
-- mDNS discovery through `<hostname>.local`.
-- Physical PRG/BOOT short-press fallback for OLED ON/OFF, configurable by GPIO.
-- Firmware, Git commit, build timestamp, board and last reset reason in the Hardware tab.
-- JSON configuration export/import for network, MQTT/TLS, MQTT field mask, OLED and persistent RF settings.
-- Optional inclusion of the MQTT password in configuration backups; Wi-Fi credentials remain excluded.
+## 6.3.0 - 2026-08-18
 
-### Changed
-
-- OLED boot splash reports firmware version from `FIRMWARE_VERSION`.
-- PlatformIO builds inject the short Git commit into firmware when built from a Git checkout.
-- Physical OLED button default made board-aware: enabled on T3-S3, conservative OFF on T3 V1.6.1 until hardware verification.
-
-### Security
-
-- Configuration export omits MQTT credentials by default and always excludes Wi-Fi credentials.
-- Imported backups are validated before persistent network/MQTT settings are applied.
-
-## [6.3.0] - 2026-08-18
-
-### Added
-
-- Simultaneous Oregon OSV3 + Technoline/La Crosse WS23xx reception.
-- Web UI with separate Dashboard, Hardware, Configuration and Diagnostics tabs.
-- Compact wind compasses for Oregon and Technoline.
-- Data freshness indicators.
-- Hardware resource dashboard for CPU, heap, flash, OTA space, RSSI and uptime.
-- MQTT TLS configuration from Web UI.
-- Selectable MQTT field publishing through a persistent bitmask.
-- Technoline Gust handling and explicit "gust not announced" state.
-- Runtime RF mode, gain and profile controls.
-- OLED ON/OFF Web control using U8g2 power-save.
-- Persistent OLED state in NVS.
-- REST-style endpoints for network, MQTT, RF controls, display and restart.
-- GitHub-ready documentation, CI and contribution templates.
-
-### Changed
-
-- RF diagnostics moved away from the main Dashboard to reduce visual clutter.
-- RAW/burst diagnostic requests are performed only while Diagnostics is open.
-- Hardware monitor moved to its own main tab.
-- Restart control moved to the header.
-- Dashboard reorganized into responsive weather cards.
-
-### Security
-
-- Removed private local configuration from the distributable repository.
-- `src/config_private.h` remains ignored by Git.
+- Added simultaneous Oregon OSV3 + Technoline/La Crosse WS23xx reception.
+- Added responsive Web Dashboard, Hardware, Configuration and Diagnostics tabs.
+- Added MQTT TLS and selectable publishing mask.
+- Added runtime RF mode/gain/profile controls, wind compasses, data freshness and OLED Web control.
+- Added initial hardware resource monitor and REST-style control endpoints.
+- Removed private local configuration from the distributable repository; `src/config_private.h` remains ignored by Git.
