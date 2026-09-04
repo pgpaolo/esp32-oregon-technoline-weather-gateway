@@ -12,11 +12,19 @@
 
 `esp32`, `lilygo`, `sx1278`, `433mhz`, `oregon-scientific`, `technoline`, `lacrosse`, `weather-station`, `mqtt`, `platformio`, `sdfat`, `microsd`, `iot`, `bme280`, `as3935`, `rtl-433`
 
+## Project authorship
+
+- Project author and maintainer: **Gianpaolo P.** (`pgpaolo`).
+- Copyright © 2026 Gianpaolo P.
+- License: **GNU GPL v3 or later (`GPL-3.0-or-later`)**.
+- Citation metadata: [`CITATION.cff`](CITATION.cff).
+- Detailed attribution: [`AUTHORS.md`](AUTHORS.md) and [`NOTICE`](NOTICE).
+
 ## Active branches
 
-- `main` — stable/production line.
+- `main` — stable/production line; now includes the selective BME280/I2C reliability backport merged through PR #23.
 - `release/6.4.0-rc3` — frozen historical RC/hardware-validation line.
-- `release/6.4.0-rc4` — current release candidate, firmware identity `6.4.0-rc4`, fully refreshed from validated `develop` commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`.
+- `release/6.4.0-rc4` — current complete release candidate, firmware identity `6.4.0-rc4`, fully refreshed from validated `develop` commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`.
 - `develop` — next-development line, firmware identity `6.4.0-dev2`.
 
 ## RC4 feature set
@@ -30,6 +38,7 @@
 - Dedicated **CONFIGURAZIONE > I2C / HW** scanner/diagnostics page.
 - ESP32 internal MCU/die temperature in Hardware monitoring when available.
 - Generated-output CI guard for I2C/HW integration and same-workspace build idempotence.
+- Low-profile Web attribution showing `© 2026 Gianpaolo P.`, GPL identifier and the installed firmware version from `/api/state` without extra polling.
 
 ## Documentation
 
@@ -39,7 +48,8 @@
 - [`docs/API.md`](docs/API.md) — embedded HTTP API.
 - [`docs/RELEASE_6.4.0_RC4.md`](docs/RELEASE_6.4.0_RC4.md) — current RC4 release scope and validation reference.
 - [`docs/DEVELOP_6.4.0_RC4_NOTES.md`](docs/DEVELOP_6.4.0_RC4_NOTES.md) — reviewed develop delta now applied to RC4.
+- [`AUTHORS.md`](AUTHORS.md) / [`CITATION.cff`](CITATION.cff) / [`NOTICE`](NOTICE) — authorship, citation and upstream acknowledgements.
 
 ## Promotion policy
 
-RC4 remains unmerged into `main` until final physical validation and an explicit release decision. The frozen RC3 line is not modified. Future development continues on `develop` and is not implicitly promoted to RC4.
+RC4 remains unmerged into `main` until final physical validation and an explicit release decision. The frozen RC3 line is not modified. The selective BME280/I2C backport already present in `main` does not replace or supersede the complete RC4 feature set. Future development continues on `develop` and is not implicitly promoted to RC4.
