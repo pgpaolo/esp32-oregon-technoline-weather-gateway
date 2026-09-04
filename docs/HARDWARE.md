@@ -30,7 +30,7 @@ t3-v161-433
 | microSD SCLK | 14 |
 | microSD CS | 13 |
 
-The SX1278 remains the single 433.92 MHz receiver for Oregon and Technoline.
+The SX1278 is the single 433.92 MHz receiver for Oregon and Technoline.
 
 ## LILYGO T3-S3 + SX1278
 
@@ -40,13 +40,11 @@ Optional PlatformIO environment:
 t3-s3-433
 ```
 
-The board-specific mapping is defined in `src/board_config.h` and selected by PlatformIO build flags.
+The board-specific mapping is defined in `src/board_config.h` and selected by PlatformIO build flags. AS3935 is not assumed to be wired on the S3 target unless explicitly configured.
 
-AS3935 is not assumed to be wired on the S3 target unless explicitly configured for that hardware.
+## Shared I2C bus
 
-## I2C bus
-
-On the classic T3 V1.6.1 the OLED, optional BME280 and optional AS3935 share the I2C bus.
+On the T3 V1.6.1, OLED, optional BME280 and optional AS3935 share one I2C controller.
 
 Typical addresses:
 
@@ -54,79 +52,96 @@ Typical addresses:
 |---|---|
 | SSD1306 OLED | `0x3C` |
 | BME280 | `0x76` or `0x77` |
-| AS3935 | default `0x03` |
+| AS3935 | configured address, project default `0x03` |
 
-Check for address conflicts when adding other I2C hardware.
+The reviewed develop line intentionally uses:
+
+```text
+I2C runtime speed = 100 kHz
+Wire timeout      = 80 ms
+```
+
+Physical testing showed that long SDA/SCL wiring can add enough bus capacitance to make the BME280 stop ACKing even though both lines measure HIGH at idle. The final installation should therefore use short I2C wiring and avoid unnecessary cable capacitance.
+
+The manual **CONFIGURAZIONE > I2C / HW** scanner performs a 100 kHz runtime scan followed by a 400 kHz margin/stress scan, then restores 100 kHz. See [I2C_HARDWARE_DIAGNOSTICS.md](I2C_HARDWARE_DIAGNOSTICS.md).
+
+## BME280
+
+The optional BME280 is detected at `0x76` or `0x77`; `0x77` is tried first on the current development line while `0x76` remains supported.
+
+It provides:
+
+- local temperature;
+- local humidity;
+- station pressure;
+- sea-level pressure based on configured altitude;
+- pressure trend / forecast inputs.
+
+Discovery and recovery are non-blocking. See [BAROMETER_BME280.md](BAROMETER_BME280.md).
 
 ## AS3935 lightning detector
 
-The consolidated `codex/sdfat-write-status` branch includes the AS3935 integration inherited from the intermediate development branch.
-
-## microSD
-
-The onboard microSD uses a dedicated HSPI instance and does not share the SX1278 pin set. The current branch uses Greiman SdFat 2.3.1 with 4 MHz initialization and one 400 kHz fallback after complete bus cleanup.
-
-Mount and explicit FAT format were confirmed on the physical T3 V1.6.1 setup. The formatter is allowed to run when the card transport is initialized but FAT is missing/invalid; it is not run against a card that failed transport initialization.
-
-Classic T3 V1.6.1 defaults:
+T3 V1.6.1 defaults:
 
 - I2C address `0x03`;
 - IRQ GPIO34;
-- shared I2C bus;
+- shared 100 kHz I2C bus;
 - configurable Indoor/Outdoor AFE and filtering;
 - configurable fixed tuning capacitor or auto-tuning;
-- IRQ handler kept minimal, with I2C work performed outside the ISR;
+- IRQ handler kept minimal, with I2C work outside the ISR;
 - power-down during controller deep sleep.
 
-The Web UI reports detection, IRQ/calibration state, resonance, last strike, distance, energy and counters.
+The valid configured AS3935 I2C address range is `0x00..0x03`. Normal boot uses the configured address deterministically rather than performing a general address scan.
+
+The Web UI reports detection, IRQ/calibration state, resonance, latest strike, distance, energy and counters.
+
+## microSD
+
+The onboard microSD uses a dedicated HSPI instance and does not share the SX1278 or I2C pins. The project uses Greiman SdFat 2.3.1 with 4 MHz initialization and one 400 kHz fallback after complete SPI bus cleanup.
+
+Mount and explicit FAT format have been confirmed on physical T3 V1.6.1 hardware. Formatting is never automatic.
 
 ## OLED
 
 Primary display: SSD1306 128x64 at `0x3C`.
 
-Display power, page selection, field selection, contrast and page interval are configurable from the Web UI and persisted in NVS.
-
-The consolidated branch includes the optional **Sensori RF / RSSI / batterie** page. It is designed for the small 128x64 display and rotates compact transmitter rows rather than trying to render every sensor on one screen.
+Display power, page selection, field selection, contrast and page interval are configurable from the Web UI and persisted in NVS. The optional **Sensori RF / RSSI / batterie** page rotates compact transmitter rows when required.
 
 ## OLED physical button
 
-The development line supports an optional active-low PRG/BOOT short-press for OLED power-save toggle.
+An optional active-low PRG/BOOT short-press can toggle OLED power-save:
 
-- T3-S3: enabled by default on the board-declared BOOT/User GPIO0.
-- T3 V1.6.1: disabled by default because the project does not assume a guaranteed runtime user button on every revision.
+- T3-S3: enabled by default on board-declared BOOT/User GPIO0;
+- T3 V1.6.1: disabled by default because a guaranteed runtime user button is not assumed on every revision.
 
-The feature can be overridden in `config_private.h` with `OLED_BUTTON_ENABLE` and `OLED_BUTTON_PIN` after verifying the actual board revision.
+Override with `OLED_BUTTON_ENABLE` / `OLED_BUTTON_PIN` only after checking the actual board revision.
 
 ## Soft power-off / wake
 
 The Web `SPEGNI` command performs controlled shutdown and enters ESP32 deep sleep. It is not an electrical power cut.
 
-Before sleep the firmware shuts down/parks the relevant services including MQTT, display, local sensors, radio and Wi-Fi.
+Before sleep the firmware parks/shuts down MQTT, display, local sensors, radio, storage and Wi-Fi as applicable.
 
 Default wake policy:
 
 - T3 V1.6.1: RESET/EN;
 - T3-S3: RESET/EN plus BOOT/User GPIO0 when enabled.
 
-For near-zero current a real external load switch/latch is still required.
+A real load switch/latch is required for near-zero electrical consumption.
 
-## BME280
+## MCU internal temperature
 
-The optional BME280 is detected at `0x76` or `0x77` and shares the I2C bus with OLED/AS3935.
+The Hardware monitor and **I2C / HW** page expose the ESP32 internal temperature when `temperatureRead()` returns a plausible value.
 
-It can provide local temperature, humidity, station pressure, altimeter pressure and pressure trend data.
+This is a **die/internal hardware temperature**, useful as an indicative hardware-health value. It is not a calibrated ambient-air temperature. Unsupported/invalid readings are reported as `N/D` / JSON `null`.
 
 ## Board battery ADC
 
-`BATTERY_ADC_PIN` can be used for board-supply/battery-voltage oriented monitoring on supported variants, but it is **not** a current/power monitor.
+`BATTERY_ADC_PIN` can be used for board-supply/battery-voltage monitoring on supported variants, but it is not a current/power monitor. Accurate mA/W telemetry requires an external device such as INA219/INA226.
 
-Accurate mA/W telemetry requires an external current monitor such as INA219/INA226.
-
-Do not confuse the board battery ADC with Oregon remote-sensor battery state. Oregon battery flags are decoded from RF only when the corresponding sensor protocol provides them.
+Do not confuse the board ADC with Oregon remote-sensor battery flags, which are decoded from RF only when the protocol provides them.
 
 ## RF signal status
-
-The Web/OLED presentation uses these common RSSI classes for supported received sensors:
 
 | RSSI | Display class |
 |---|---|
@@ -135,23 +150,10 @@ The Web/OLED presentation uses these common RSSI classes for supported received 
 | `< -115 dBm` | weak / red / `R` |
 | unavailable | grey / `-` |
 
-Technoline WS23xx provides usable RF RSSI but does not provide a battery-status field, therefore battery is shown as `N/D` / `B-`.
+Technoline WS23xx provides usable RF RSSI but no battery-status field, so battery is shown as `N/D` / `B-`.
 
 ## Build reference
 
-The current SdFat/write-status code passed local PlatformIO builds on both targets after hardware mount/format confirmation.
+Both environments use `min_spiffs.csv`: NVS and two OTA application slots remain, while SPIFFS is not used. Each app slot is `0x1E0000` bytes (1,966,080 bytes).
 
-T3 V1.6.1:
-
-- RAM: 100,592 / 327,680 B;
-- application ELF: 1,276,881 / 1,966,080 B;
-- real firmware.bin: 1,283,584 B;
-- app-partition margin: 689,199 B.
-
-T3-S3:
-
-- RAM: 99,552 / 327,680 B;
-- application ELF: 1,220,809 / 1,966,080 B;
-- real firmware.bin: 1,221,232 B.
-
-Both environments use `min_spiffs.csv`. NVS and two OTA application slots remain; SPIFFS is not used by this project.
+Exact RAM/flash/binary sizes change whenever the embedded Git commit ID changes. Use the latest successful GitHub Actions workflow rather than stale static size numbers.
