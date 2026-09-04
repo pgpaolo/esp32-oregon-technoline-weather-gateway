@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use or reference this project, please cite it using this metadata."
+title: "ESP32 Oregon Scientific + Technoline 433 MHz Weather Gateway"
+type: software
+authors:
+  - family-names: "P."
+    given-names: "Gianpaolo"
+    alias: "pgpaolo"
+repository-code: "https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway"
+license: "GPL-3.0-or-later"
+version: "6.4.0-rc4"
