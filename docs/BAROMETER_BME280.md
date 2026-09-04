@@ -1,6 +1,6 @@
 # BME280 barometer, altitude calibration and WMR200-style forecast
 
-Status: **develop / 6.4.0-dev2**. The `release/6.4.0-rc4` branch already exists; the BME280 recovery and shared-bus hardening are validated on `develop` before the RC4 refresh.
+Status: **release/6.4.0-rc4 / 6.4.0-rc4**. The BME280 recovery and shared-bus hardening were fully promoted from the reviewed `develop` solution at commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`.
 
 ## Scope
 
@@ -194,9 +194,9 @@ altimeter_display
 trend_display
 ```
 
-## Validation before RC4 refresh
+## RC4 validation checklist
 
-Verify on physical T3 V1.6.1 before copying the reviewed develop line into `release/6.4.0-rc4`:
+Verify on physical T3 V1.6.1 before any promotion to `main`:
 
 1. BME280 is detected at `0x76` or `0x77` with short, final wiring.
 2. Boot without BME280 keeps RF/Web alive and retry progresses 5 s -> 15 s -> 60 s -> 5 min.
