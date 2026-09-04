@@ -9,16 +9,16 @@ Standalone **433.92 MHz weather-sensor gateway** for ESP32/LILYGO T3 boards with
 
 [Italiano / README_IT](README_IT.md)
 
-## Development / release lines
+## Current release candidate
 
 ```text
 main                 stable / production
 release/6.4.0-rc3    frozen historical RC validation line
-release/6.4.0-rc4    current release candidate
- develop              next-development line (6.4.0-dev2)
+release/6.4.0-rc4    current release candidate (firmware 6.4.0-rc4)
+develop               next-development line (6.4.0-dev2)
 ```
 
-`develop` is intentionally identified as **6.4.0-dev2**. Changes are validated there first and are copied to `release/6.4.0-rc4` only after CI and physical hardware checks.
+`release/6.4.0-rc4` has been fully refreshed from the reviewed `develop` solution at commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`. RC3 remains frozen and `main` is unchanged until an explicit promotion decision.
 
 ## Main features
 
@@ -150,12 +150,12 @@ Authenticated OTA accepts the correct PlatformIO/GitHub `firmware.bin`, checks E
 
 Reference: [docs/WEB_PROVISIONING_OTA_AUTH.md](docs/WEB_PROVISIONING_OTA_AUTH.md).
 
-## Quick start from develop
+## Quick start from RC4
 
 ```bash
 git clone https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway.git
 cd esp32-oregon-technoline-weather-gateway
-git checkout develop
+git checkout release/6.4.0-rc4
 cp src/config_private.example.h src/config_private.h
 pio run -e t3-v161-433
 pio run -e t3-v161-433 -t upload
@@ -185,14 +185,18 @@ The build matrix checks:
 - `t3-v161-433` build;
 - `t3-s3-433` build;
 - a second same-workspace T3 V1.6.1 build to detect non-idempotent pre-scripts;
+- generated I2C/HW integration guard;
 - real `firmware.bin` size against the `0x1E0000` OTA application slot.
+
+The exact source promoted from `develop` passed Validate #192 and PlatformIO Build #268. The RC4 branch must also remain green after its release-identity commits before any merge to `main`.
 
 Because the firmware embeds its Git commit ID, use the latest successful workflow for exact current binary sizes.
 
 ## API and backup
 
 HTTP API: [docs/API.md](docs/API.md)  
-Configuration backup: [docs/CONFIG_BACKUP.md](docs/CONFIG_BACKUP.md)
+Configuration backup: [docs/CONFIG_BACKUP.md](docs/CONFIG_BACKUP.md)  
+RC4 release notes: [docs/RELEASE_6.4.0_RC4.md](docs/RELEASE_6.4.0_RC4.md)
 
 ## Security
 
