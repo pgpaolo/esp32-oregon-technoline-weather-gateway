@@ -1,10 +1,14 @@
-# Develop notes for the next 6.4.0-rc4 refresh
+# Develop review notes applied to 6.4.0-rc4
 
-`release/6.4.0-rc4` already exists as the current release-candidate branch. This document tracks additional changes reviewed on `develop` after the initial RC4 cut and intended to be copied to RC4 only after CI and physical hardware validation.
+The reviewed `develop` delta has now been fully applied to `release/6.4.0-rc4` from commit:
 
-`release/6.4.0-rc3` remains frozen and must not be rewritten. `develop` remains identified as `6.4.0-dev2`.
+```text
+68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3
+```
 
-## Baseline already represented by RC4
+`release/6.4.0-rc3` remains frozen. `develop` continues as the next-development line with its own `6.4.0-dev2` identity, while RC4 uses firmware identity `6.4.0-rc4`.
+
+## Baseline represented by RC4
 
 ### COMPATIBLE MB
 
@@ -29,7 +33,7 @@ See [MB_COMPATIBLE.md](MB_COMPATIBLE.md).
 
 See [BAROMETER_BME280.md](BAROMETER_BME280.md).
 
-## Additional reviewed develop hardening
+## Reviewed hardening now included in RC4
 
 ### BME280 detection/recovery
 
@@ -42,7 +46,7 @@ See [BAROMETER_BME280.md](BAROMETER_BME280.md).
 
 Physical testing identified **excessive I2C cable length/capacitance** as the real cause of the lost BME280 ACKs. It was not a BME280 driver failure.
 
-The reviewed runtime baseline is therefore:
+The RC4 runtime baseline is:
 
 ```text
 100 kHz
@@ -70,11 +74,11 @@ The page provides:
 - manual 400 kHz stress/margin scan;
 - guaranteed restore to 100 kHz / 80 ms after the diagnostic.
 
-The MCU temperature is hardware/die temperature only and must not be presented as ambient temperature.
+The MCU temperature is hardware/die temperature only and is not presented as ambient temperature.
 
 See [I2C_HARDWARE_DIAGNOSTICS.md](I2C_HARDWARE_DIAGNOSTICS.md).
 
-## Web UI target hierarchy
+## Web UI hierarchy
 
 ```text
 Gateway title                      [large forecast tile]
@@ -91,9 +95,9 @@ RETE / WI-FI | OREGON | MQTT / TLS | DISPLAY | BAROMETRO | I2C / HW | ...
 
 BAROMETRO remains focused on meteorological configuration and BME-specific retry/ACK state. Full bus diagnostics belong to I2C/HW.
 
-## CI review gates
+## Validation reference
 
-The final develop commit intended for RC4 must pass:
+The promoted `develop` commit passed:
 
 - repository validation;
 - PCR800 rain-rate regression;
@@ -105,18 +109,18 @@ The final develop commit intended for RC4 must pass:
 - generated I2C/HW integration guard;
 - physical `firmware.bin` size check.
 
-The generated integration guard specifically checks that the scanner is present only in the dedicated I2C/HW configuration page, that 100 kHz remains the runtime bus, that the 400 kHz test is diagnostic-only, and that the experimental AS3935 address auto-scan has not returned.
+The current RC4 branch must pass the same release-branch CI after the RC4 identity/documentation commits.
 
-## Physical validation gates before copying to RC4
+## Physical validation before main
 
 - BME280 detected with final short wiring and chip ID `0x60`;
-- OLED and AS3935 remain stable on the shared 100 kHz bus;
+- OLED and AS3935 stable on the shared 100 kHz bus;
 - BME280 disconnect/reconnect recovery without reboot;
 - altitude and pressure-unit persistence;
 - forecast tile desktop/mobile behavior;
 - I2C/HW page and manual scanner behavior;
 - scanner restores 100 kHz after the stress test;
-- MCU temperature is plausible or cleanly shown as `N/D`;
-- RF reception, MQTT, Web authentication/OTA, microSD and display behavior remain unaffected.
+- MCU temperature plausible or cleanly shown as `N/D`;
+- RF reception, MQTT, Web authentication/OTA, microSD and display behavior unaffected.
 
-Only after these checks should the reviewed develop delta be applied to `release/6.4.0-rc4`. RC4 must remain unmerged into `main` until an explicit final release decision.
+RC4 remains unmerged into `main` until an explicit final release decision.
