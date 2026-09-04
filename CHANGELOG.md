@@ -4,7 +4,7 @@ All notable project changes are documented here.
 
 ## 6.4.0-rc4 - refreshed from reviewed develop
 
-This RC4 line has been fully refreshed from validated `develop` commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`. `release/6.4.0-rc3` remains frozen and `main` is unchanged.
+This RC4 line has been fully refreshed from validated `develop` commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`. `release/6.4.0-rc3` remains frozen. `main` now contains the selective BME280/I2C reliability backport merged through PR #23, while the complete RC4 feature set remains on this release branch.
 
 ### BME280 / shared I2C
 
@@ -35,6 +35,16 @@ This RC4 line has been fully refreshed from validated `develop` commit `68c1adc7
 - BAROMETRO remains focused on altitude, pressure units, BME-specific retry/ACK diagnostics and preview values.
 - Dedicated I2C/HW configuration keeps full-bus diagnostics separate from meteorological configuration.
 
+### Project attribution / citation
+
+- Kept the project license unchanged as **GPL-3.0-or-later**; no custom or incompatible attribution clause was introduced.
+- Added `AUTHORS.md` with **Gianpaolo P.** (`pgpaolo`) as project author and maintainer and copyright © 2026 Gianpaolo P.
+- Added `CITATION.cff` so GitHub and citation-aware tools can expose formal project citation metadata.
+- Expanded `NOTICE` to separate original project authorship from upstream protocol/code acknowledgements.
+- Added a deliberately low-profile title line showing `© 2026 Gianpaolo P.`, `GPL-3.0-or-later` and the installed firmware version.
+- The installed version reuses the existing `/api/state` payload; no extra HTTP request is added.
+- Added generated-output CI validation to ensure the attribution/version block is present exactly once.
+
 ### COMPATIBLE MB / server normalization
 
 - Added COMPATIBLE MB 192-field publishing through a separate FreeRTOS HTTP/HTTPS worker.
@@ -51,7 +61,7 @@ This RC4 line has been fully refreshed from validated `develop` commit `68c1adc7
 - PCR800, Oregon V2.1 and COMPATIBLE MB host-side checks passed.
 - Generated I2C/HW integration guard passed.
 - Physical `firmware.bin` size guard passed.
-- RC4 release-branch CI must remain green before any merge to `main`.
+- RC4 release-branch CI must remain green after attribution/documentation updates before any merge to `main`.
 
 ## 6.4.0-rc3 / RC4 baseline work
 
