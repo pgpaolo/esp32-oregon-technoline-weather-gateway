@@ -2,9 +2,9 @@
 
 All notable project changes are documented here.
 
-## Unreleased - develop / 6.4.0-dev2
+## 6.4.0-rc4 - refreshed from reviewed develop
 
-This line is the reviewed development source for the next refresh of `release/6.4.0-rc4`. `release/6.4.0-rc3` remains frozen.
+This RC4 line has been fully refreshed from validated `develop` commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`. `release/6.4.0-rc3` remains frozen and `main` is unchanged.
 
 ### BME280 / shared I2C
 
@@ -32,7 +32,7 @@ This line is the reviewed development source for the next refresh of `release/6.
 
 - BME280 and AS3935 detailed Dashboard sections are collapsible and closed by default.
 - Added a larger pressure/forecast tile beside the gateway title.
-- BAROMETRO now remains focused on altitude, pressure units, BME-specific retry/ACK diagnostics and preview values.
+- BAROMETRO remains focused on altitude, pressure units, BME-specific retry/ACK diagnostics and preview values.
 - Dedicated I2C/HW configuration keeps full-bus diagnostics separate from meteorological configuration.
 
 ### COMPATIBLE MB / server normalization
@@ -41,14 +41,17 @@ This line is the reviewed development source for the next refresh of `release/6.
 - Added exclusive Oregon/Technoline source selection with no cross-station fallback inside one packet.
 - Added generic server-side Weather Realtime API v1 adapter/reference implementation under `server/meteobridge/`.
 
-### Validation expectations before RC4 refresh
+### Validation reference
 
-- Both `t3-v161-433` and `t3-s3-433` must compile.
-- The same T3 V1.6.1 workspace must compile a second time to verify pre-script idempotence.
-- PCR800, Oregon V2.1 and COMPATIBLE MB host-side checks must remain green.
-- Physical T3 V1.6.1 must show BME280 chip ID `0x60` with final short I2C wiring.
-- I2C/HW scanner must restore the 100 kHz runtime bus after the 400 kHz stress pass.
-- RF, Web, MQTT, OLED, AS3935 and microSD behavior must remain unaffected by the diagnostics changes.
+- Validated source commit on `develop`: `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`.
+- Validate #192: success.
+- PlatformIO Build #268: success.
+- Both `t3-v161-433` and `t3-s3-433` compiled successfully.
+- Same-workspace T3 V1.6.1 rebuild/idempotence check passed.
+- PCR800, Oregon V2.1 and COMPATIBLE MB host-side checks passed.
+- Generated I2C/HW integration guard passed.
+- Physical `firmware.bin` size guard passed.
+- RC4 release-branch CI must remain green before any merge to `main`.
 
 ## 6.4.0-rc3 / RC4 baseline work
 
