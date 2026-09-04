@@ -52,7 +52,7 @@ for needle, label in (
 for needle, label in (
     ('server.on("/api/hardware/info"', "hardware-info route"),
     ('server.on("/api/hardware/i2c-scan"', "hardware I2C-scan route"),
-    ('"hardware_temperature_c"', "MCU temperature JSON field"),
+    ('hardware_temperature_c', "MCU temperature JSON field"),
     ('String runHardwareI2cScanJson()', "hardware I2C scanner implementation"),
 ):
     require(web, needle, label)
