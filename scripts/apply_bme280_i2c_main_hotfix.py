@@ -11,8 +11,8 @@ def read(path):
 
 def write(path, text):
     p = root / path
-    current = p.read_text(encoding="utf-8")
-    if current != text:
+    old = p.read_text(encoding="utf-8")
+    if old != text:
         p.write_text(text, encoding="utf-8")
 
 
@@ -24,26 +24,23 @@ def replace_function(text, signature, replacement):
     if brace < 0:
         raise RuntimeError(f"BME280 main hotfix: missing opening brace {signature}")
     depth = 0
-    end = brace
-    while end < len(text):
-        ch = text[end]
-        if ch == "{":
+    i = brace
+    while i < len(text):
+        if text[i] == "{":
             depth += 1
-        elif ch == "}":
+        elif text[i] == "}":
             depth -= 1
             if depth == 0:
-                end += 1
-                while end < len(text) and text[end] in "\r\n":
-                    end += 1
-                return text[:start] + replacement + text[end:]
-        end += 1
+                i += 1
+                while i < len(text) and text[i] in "\r\n":
+                    i += 1
+                return text[:start] + replacement + text[i:]
+        i += 1
     raise RuntimeError(f"BME280 main hotfix: missing closing brace {signature}")
 
 
 # ---------------------------------------------------------------------------
-# Shared I2C bus: validated runtime settings from develop/hardware tests.
-# Keep OLED + BME280 on 100 kHz and use the same 80 ms Wire timeout used by
-# the known-good standalone hardware test.
+# Shared I2C runtime: use the settings validated on the physical T3/BME280.
 # ---------------------------------------------------------------------------
 display = read("src/display_manager.cpp")
 if "BME280_I2C_MAIN_HOTFIX_DISPLAY_V1" not in display:
@@ -56,7 +53,7 @@ if "BME280_I2C_MAIN_HOTFIX_DISPLAY_V1" not in display:
 
 
 # ---------------------------------------------------------------------------
-# BME280 diagnostics API.
+# Detection/recovery diagnostics API.
 # ---------------------------------------------------------------------------
 header = read("src/barometer_manager.h")
 if "BME280_I2C_MAIN_HOTFIX_API_V1" not in header:
@@ -80,13 +77,6 @@ BarometerDetectionDiagnostics getBarometerDetectionDiagnostics();
     write("src/barometer_manager.h", header)
 
 
-# ---------------------------------------------------------------------------
-# Non-blocking BME280 discovery/recovery.
-# 5 s -> 15 s -> 60 s -> 5 min after a failed discovery.
-# Six consecutive invalid pressure reads mark the device offline and restart
-# rediscovery. BME280 0x77 is preferred because it is the Waveshare default;
-# 0x76 remains fully supported.
-# ---------------------------------------------------------------------------
 cpp = read("src/barometer_manager.cpp")
 if "BME280_I2C_MAIN_HOTFIX_CORE_V1" not in cpp:
     anchor = "uint32_t lastReadMs = 0;\n"
@@ -180,7 +170,6 @@ bool attemptBmeDetection() {
 '''
     cpp = cpp.replace(anchor, anchor + state, 1)
 
-    # Every driver transaction is forced back to the validated runtime bus.
     try_anchor = "bool tryBme(uint8_t addr) {\n    if (!bme.begin(addr, &Wire)) return false;"
     try_repl = "bool tryBme(uint8_t addr) {\n    configureI2cRuntimeBus();\n    if (!bme.begin(addr, &Wire)) return false;"
     if try_anchor not in cpp:
@@ -271,12 +260,6 @@ bool attemptBmeDetection() {
 '''
     cpp = replace_function(cpp, "void serviceBarometer(StationState &state) {", service_replacement)
 
-    sleep_anchor = "void prepareBarometerForDeepSleep() {\n#if BAROMETER_ENABLE\n    if (!detected) return;\n    bme.setSampling"
-    sleep_repl = "void prepareBarometerForDeepSleep() {\n#if BAROMETER_ENABLE\n    if (!detected) return;\n    configureI2cRuntimeBus();\n    bme.setSampling"
-    if sleep_anchor not in cpp:
-        raise RuntimeError("BME280 main hotfix: sleep anchor missing")
-    cpp = cpp.replace(sleep_anchor, sleep_repl, 1)
-
     public_anchor = "uint8_t barometerAddress() { return address; }\n"
     if public_anchor not in cpp:
         raise RuntimeError("BME280 main hotfix: diagnostics public anchor missing")
@@ -301,8 +284,8 @@ BarometerDetectionDiagnostics getBarometerDetectionDiagnostics() {
 
 
 # ---------------------------------------------------------------------------
-# Web diagnostics: dedicated CONFIGURAZIONE > I2C / HW tab, manual scanner,
-# BME280 chip-ID probe and MCU die temperature. No periodic bus scan.
+# Web diagnostics: a dedicated CONFIGURAZIONE > I2C / HW tab. The scanner is
+# manual only and always restores the production bus to 100 kHz / 80 ms.
 # ---------------------------------------------------------------------------
 web = read("src/web_manager.cpp")
 if "BME280_I2C_MAIN_HOTFIX_WEB_V1" not in web:
@@ -315,6 +298,7 @@ if "BME280_I2C_MAIN_HOTFIX_WEB_V1" not in web:
     helper_anchor = "void handleState() {\n"
     if helper_anchor not in web:
         raise RuntimeError("BME280 main hotfix: handleState anchor missing")
+
     helpers = r'''
 // BME280_I2C_MAIN_HOTFIX_WEB_V1
 float hardwareTemperatureC() {
@@ -353,7 +337,7 @@ int readBoschChipId(uint8_t addr) {
     Wire.beginTransmission(addr);
     Wire.write(static_cast<uint8_t>(0xD0));
     if (Wire.endTransmission(false) != 0) return -1;
-    if (Wire.requestFrom(static_cast<int>(addr), 1) != 1) return -1;
+    if (Wire.requestFrom(addr, static_cast<uint8_t>(1)) != 1) return -1;
     return static_cast<int>(Wire.read());
 }
 
@@ -419,41 +403,41 @@ void handleI2cScan() {
 '''
     web = web.replace(helper_anchor, helpers + helper_anchor, 1)
 
-    # Expose MCU die temperature in the existing Hardware page state payload.
-    state_anchor = '    out += ",\\\"cpu_mhz\\\":" + String(ESP.getCpuFreqMHz());\n'
+    # Existing /api/state Hardware payload.
+    state_anchor = r'    out += ",\"cpu_mhz\":" + String(ESP.getCpuFreqMHz());' + "\n"
     if state_anchor not in web:
         raise RuntimeError("BME280 main hotfix: system JSON CPU anchor missing")
-    state_extra = '    out += ",\\\"hardware_temperature_c\\\":" + jsonFloat(hardwareTemperatureC(), 1);\n'
+    state_extra = r'    out += ",\"hardware_temperature_c\":" + jsonFloat(hardwareTemperatureC(), 1);' + "\n"
     web = web.replace(state_anchor, state_anchor + state_extra, 1)
 
-    # Add the MCU temperature line to HARDWARE > CPU / SoC.
-    hw_anchor = '<div class=\\"resourceLine\\"><span class=\\"name\\">Core</span><span class=\\"value\\" id=\\"sysCores\\">--</span></div><div class=\\"resourceLine\\"><span class=\\"name\\">Uptime</span>'
-    hw_repl = '<div class=\\"resourceLine\\"><span class=\\"name\\">Core</span><span class=\\"value\\" id=\\"sysCores\\">--</span></div><div class=\\"resourceLine\\"><span class=\\"name\\">Temperatura MCU</span><span class=\\"value\\" id=\\"sysMcuTemp\\">--</span></div><div class=\\"resourceLine\\"><span class=\\"name\\">Uptime</span>'
+    # HARDWARE > CPU / SoC line.
+    hw_anchor = '<span class="value" id="sysCores">--</span></div><div class="resourceLine"><span class="name">Uptime</span>'
+    hw_repl = '<span class="value" id="sysCores">--</span></div><div class="resourceLine"><span class="name">Temperatura MCU</span><span class="value" id="sysMcuTemp">--</span></div><div class="resourceLine"><span class="name">Uptime</span>'
     if hw_anchor not in web:
         raise RuntimeError("BME280 main hotfix: Hardware CPU card anchor missing")
     web = web.replace(hw_anchor, hw_repl, 1)
 
-    # Dedicated configuration tab.
-    tabs_anchor = '<button id=\\"tabDisplay\\" class=\\"cfgTab\\" onclick=\\"showCfgTab(\'display\')\\">DISPLAY</button><button id=\\"tabBackup\\"'
-    tabs_repl = '<button id=\\"tabDisplay\\" class=\\"cfgTab\\" onclick=\\"showCfgTab(\'display\')\\">DISPLAY</button><button id=\\"tabI2c\\" class=\\"cfgTab\\" onclick=\\"showCfgTab(\'i2c\')\\">I2C / HW</button><button id=\\"tabBackup\\"'
+    # Dedicated CONFIGURAZIONE tab.
+    tabs_anchor = '<button id="tabBackup" class="cfgTab" onclick="showCfgTab(\'backup\')">BACKUP / RESTORE</button>'
     if tabs_anchor not in web:
         raise RuntimeError("BME280 main hotfix: configuration tab anchor missing")
-    web = web.replace(tabs_anchor, tabs_repl, 1)
+    i2c_tab = '<button id="tabI2c" class="cfgTab" onclick="showCfgTab(\'i2c\')">I2C / HW</button>'
+    web = web.replace(tabs_anchor, i2c_tab + tabs_anchor, 1)
 
-    page_anchor = '<div id=\\"cfgBackup\\" class=\\"cfgPage\\">'
+    page_anchor = '<div id="cfgBackup" class="cfgPage">'
     if page_anchor not in web:
         raise RuntimeError("BME280 main hotfix: cfgBackup anchor missing")
-    page = r'''<div id=\"cfgI2c\" class=\"cfgPage\">
-<div class=\"cfgGrid\">
-<label><span>Bus I2C runtime</span><input id=\"i2cBus\" type=\"text\" readonly></label>
-<label><span>Temperatura MCU</span><input id=\"i2cMcuTemp\" type=\"text\" readonly></label>
-<label><span>BME280</span><input id=\"i2cBme\" type=\"text\" readonly></label>
-<label><span>OLED</span><input id=\"i2cOled\" type=\"text\" readonly></label>
-<label class=\"cfgWide\"><span>Rilevamento BME280</span><input id=\"i2cBmeDiag\" type=\"text\" readonly></label>
+    page = r'''<div id="cfgI2c" class="cfgPage">
+<div class="cfgGrid">
+<label><span>Bus I2C runtime</span><input id="i2cBus" type="text" readonly></label>
+<label><span>Temperatura MCU</span><input id="i2cMcuTemp" type="text" readonly></label>
+<label><span>BME280</span><input id="i2cBme" type="text" readonly></label>
+<label><span>OLED</span><input id="i2cOled" type="text" readonly></label>
+<label class="cfgWide"><span>Rilevamento BME280</span><input id="i2cBmeDiag" type="text" readonly></label>
 </div>
-<div class=\"cfgActions\"><button class=\"modeBtn\" onclick=\"scanI2cBus()\">Scanner I2C</button><button class=\"modeBtn\" onclick=\"loadI2cHardware()\">Aggiorna</button><span id=\"i2cSummary\" class=\"muted\">Scanner manuale · nessun polling aggiuntivo</span></div>
-<div class=\"diag\" id=\"i2cScanResult\">Premi Scanner I2C per verificare 100 kHz e 400 kHz.</div>
-<div class=\"cfgNote\">Il runtime resta a 100 kHz con timeout 80 ms. Il test a 400 kHz e' solo diagnostico; al termine il bus viene sempre riportato a 100 kHz. Un BME280 Bosch valido risponde normalmente a 0x76/0x77 con chip ID 0x60.</div>
+<div class="cfgActions"><button class="modeBtn" onclick="scanI2cBus()">Scanner I2C</button><button class="modeBtn" onclick="loadI2cHardware()">Aggiorna</button><span id="i2cSummary" class="muted">Scanner manuale · nessun polling aggiuntivo</span></div>
+<div class="diag" id="i2cScanResult">Premi Scanner I2C per verificare 100 kHz e 400 kHz.</div>
+<div class="cfgNote">Il runtime resta a 100 kHz con timeout 80 ms. Il test a 400 kHz e' solo diagnostico; al termine il bus viene sempre riportato a 100 kHz. Un BME280 Bosch valido risponde normalmente a 0x76/0x77 con chip ID 0x60.</div>
 </div>
 '''
     web = web.replace(page_anchor, page + page_anchor, 1)
@@ -486,10 +470,10 @@ async function scanI2cBus(){const box=E('i2cScanResult'),sum=E('i2cSummary');box
         raise RuntimeError("BME280 main hotfix: Hardware refresh anchor missing")
     web = web.replace(refresh_anchor, refresh_repl, 1)
 
-    route_anchor = '    server.on(\"/api/state\", HTTP_GET, handleState);\n'
+    route_anchor = '    server.on("/api/state", HTTP_GET, handleState);\n'
     if route_anchor not in web:
         raise RuntimeError("BME280 main hotfix: route anchor missing")
-    routes = '    server.on(\"/api/i2c/hardware\", HTTP_GET, handleI2cHardware);\n    server.on(\"/api/i2c/scan\", HTTP_POST, handleI2cScan);\n'
+    routes = '    server.on("/api/i2c/hardware", HTTP_GET, handleI2cHardware);\n    server.on("/api/i2c/scan", HTTP_POST, handleI2cScan);\n'
     web = web.replace(route_anchor, route_anchor + routes, 1)
 
     write("src/web_manager.cpp", web)
