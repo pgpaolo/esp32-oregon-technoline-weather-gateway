@@ -83,6 +83,9 @@ jobs:
       - name: Validate generated I2C/HW integration
         run: python scripts/test_generated_i2c_hardware_diagnostics.py
 
+      - name: Validate project attribution and installed version UI
+        run: python scripts/test_project_attribution.py
+
       - name: Verify real firmware.bin size
         shell: bash
         run: |
