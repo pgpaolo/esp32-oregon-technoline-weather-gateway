@@ -1,6 +1,6 @@
 # I2C and hardware diagnostics
 
-Status: **develop / 6.4.0-dev2**. This page documents the diagnostics prepared for the next `release/6.4.0-rc4` refresh after physical validation.
+Status: **release/6.4.0-rc4 / 6.4.0-rc4**. These diagnostics have been promoted from the reviewed `develop` solution into the current RC4 branch.
 
 ## Purpose
 
@@ -126,7 +126,7 @@ Six consecutive invalid pressure reads cause the BME280 to be marked offline and
 
 ## RC4 validation checklist
 
-Before moving the reviewed develop line into `release/6.4.0-rc4`:
+Before any promotion of RC4 to `main`:
 
 - verify BME280 `0x76` or `0x77` and chip ID `0x60` on physical hardware;
 - verify OLED and AS3935 remain visible on the shared 100 kHz bus;
