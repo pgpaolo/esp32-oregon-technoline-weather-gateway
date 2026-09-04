@@ -1,48 +1,40 @@
 # Gateway meteo ESP32 Oregon Scientific + Technoline 433 MHz
 
-Firmware standalone per **ESP32 / LILYGO T3 + SX1278 433.92 MHz** capace di ricevere sensori **Oregon Scientific OSV2.1/OSV3** e **Technoline / La Crosse WS23xx**, mostrare i dati tramite interfaccia Web e pubblicarli via MQTT con TLS opzionale.
+Firmware standalone per **ESP32 / LILYGO T3 + SX1278 433.92 MHz** capace di ricevere sensori **Oregon Scientific OSV2.1/OSV3** e **Technoline / La Crosse WS23xx**, mostrare i dati tramite interfaccia Web autenticata, pubblicarli via MQTT/TLS e integrare sensori locali BME280 e AS3935.
 
-Branch release candidate attuale:
+## Rami di sviluppo / release
 
 ```text
-release/6.4.0-rc3
+main                 stabile / produzione
+release/6.4.0-rc3    RC storico congelato
+release/6.4.0-rc4    release candidate attuale
+develop               sviluppo successivo (6.4.0-dev2)
 ```
 
-Il macro firmware è **6.4.0-rc3**. Questa release deriva direttamente dal ramo Web provisioning/auth/OTA validato in CI e conserva l'architettura RF già collaudata.
+`develop` resta identificato come **6.4.0-dev2**. Le modifiche vengono prima validate qui e vengono riportate in `release/6.4.0-rc4` soltanto dopo CI e collaudo hardware.
 
 ## Funzioni principali
 
-- ricezione RF Oregon + Technoline sullo stesso SX1278 a 433.92 MHz;
+- ricezione RF Oregon + Technoline sullo stesso SX1278 a **433.92 MHz**;
 - Oregon OSV3 e supporto Oregon V2.1 delimitato/validato;
-- recovery dedicato **UVR128 / EC70** per preambolo tagliato o fase iniziale incerta;
-- termoigrometri Oregon **CH1-CH2-CH3** con canale principale configurabile e auto-rilevamento;
-- più trasmettitori UV contemporanei, inclusi UVN800 (`D874`) e UVR128 (`EC70`);
-- stato RSSI uniforme sui sensori Oregon e Technoline;
-- stato batteria uniforme dove previsto dal protocollo: `BAT OK`, `BAT LOW`, `BAT N/D`;
-- namespace MQTT indipendente per ogni trasmettitore Oregon, basato su codice sensore + canale + rolling ID;
-- configurazione MQTT per famiglia/stazione e funzione;
-- MQTT TLS: disabilitato, verificato con CA oppure insecure solo per diagnostica;
-- display OLED configurabile da Web, con pagina **SENSORI RF / RSSI / BATTERIE**;
+- recovery dedicato UVR128 / EC70;
+- termoigrometri Oregon CH1-CH3 con canale principale configurabile e auto-rilevamento;
+- più trasmettitori UV indipendenti, inclusi UVN800 (`D874`) e UVR128 (`EC70`);
+- Technoline WS23xx: temperatura, umidità, pioggia, vento e gust;
+- stato RSSI/batteria uniforme dove il protocollo lo consente;
+- MQTT con gruppi selezionabili e TLS opzionale verificato con CA;
+- **COMPATIBLE MB** a 192 campi con sorgente Oregon/Technoline esclusiva;
+- display OLED configurabile;
 - BME280 locale opzionale;
 - AS3935 opzionale con Web, MQTT e OLED;
-- hostname configurabile e mDNS;
-- backup/ripristino JSON della configurazione;
-- riavvio e spegnimento software/deep sleep;
-- datalogger microSD con backend SdFat, formattazione FAT, retry automatici e badge di stato;
-- provisioning Wi-Fi da Web con credenziali in NVS, prova delle nuove credenziali e rollback automatico;
-- Access Point di recovery dopo perdita prolungata della rete principale;
-- **scansione manuale asincrona delle reti Wi-Fi** con SSID, RSSI, canale e sicurezza;
-- Basic Authentication Web attiva di default;
-- credenziali iniziali di questa RC: **`admin / admin`**, da modificare da `SISTEMA`;
-- OTA Web autenticato tramite `firmware.bin` PlatformIO/GitHub Actions;
-- pioggia Technoline derivata localmente: intensità stimata su 5 minuti, accumulo 1 ora e 24 ore;
-- correzione del rain-rate Oregon PCR800 con test di regressione sul caso circa **172,0 mm/h**;
-- asset Web gzip generato durante la build.
+- monitor hardware CPU, heap, flash, uptime, reset/build e temperatura interna MCU quando disponibile;
+- nuova pagina **CONFIGURAZIONE > I2C / HW** con scanner manuale e verifica chip-ID BME280;
+- datalogger microSD SdFat con retry, formattazione FAT e diagnostica;
+- provisioning Wi-Fi, scansione asincrona SSID, trial/rollback credenziali e recovery AP;
+- Basic Authentication Web, backup/ripristino configurazione e OTA autenticato;
+- riavvio e spegnimento software/deep sleep.
 
-Documentazione provisioning/sicurezza: [docs/WEB_PROVISIONING_OTA_AUTH.md](docs/WEB_PROVISIONING_OTA_AUTH.md).
-Documentazione recovery RF: [docs/UVR128_RECOVERY.md](docs/UVR128_RECOVERY.md).
-
-## Hardware
+## Hardware supportato
 
 ### LILYGO T3 / LoRa32 V1.6.1
 
@@ -55,179 +47,130 @@ Documentazione recovery RF: [docs/UVR128_RECOVERY.md](docs/UVR128_RECOVERY.md).
 
 Ambiente PlatformIO `t3-s3-433`.
 
-### Sensori locali opzionali
-
-- BME280 su I2C (`0x76` / `0x77`);
-- AS3935; sul T3 V1.6.1 i default sono I2C `0x03` e IRQ GPIO34.
-
 Pinout e note: [docs/HARDWARE.md](docs/HARDWARE.md).
 
-## Oregon Scientific
+## BME280 e bus I2C
 
-A seconda del modello vengono gestiti:
+Il BME280 viene rilevato automaticamente a `0x76` o `0x77`. Sul T3 V1.6.1:
 
-- temperatura e umidità;
-- punto di rugiada e heat index;
-- vento medio, current/gust, direzione e wind chill;
-- pioggia totale, intensità/rate, valori locali 1h/24h e incremento frame;
-- indice UV;
-- canale, rolling code, modello e protocollo;
-- RSSI RF e batteria quando disponibili.
+```text
+SDA = GPIO21
+SCL = GPIO22
+```
 
-Dettagli Oregon V2.1: [docs/OREGON_V21.md](docs/OREGON_V21.md).
+OLED, BME280 e AS3935 condividono lo stesso controller I2C. Il collaudo hardware ha dimostrato che il problema di mancato rilevamento del BME280 era dovuto a **cavi I2C troppo lunghi / capacità del bus**, non al driver BME280.
 
-## Technoline / La Crosse WS23xx
+Per aumentare il margine, il bus condiviso normale resta quindi a:
 
-Vengono gestiti:
+```text
+100 kHz
+Wire timeout 80 ms
+```
 
-- temperatura;
-- umidità;
-- totale pluviometrico;
-- incremento ultimo frame;
-- **intensità stimata su finestra locale di 5 minuti**;
-- **pioggia ultima ora** dopo almeno un'ora di storico runtime;
-- **pioggia ultime 24 ore** dopo almeno 24 ore di storico runtime;
-- velocità vento;
-- gust quando annunciato dal protocollo;
-- direzione vento;
-- ID/modello;
-- RSSI e diagnostica RAW.
+Anche con SDA/SCL entrambe alte a riposo, fronti degradati da cavi troppo lunghi possono impedire gli ACK. È quindi preferibile mantenere SDA/SCL corti.
 
-Lo storico pioggia Technoline è mantenuto in RAM e non viene scritto in NVS/flash. Dopo un riavvio deve quindi ricostruirsi progressivamente.
+Il BME280 usa retry non bloccanti dopo circa 5 s, 15 s, 60 s e poi ogni 5 minuti. Sei letture di pressione consecutive non valide riavviano la discovery.
 
-## Dashboard e stato sensori
+Documentazione: [docs/BAROMETER_BME280.md](docs/BAROMETER_BME280.md).
 
-La grafica usa lo stesso criterio per tutti i sensori compatibili:
+## Diagnostica I2C / hardware
 
-- RSSI verde >= -100 dBm;
-- RSSI giallo da -115 a -101 dBm;
-- RSSI rosso < -115 dBm;
-- grigio se non disponibile;
-- batteria verde `BAT OK`;
-- batteria rossa `BAT LOW`;
-- grigio `BAT N/D` quando il protocollo non fornisce il dato.
+Lo scanner completo non è più dentro BAROMETRO. È disponibile in:
 
-Per Technoline il valore RSSI è reale, mentre la batteria resta `N/D` perché WS23xx non trasmette lo stato batteria.
+```text
+CONFIGURAZIONE > I2C / HW
+```
 
-## Termoigrometri CH1-CH3
+La scansione è solo manuale:
 
-Il firmware mantiene stato separato per CH1, CH2 e CH3.
+1. scansione a **100 kHz**, velocità reale di esercizio;
+2. lettura del registro Bosch `0xD0` su `0x76/0x77` (`0x60` identifica un BME280);
+3. scansione a **400 kHz** come test di margine/stress;
+4. ripristino automatico di 100 kHz / 80 ms.
 
-- Un canale configurabile come **principale** alimenta temperatura/umidità legacy e gli indici derivati.
-- L'auto-discovery può rendere visibili automaticamente i canali ricevuti.
-- I canali abilitati manualmente restano visibili anche se temporaneamente offline.
-- Sono accettate sia la codifica one-hot storica `1/2/4` sia la codifica diretta osservata `1/2/3`.
-- I topic legacy seguono il canale principale.
-- I topic specifici restano sotto `oregon/thermo/chN/...`.
+La pagina mostra anche stato/indirizzo BME280 e AS3935, pin SDA/SCL e **temperatura interna MCU ESP32** quando disponibile. Quest'ultima è una temperatura del chip indicativa, **non una misura dell'ambiente**.
 
-## UV multipli
+Documentazione: [docs/I2C_HARDWARE_DIAGNOSTICS.md](docs/I2C_HARDWARE_DIAGNOSTICS.md).
 
-UVN800 (`D874`), UVR128 (`EC70`) e futuri UV supportati possono essere visualizzati contemporaneamente. Trasmettitori dello stesso modello/canale restano distinti tramite rolling ID. Il registro live è condiviso con gli altri sensori Oregon e mantiene fino a 10 trasmettitori recenti.
+## AS3935
+
+Sul T3 V1.6.1 il default è indirizzo I2C `0x03`, IRQ GPIO34. Il firmware usa l'indirizzo configurato in modo deterministico e mostra stato sensore, IRQ, calibrazione/risonanza, ultimo evento, distanza/energia e contatori.
+
+## Barometro e previsione
+
+Il BME280 fornisce pressione di stazione, pressione riportata al livello del mare, temperatura/umidità locale e trend. La quota è configurabile e persistente; il default del progetto è 584 m.
+
+La Web UI può visualizzare hPa, mbar, inHg, mmHg o kPa. I dati interni, MQTT, COMPATIBLE MB e Weather Realtime API restano in hPa.
+
+La testata Web include una previsione grafica in stile WMR200. Il protocollo Oregon disponibile documenta le categorie ma non la formula proprietaria: il gateway usa quindi pressione al livello del mare, trend 3 h e temperatura esterna quando richiesta per una classificazione coerente con le categorie WMR200.
+
+## Interfaccia Web
+
+L'interfaccia è organizzata in:
+
+1. **Dashboard** — Oregon, Technoline e sensori locali;
+2. **Hardware** — CPU/SoC, RAM, flash, uptime, temperatura MCU e rete/runtime;
+3. **Configurazione** — rete/Wi-Fi, Oregon, MQTT/TLS, display, BAROMETRO, I2C/HW, AS3935, microSD/archivio, backup/ripristino e sistema/sicurezza/OTA;
+4. **Diagnostica** — RF mode/gain/profile, qualità sessione, RAW e burst.
+
+I pannelli dettagliati BME280 e AS3935 partono chiusi e si aprono cliccando il titolo.
 
 ## MQTT
 
-I topic legacy restano compatibili. In aggiunta, ogni trasmettitore Oregon valido può pubblicare sotto:
+I topic legacy restano disponibili. Ogni trasmettitore Oregon può anche pubblicare in un namespace indipendente:
 
 ```text
 <base>/oregon/sensor/<CODE>/ch<CHANNEL>/id<ROLLING>/...
 ```
 
-Esempi:
+La maschera persistente a 32 bit seleziona i gruppi Oregon, Technoline, BME280, AS3935 e gateway/sistema.
 
-```text
-weatherstation/oregon/sensor/F824/ch1/id165/temperature
-weatherstation/oregon/sensor/1D20/ch3/id114/humidity
-weatherstation/oregon/sensor/D874/ch1/id245/uv
-weatherstation/oregon/sensor/EC70/ch1/id158/uv
-weatherstation/oregon/sensor/1984/ch0/id170/wind_average
-weatherstation/oregon/sensor/2914/ch0/id189/rain_total
-```
+Documentazione: [docs/MQTT.md](docs/MQTT.md).
 
-La maschera MQTT persistente resta a 32 bit. La selezione è per funzione/famiglia, mentre i singoli trasmettitori sono separati dal namespace.
+## COMPATIBLE MB
 
-Riferimento: [docs/MQTT.md](docs/MQTT.md).
+COMPATIBLE MB genera esattamente 192 campi separati da spazi verso un ricevitore configurabile in stile `mb.php`; i campi non disponibili valgono `--`.
 
-## Wi-Fi: configurazione, scansione e recovery
+La sorgente è esclusiva: scegliendo Oregon non viene usato Technoline come fallback e viceversa. Il BME280 è locale al gateway e può contribuire indipendentemente con pressione/dati interni.
 
-SSID e password possono essere modificati da **RETE / WI-FI** e vengono salvati in NVS.
+La trasmissione HTTP/HTTPS usa un worker FreeRTOS dedicato, quindi il loop RF non attende il server remoto.
 
-Quando viene salvata una nuova coppia SSID/password, il firmware la considera inizialmente una configurazione di prova. Dopo il riavvio tenta l'associazione per 45 secondi; in caso di fallimento ripristina automaticamente le credenziali precedenti disponibili.
+## microSD
 
-Il pulsante **Scansiona reti Wi-Fi** avvia una scansione asincrona soltanto su richiesta. La lista mostra SSID, RSSI, canale e rete aperta/protetta; un clic sull'SSID lo copia nel campo di configurazione. La password Wi-Fi salvata non viene mai restituita dall'API.
+La microSD onboard usa SdFat sul bus HSPI dedicato. I record vengono messi in coda RAM e scritti fuori dal percorso RF critico. In caso di mount fallito i retry sono circa 5 s, 15 s, 60 s e poi ogni 5 minuti. La formattazione è sempre esplicita/manuale.
 
-Se la modalità STA rimane indisponibile per circa un minuto viene attivato un AP di recovery. L'AP viene spento automaticamente non appena la rete principale torna disponibile.
+Documentazione: [docs/SD_DATALOGGER.md](docs/SD_DATALOGGER.md).
 
-## Sicurezza Web
+## Wi-Fi, autenticazione e OTA
 
-Basic Authentication è attiva di default.
+SSID/password Wi-Fi sono configurabili via Web e persistiti in NVS. Le nuove credenziali sono provate come configurazione trial e possono essere ripristinate automaticamente se l'associazione fallisce. Dopo perdita prolungata della STA può partire un recovery AP.
 
-Credenziali iniziali della release candidate:
+Basic Authentication è attiva di default. Credenziali iniziali:
 
 ```text
 utente: admin
 password: admin
 ```
 
-Sono credenziali di primo accesso/test e vanno cambiate immediatamente da **Configurazione > SISTEMA**. Le nuove password normali devono essere di almeno 8 caratteri. Il firmware esegue una sola migrazione delle vecchie installazioni che avevano una password casuale memorizzata in NVS; dopo la migrazione rispetta la password scelta dall'utente.
+Cambiarle subito da **CONFIGURAZIONE > SISTEMA**. Basic Auth su HTTP non cifra il traffico: usare LAN/VPN affidabile o un terminatore HTTPS sicuro.
 
-Dopo 10 tentativi di autenticazione falliti viene applicato un blocco temporaneo di 30 secondi.
+OTA Web richiede autenticazione e controlla immagine ESP, spazio OTA e mismatch evidente di famiglia T3 prima di riavviare.
 
-Basic Auth su HTTP controlla l'accesso ma **non cifra il traffico**. Usare LAN fidata/VPN o terminazione HTTPS affidabile e non esporre direttamente la porta HTTP a Internet.
+Documentazione: [docs/WEB_PROVISIONING_OTA_AUTH.md](docs/WEB_PROVISIONING_OTA_AUTH.md).
 
-## OTA Web
-
-Da **SISTEMA** è possibile installare il `firmware.bin` prodotto dall'ambiente PlatformIO corretto o dagli artifact GitHub Actions.
-
-L'OTA:
-
-- richiede autenticazione Web attiva;
-- verifica l'header immagine ESP;
-- controlla lo spazio disponibile nello slot OTA;
-- respinge nomi file che indicano chiaramente la famiglia board opposta;
-- chiude il datalogger microSD prima del flash;
-- rimonta la SD se l'upload fallisce e il logger è abilitato;
-- riavvia solo dopo la chiusura corretta di `Update.end()`.
-
-## Datalogger microSD
-
-La microSD usa il backend Greiman SdFat e il cablaggio HSPI dedicato. I frame validi e gli snapshot locali vengono accodati in RAM e scritti fuori dal percorso RF critico nei CSV UTC giornalieri sotto `/weather/`.
-
-Se il logger è abilitato, al boot viene tentato automaticamente il mount. In caso di errore i retry non bloccanti avvengono dopo:
-
-```text
-5 s -> 15 s -> 60 s -> ogni 5 minuti
-```
-
-Non viene mai eseguita una formattazione automatica.
-
-Il badge può mostrare `SD OFF`, `SD PRONTA`, `SD ATTESA`, `SD ON`, `SD SCRIVE`, `SD KO` o `SD ERR`.
-
-Riferimento: [docs/SD_DATALOGGER.md](docs/SD_DATALOGGER.md).
-
-## AS3935
-
-AS3935 è un sensore locale I2C/IRQ opzionale con:
-
-- stato e configurazione Web;
-- diagnostica IRQ/calibrazione/risonanza;
-- distanza ed energia dell'ultimo fulmine;
-- MQTT selezionabile;
-- pagina OLED selezionabile;
-- configurazione inclusa nel backup/ripristino.
-
-## Compilazione rapida
+## Compilazione da develop
 
 ```bash
 git clone https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway.git
 cd esp32-oregon-technoline-weather-gateway
-git checkout release/6.4.0-rc3
+git checkout develop
 cp src/config_private.example.h src/config_private.h
 pio run -e t3-v161-433
 pio run -e t3-v161-433 -t upload
 pio device monitor -b 115200
 ```
 
-`src/config_private.h` è escluso da Git. Non pubblicare credenziali Wi-Fi/MQTT o materiale CA privato. Al primo accesso usare `admin / admin`, quindi cambiare la password da **SISTEMA**.
+`src/config_private.h` è ignorato da Git. Non pubblicare credenziali Wi-Fi/MQTT o CA private.
 
 ## Profilo RF consigliato
 
@@ -240,37 +183,28 @@ pio device monitor -b 115200
 | Burst Extra | OFF in uso normale |
 | WGR Probe | OFF in uso normale |
 
-Il recovery UVR128 conserva comunque gli intervalli RAW necessari al fallback EC70 anche con Burst Extra disabilitato.
+## CI / validazione release
 
-## Build e CI
+La matrice verifica:
 
-La `release/6.4.0-rc3` viene verificata automaticamente con:
-
-- vettore di regressione rain-rate PCR800;
-- vettori host Oregon V2.1;
+- regressione rain-rate PCR800;
+- vettori Oregon V2.1;
+- mapping COMPATIBLE MB;
 - build `t3-v161-433`;
 - build `t3-s3-433`;
-- seconda build `t3-v161-433` nello stesso workspace per verificare l'idempotenza dei pre-script;
-- controllo della dimensione reale di `firmware.bin` rispetto allo slot OTA.
+- seconda build T3 V1.6.1 nello stesso workspace per controllare l'idempotenza dei pre-script;
+- dimensione reale `firmware.bin` rispetto allo slot OTA `0x1E0000`.
 
-La partizione applicazione `min_spiffs.csv` assegna **1.966.080 byte** a ciascuno slot OTA.
+Per le dimensioni esatte del firmware usare sempre l'ultima workflow riuscita, perché l'ID Git è incorporato nel binario.
 
-## Backup configurazione
+## API, backup e sicurezza
 
-Il backup JSON comprende rete/IP/hostname, MQTT/TLS, maschera campi MQTT, canali Oregon, display, AS3935 e impostazioni RF persistenti. Le credenziali Wi-Fi e quelle dell'amministratore Web non vengono esportate; la password MQTT è esclusa salvo richiesta esplicita.
+API HTTP: [docs/API.md](docs/API.md)  
+Backup configurazione: [docs/CONFIG_BACKUP.md](docs/CONFIG_BACKUP.md)  
+Sicurezza: [SECURITY.md](SECURITY.md)
 
-Dettagli: [docs/CONFIG_BACKUP.md](docs/CONFIG_BACKUP.md).
+Non esporre direttamente il servizio HTTP dell'ESP32 su Internet e preferire MQTT TLS verificato con CA fuori da una LAN affidabile.
 
-## Licenza e attribuzioni
+## Licenza
 
-GNU GPL v3 o successiva. Il decoder Technoline/WS23xx usa conoscenze e logica compatibile derivate da `rtl_433` e `PracticalArduino WeatherStationReceiver`; vedere [NOTICE](NOTICE).
-
-## Politica branch
-
-Il repository mantiene volutamente soltanto tre linee operative:
-
-- `main` - stabile/produzione;
-- `release/6.4.0-rc3` - release candidate corrente in collaudo finale;
-- `develop` - sviluppo successivo, inizialmente clonato dalla release candidate.
-
-Le vecchie pull request e i commit restano disponibili come storico anche dopo la rimozione dei branch intermedi.
+GNU GPL v3 o successiva (`GPL-3.0-or-later`). Vedere [LICENSE](LICENSE) e [NOTICE](NOTICE).
