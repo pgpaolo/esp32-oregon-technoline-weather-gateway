@@ -7,6 +7,21 @@ root = Path(env.subst("$PROJECT_DIR"))
 def patch_once(path, old, new, label):
     p = root / path
     text = p.read_text(encoding="utf-8")
+
+    # The dashboard is progressively extended by later pre-scripts. On a
+    # same-workspace rebuild those extensions can legitimately sit between the
+    # original SD anchor and the element inserted here. Recognize the semantic
+    # SD markers instead of requiring the old neighbouring HTML to be intact.
+    semantic_done = {
+        "SD tab": 'id="tabSd"' in text,
+        "SD page": 'id="cfgSd"' in text,
+        "SD cfg loop": "for(const x of ['net','thermo','mqtt','display','sd','lightning','backup'])" in text,
+        "SD tab loader": "t==='sd')loadSd()" in text,
+        "SD javascript": "async function loadSd()" in text and "async function saveSd()" in text,
+    }
+    if semantic_done.get(label, False):
+        return
+
     if new in text:
         return
     if old not in text:
