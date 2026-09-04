@@ -7,18 +7,20 @@
 
 Standalone **433.92 MHz weather-sensor gateway** for ESP32/LILYGO T3 boards with SX1278. It receives **Oregon Scientific OSV2.1/OSV3** and **Technoline / La Crosse WS23xx**, exposes a responsive authenticated Web UI, publishes selected data through MQTT/TLS, and supports optional local BME280 and AS3935 sensors.
 
+Project author and maintainer: **Gianpaolo P.** (`pgpaolo`) · Copyright © 2026 Gianpaolo P.
+
 [Italiano / README_IT](README_IT.md)
 
 ## Current release candidate
 
 ```text
-main                 stable / production
+main                 stable / production + selective BME280/I2C reliability backport (PR #23)
 release/6.4.0-rc3    frozen historical RC validation line
-release/6.4.0-rc4    current release candidate (firmware 6.4.0-rc4)
+release/6.4.0-rc4    current complete release candidate (firmware 6.4.0-rc4)
 develop               next-development line (6.4.0-dev2)
 ```
 
-`release/6.4.0-rc4` has been fully refreshed from the reviewed `develop` solution at commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`. RC3 remains frozen and `main` is unchanged until an explicit promotion decision.
+`release/6.4.0-rc4` has been fully refreshed from the reviewed `develop` solution at commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`. RC3 remains frozen. `main` now contains the selective BME280/I2C reliability backport merged through PR #23, while the complete RC4 feature set remains isolated in this release branch until an explicit promotion decision.
 
 ## Main features
 
@@ -40,6 +42,7 @@ develop               next-development line (6.4.0-dev2)
 - Web Wi-Fi provisioning, asynchronous SSID scan, credential trial/rollback and recovery AP.
 - Web Basic Authentication, configuration backup/restore and authenticated OTA.
 - Restart and controlled deep-sleep power-off.
+- Low-profile Web attribution showing copyright, GPL identifier and the **installed firmware version** without extra polling.
 
 ## Supported boards
 
@@ -108,6 +111,14 @@ The embedded Web UI is divided into:
 4. **Diagnostics** — RF mode/gain/profile, session quality, RAW frames and burst diagnostics.
 
 BME280 and AS3935 detailed Dashboard panels are collapsed by default and expand on title click.
+
+The title area also contains a deliberately small attribution line:
+
+```text
+© 2026 Gianpaolo P. · firmware <installed version> · GPL-3.0-or-later
+```
+
+The version is taken from the existing `/api/state` response, so the attribution introduces **no additional HTTP polling**.
 
 ## MQTT
 
@@ -186,9 +197,10 @@ The build matrix checks:
 - `t3-s3-433` build;
 - a second same-workspace T3 V1.6.1 build to detect non-idempotent pre-scripts;
 - generated I2C/HW integration guard;
+- project attribution + installed-version UI guard;
 - real `firmware.bin` size against the `0x1E0000` OTA application slot.
 
-The exact source promoted from `develop` passed Validate #192 and PlatformIO Build #268. The RC4 branch must also remain green after its release-identity commits before any merge to `main`.
+The exact source promoted from `develop` passed Validate #192 and PlatformIO Build #268. The RC4 branch must also remain green after its release-identity and attribution/documentation commits before any merge to `main`.
 
 Because the firmware embeds its Git commit ID, use the latest successful workflow for exact current binary sizes.
 
@@ -212,6 +224,15 @@ See [SECURITY.md](SECURITY.md).
 
 Technoline / La Crosse WS23xx implementation uses published protocol/timing knowledge and GPL-compatible code-derived logic from **rtl_433** and **PracticalArduino WeatherStationReceiver**. See [NOTICE](NOTICE).
 
+## Authorship and citation
+
+Project author and maintainer: **Gianpaolo P.** (`pgpaolo`)  
+Copyright © 2026 Gianpaolo P.
+
+- Author record: [AUTHORS.md](AUTHORS.md)
+- Citation metadata: [CITATION.cff](CITATION.cff)
+- Third-party acknowledgements: [NOTICE](NOTICE)
+
 ## License
 
-GNU GPL v3 or later (`GPL-3.0-or-later`). See [LICENSE](LICENSE).
+GNU GPL v3 or later (`GPL-3.0-or-later`). See [LICENSE](LICENSE). The GPL license text itself is kept unmodified; project attribution and third-party acknowledgements are maintained separately in `AUTHORS.md`, `CITATION.cff` and `NOTICE`.
