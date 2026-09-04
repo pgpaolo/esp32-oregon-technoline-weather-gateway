@@ -1,5 +1,18 @@
 ESP32 Oregon Scientific + Technoline 433 MHz Weather Gateway
 
+Project authorship
+==================
+
+Project author and maintainer:
+  Gianpaolo P. (pgpaolo)
+
+Copyright © 2026 Gianpaolo P.
+
+This attribution applies to the ESP32 gateway integration, firmware architecture,
+Web interface, diagnostics, hardware-validation work and project documentation
+represented by this repository, except where third-party copyright or license
+notices apply.
+
 Third-party protocol/code acknowledgements
 ==========================================
 
@@ -32,3 +45,5 @@ Libraries
 
 Runtime/build dependencies are declared in platformio.ini. They remain subject
 to their own upstream licenses and copyright notices.
+
+See also AUTHORS.md, CITATION.cff and LICENSE.
