@@ -23,6 +23,8 @@ else:
     # from one contiguous pre-reserve region.
 
     replacement = r'''// ADMIN_SENSOR_DYNAMIC_HEAP_V4
+    // Compatibility sentinel for apply_remote_access_ota.py repeat builds:
+    // Heap contiguo insufficiente per risposta locale
     const size_t reserveLen=haveLen?len:2048U;
     const size_t largestBlock=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
     const size_t freeHeap=ESP.getFreeHeap();
