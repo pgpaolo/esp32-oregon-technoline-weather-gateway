@@ -67,5 +67,12 @@ exec(compile(impl.read_text(encoding="utf-8"), str(impl), "exec"), scope, scope)
 # transport heartbeat plus application-level presence ping, and intentional
 # disconnect tracking so planned reconnects do not look like failures.
 reconnect = root / "scripts" / "apply_remote_reconnect_hardening.py"
-reconnect_scope = {"__file__": str(reconnect), "__name__": "__main__", "env": env}
+reconnect_scope = {
+    "__file__": str(reconnect),
+    "__name__": "__main__",
+    "env": env,
+    # The pass is executed inside this already-imported SCons script. It has
+    # the env object explicitly, so its standalone Import("env") can be a no-op.
+    "Import": lambda *args: None,
+}
 exec(compile(reconnect.read_text(encoding="utf-8"), str(reconnect), "exec"), reconnect_scope, reconnect_scope)
