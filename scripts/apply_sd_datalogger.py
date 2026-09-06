@@ -8,11 +8,41 @@ def patch_once(path, old, new, label):
     p = root / path
     text = p.read_text(encoding="utf-8")
 
-    # The dashboard is progressively extended by later pre-scripts. On a
-    # same-workspace rebuild those extensions can legitimately sit between the
-    # original SD anchor and the element inserted here. Recognize the semantic
-    # SD markers instead of requiring the old neighbouring HTML to be intact.
+    # Every PlatformIO pre-script mutates the working tree in place. A second
+    # build in the same workspace must therefore recognize the semantic result
+    # of this patch even when later pre-scripts have inserted code between the
+    # original anchor and the SD lines. Exact `new in text` remains useful for
+    # fresh/near-fresh trees; semantic markers make the pass fully idempotent.
     semantic_done = {
+        # main.cpp
+        "main include": '#include "sd_logger.h"' in text,
+        "SD init after RF": "initSdLogger();" in text,
+        "Oregon enqueue": "enqueueSdOregon(reading, packet);" in text,
+        "Technoline enqueue": "enqueueSdTechnoline(lcReading, lcPacket);" in text,
+        "deferred SD service": "serviceSdLogger(station);" in text,
+
+        # power_manager.cpp
+        "power include": '#include "sd_logger.h"' in text,
+        "SD shutdown": "prepareSdLoggerForDeepSleep();" in text,
+
+        # web_manager.cpp
+        "web include": '#include "sd_logger.h"' in text,
+        "state SD object": 'out += ",\\\"sd\\\":" + sdLoggerStatusJson();' in text,
+        "SD handlers": (
+            "void handleSdConfigGet()" in text
+            and "void handleSdConfigPost()" in text
+            and "void handleSdConfigReset()" in text
+            and "void handleSdRemount()" in text
+        ),
+        "SD routes": (
+            'server.on("/api/sd", HTTP_GET, handleSdConfigGet);' in text
+            and 'server.on("/api/sd", HTTP_POST, handleSdConfigPost);' in text
+            and 'server.on("/api/sd/reset", HTTP_POST, handleSdConfigReset);' in text
+            and 'server.on("/api/sd/remount", HTTP_POST, handleSdRemount);' in text
+        ),
+
+        # dashboard.html. Later UI passes can add tabs/pages after these, so
+        # recognize the stable IDs/functions instead of neighbour HTML.
         "SD tab": 'id="tabSd"' in text,
         "SD page": 'id="cfgSd"' in text,
         "SD cfg loop": (
@@ -23,6 +53,7 @@ def patch_once(path, old, new, label):
         "SD javascript": "async function loadSd()" in text and "async function saveSd()" in text,
     }
     if semantic_done.get(label, False):
+        print(f"SD datalogger: already present {path} ({label})")
         return
 
     if new in text:
