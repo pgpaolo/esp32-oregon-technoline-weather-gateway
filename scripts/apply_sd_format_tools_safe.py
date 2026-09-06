@@ -66,13 +66,9 @@ write("src/sd_logger.h", h)
 
 # ---------------------------------------------------------------------------
 # sd_logger.cpp - diagnostics JSON + format action.
-# The next pre-script (apply_sd_mount_regression_fix.py) owns mountSdAdaptive()
-# and remountSdLogger(), so this script does not make assumptions about their
-# current generated state.
 # ---------------------------------------------------------------------------
 cpp = read("src/sd_logger.cpp")
 
-# Clear negotiated speed on unmount. Match only the unmount status block.
 if "status.spiFrequencyHz = 0;" not in cpp:
     old = "    status.usedBytes = 0;\n    status.currentFile[0] = '\\0';\n"
     new = "    status.usedBytes = 0;\n    status.spiFrequencyHz = 0;\n    status.currentFile[0] = '\\0';\n"
@@ -81,8 +77,6 @@ if "status.spiFrequencyHz = 0;" not in cpp:
     else:
         print("SD safe format: unmount SPI reset anchor unavailable; continuing")
 
-# Add compact diagnostics to status JSON independently, so a partially patched
-# workspace can be completed without requiring an exact previous line shape.
 mount_json = '    out += ",\\\"mount_attempts\\\":" + String(s.mountAttempts);\n'
 if '\\\"spi_hz\\\"' not in cpp and mount_json in cpp:
     cpp = cpp.replace(mount_json, mount_json + '    out += ",\\\"spi_hz\\\":" + String(s.spiFrequencyHz);\n', 1)
@@ -97,15 +91,11 @@ if '\\\"spi_try\\\"' not in cpp and spi_json in cpp:
         1,
     )
 
-# Public format operation. clearSdTree() is supplied by the following
-# apply_sd_clear_tree_guard.py and ends up textually before this public API.
 if "bool formatSdLogger() {" not in cpp:
     format_fn = r'''bool formatSdLogger() {
 #if !SDCARD_SUPPORTED
     return false;
 #else
-    // format_if_empty recreates FAT only when no valid filesystem exists.
-    // On an already valid FAT volume, clear the complete tree instead.
     if (!mountSdAdaptive(true)) return false;
     queueHead = queueTail = 0;
     status.queueDepth = 0;
@@ -132,7 +122,9 @@ write("src/sd_logger.cpp", cpp)
 
 
 # ---------------------------------------------------------------------------
-# web_manager.cpp - format endpoint. Tolerant of previous partial builds.
+# web_manager.cpp - format endpoint.
+# Accept direct routes and auth-wrapped routes from already-mutated workspaces.
+# Never require the remount route to have one exact textual representation.
 # ---------------------------------------------------------------------------
 wm = read("src/web_manager.cpp")
 if "void handleSdFormat() {" not in wm:
@@ -155,23 +147,31 @@ if "void handleSdFormat() {" not in wm:
         raise RuntimeError("SD safe format: handleSdRemount anchor missing in web_manager.cpp")
     wm = wm[:pos] + handler + wm[pos:]
 
-route = '    server.on("/api/sd/format", HTTP_POST, handleSdFormat);\n'
-if route not in wm:
-    anchor = '    server.on("/api/sd/remount", HTTP_POST, handleSdRemount);\n'
-    if anchor not in wm:
-        raise RuntimeError("SD safe format: SD remount route missing in web_manager.cpp")
-    wm = wm.replace(anchor, anchor + route, 1)
+format_route_re = re.compile(
+    r'server\.on\s*\(\s*"/api/sd/format"\s*,\s*HTTP_POST\s*,',
+    re.S,
+)
+if not format_route_re.search(wm):
+    # Use server.onNotFound as a semantic end-of-route-list anchor. This works
+    # whether /api/sd/remount is direct or wrapped in an authentication lambda.
+    # The later Web-auth pass will protect the newly inserted format endpoint.
+    nf = re.search(r'(?m)^([ \t]*)server\.onNotFound\s*\(', wm)
+    if not nf:
+        raise RuntimeError("SD safe format: no safe initWeb route anchor found in web_manager.cpp")
+    indent = nf.group(1)
+    route = f'{indent}server.on("/api/sd/format", HTTP_POST, handleSdFormat);\n'
+    wm = wm[:nf.start()] + route + wm[nf.start():]
+    print("SD safe format: added POST /api/sd/format route")
+else:
+    print("SD safe format: format route already present")
 write("src/web_manager.cpp", wm)
 
 
 # ---------------------------------------------------------------------------
-# dashboard.html - best-effort UI enrichment. None of these cosmetic changes
-# is allowed to stop a firmware build. Functional format JS/route are inserted
-# whenever their stable anchors are present.
+# dashboard.html - best-effort UI enrichment.
 # ---------------------------------------------------------------------------
 d = read("web/dashboard.html")
 
-# Button
 if 'onclick="formatSd()"' not in d:
     anchor = '<button class="modeBtn" onclick="remountSd()">Rimonta scheda</button>'
     button = '<button class="modeBtn" style="border-color:#a44;color:#ff8f8f" onclick="formatSd()">FORMATTA SD</button>'
@@ -181,8 +181,6 @@ if 'onclick="formatSd()"' not in d:
     else:
         print("SD safe format: remount button anchor unavailable; format UI button skipped")
 
-# Negotiated SPI display. Use the stable used-bytes expression rather than the
-# complete generated loadSd() line, which is frequently changed by other UI patches.
 if "s.spi_hz" not in d:
     old = "sdBytes(s.used_bytes)"
     new = "sdBytes(s.used_bytes)+' · SPI '+((s.spi_hz||0)>=1000000?((s.spi_hz||0)/1000000).toFixed(0)+' MHz':((s.spi_hz||0)/1000).toFixed(0)+' kHz')"
@@ -192,8 +190,6 @@ if "s.spi_hz" not in d:
     else:
         print("SD safe format: used-bytes UI anchor unavailable; SPI display skipped")
 
-# Compact diagnostics summary. Replace only the sdSummary assignment, whatever
-# wording an earlier generated version used.
 if "s.init_code" not in d:
     pattern = re.compile(r"E\('sdSummary'\)\.textContent=\(c\.enabled\?'logger ON':'logger OFF'\)\+[^;]+;")
     replacement = "E('sdSummary').textContent=(c.enabled?'logger ON':'logger OFF')+' · mount '+(s.mount_attempts||0)+' · init '+({0:'--',1:'OK',2:'BEGIN FAIL',3:'CARD NONE'}[s.init_code]||s.init_code)+' · try 0x'+Number(s.spi_try||0).toString(16).toUpperCase()+' / fail 0x'+Number(s.spi_fail||0).toString(16).toUpperCase();"
@@ -204,7 +200,6 @@ if "s.init_code" not in d:
     else:
         print("SD safe format: sdSummary UI anchor unavailable; diagnostics display skipped")
 
-# Format JS
 if "async function formatSd()" not in d:
     format_js = r'''async function formatSd(){
  if(!confirm('ATTENZIONE: la formattazione cancella tutti i dati presenti sulla microSD. Continuare?'))return;
@@ -223,7 +218,6 @@ if "async function formatSd()" not in d:
     else:
         print("SD safe format: resetSd JS anchor unavailable; format JS skipped")
 
-# Informational note only; deliberately non-fatal.
 if "8/4/2/1 MHz/400 kHz" not in d:
     note_anchor = "La scrittura e differita: il decoder RF non scrive mai direttamente sulla SD."
     if note_anchor in d:
