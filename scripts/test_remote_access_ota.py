@@ -81,7 +81,7 @@ require(remote, "HTTP_CONTIGUOUS_HEADROOM=4096U", "4 KiB contiguous runtime head
 require(remote, "HTTP_TOTAL_HEADROOM=16384U", "16 KiB total runtime headroom")
 require(remote, "heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)", "contiguous heap guard")
 require(remote, "ESP.getFreeHeap()", "total heap guard")
-require(remote, "Heap insufficiente risposta locale: need=", "diagnostic heap failure path")
+require(remote, "Heap contiguo insufficiente per risposta locale: need=", "diagnostic heap failure path")
 require(remote, 'q->path=="/"||q->path.startsWith("/?")', "root Web UI flash bypass")
 forbid(remote, "MAX_RESP=45056U", "old dashboard-sized dynamic response buffer")
 forbid(remote, "HTTP_RESP_CHUNK_RAW=4096U", "old 4 KiB transient response chunks")
