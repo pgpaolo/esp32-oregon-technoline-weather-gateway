@@ -1,6 +1,7 @@
 Import("env")
 
 from pathlib import Path
+import gzip
 import re
 
 # SCons-safe entry point for the AdminSensor Remote integration.
@@ -9,48 +10,53 @@ import re
 # PlatformIO/SCons and normal Python inspection.
 root = Path(env.subst("$PROJECT_DIR"))
 
-# Give the remote tunnel enough transient headroom for the generated gzip Web
-# UI without changing the flash partition table. The current dashboard is about
-# 36 KiB compressed, so a 40 KiB local response ceiling plus a 56 KiB WebSocket
-# frame ceiling covers its Base64 expansion while keeping peak heap bounded on
-# the classic ESP32. Request bodies are raised more modestly to 16 KiB.
-# The pass is idempotent for same-workspace rebuilds performed by CI.
+# Size the transient tunnel buffers from the *actual* Web UI that will be
+# embedded in this build. This avoids a fixed response ceiling becoming stale
+# as dashboard.html grows, while keeping a bounded heap budget on classic ESP32.
+#
+# The local Web UI is always served gzip-compressed. Keep 8 KiB of response
+# headroom above the deterministic gzip payload and 4 KiB above the Base64 JSON
+# WebSocket expansion. Limits are rounded to 4 KiB boundaries. If the dashboard
+# ever grows enough to require unsafe buffers, fail the build instead of
+# silently shipping a tunnel that cannot serve the UI reliably.
+dashboard_path = root / "web" / "dashboard.html"
+dashboard_gz_len = len(gzip.compress(dashboard_path.read_bytes(), compresslevel=9, mtime=0))
+
+
+def round_up(value, block=4096):
+    return ((value + block - 1) // block) * block
+
+
+max_req = 16384
+max_resp = max(40960, round_up(dashboard_gz_len + 8192))
+base64_resp = ((max_resp + 2) // 3) * 4
+max_ws = max(57344, round_up(base64_resp + 4096))
+
+if max_resp > 65536 or max_ws > 98304:
+    raise RuntimeError(
+        f"Remote tunnel buffers would be unsafe: gzip={dashboard_gz_len}, "
+        f"response={max_resp}, websocket={max_ws}"
+    )
+
 remote_path = root / "src" / "remote_access.cpp"
 remote_text = remote_path.read_text(encoding="utf-8")
-old_limits = "constexpr size_t MAX_REQ=12288U, MAX_RESP=24576U, MAX_WS=38000U;"
-previous_limits = "constexpr size_t MAX_REQ=16384U, MAX_RESP=28672U, MAX_WS=42000U;"
-new_limits = "constexpr size_t MAX_REQ=16384U, MAX_RESP=40960U, MAX_WS=57344U;"
-if old_limits in remote_text:
-    remote_text = remote_text.replace(old_limits, new_limits, 1)
-elif previous_limits in remote_text:
-    remote_text = remote_text.replace(previous_limits, new_limits, 1)
-elif new_limits not in remote_text:
+limits_re = re.compile(
+    r"constexpr size_t MAX_REQ=\d+U, MAX_RESP=\d+U, MAX_WS=\d+U;"
+)
+new_limits = (
+    f"constexpr size_t MAX_REQ={max_req}U, "
+    f"MAX_RESP={max_resp}U, MAX_WS={max_ws}U;"
+)
+remote_text, replacements = limits_re.subn(new_limits, remote_text, count=1)
+if replacements != 1:
     raise RuntimeError("Remote memory limits: expected limits anchor missing")
 remote_path.write_text(remote_text, encoding="utf-8")
-print("AdminSensor Remote limits: request 16 KiB, response 40 KiB, WebSocket 56 KiB")
+print(
+    "AdminSensor Remote limits: "
+    f"dashboard gzip {dashboard_gz_len} B, request {max_req // 1024} KiB, "
+    f"response {max_resp // 1024} KiB, WebSocket {max_ws // 1024} KiB"
+)
 
 impl = root / "scripts" / "apply_remote_access_ota_impl.py"
 scope = {"__file__": str(impl), "__name__": "__main__"}
 exec(compile(impl.read_text(encoding="utf-8"), str(impl), "exec"), scope, scope)
-
-# Keep the pre-existing SD dashboard pass idempotent on PlatformIO's mandatory
-# second build. The Remote implementation originally appended 'remote' to the
-# shared cfg-page loop, which changed the exact semantic anchor used by the SD
-# pass on the next build. Handle the Remote page independently instead: the
-# normal loop remains unchanged, while this toggle activates/deactivates the
-# Remote page and the existing remote loader still runs only when selected.
-dash_path = root / "web" / "dashboard.html"
-dash = dash_path.read_text(encoding="utf-8")
-dash = re.sub(
-    r"(for\(const x of \[[^\]]*),\s*'remote'(\]\))",
-    r"\1\2",
-    dash,
-    count=1,
-)
-remote_toggle = "const rp=E('cfgRemote');if(rp)rp.classList.toggle('active',t==='remote');"
-if remote_toggle not in dash:
-    anchor = "function showCfgTab(t){"
-    if anchor not in dash:
-        raise RuntimeError("Remote integration: showCfgTab anchor missing for idempotence bridge")
-    dash = dash.replace(anchor, anchor + remote_toggle, 1)
-dash_path.write_text(dash, encoding="utf-8")
