@@ -107,11 +107,38 @@ jobs:
             fi
           fi
 
-      - name: Upload firmware artifacts
+      # OTA users must never have to choose between bootloader.bin,
+      # partitions.bin and firmware.bin. Publish one clearly named application
+      # image plus its SHA-256; this is the only artifact intended for OTA.
+      - name: Prepare unambiguous OTA package
+        shell: bash
+        run: |
+          mkdir -p ota
+          SHORT_SHA="${GITHUB_SHA:0:8}"
+          OTA="ota/esp32-oregon-technoline-${{ matrix.environment }}-${SHORT_SHA}-OTA.bin"
+          cp ".pio/build/${{ matrix.environment }}/firmware.bin" "$OTA"
+          sha256sum "$OTA" > "${OTA}.sha256"
+          echo "OTA image: $OTA"
+          cat "${OTA}.sha256"
+
+      - name: Upload OTA firmware only
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: firmware-${{ matrix.environment }}
+          name: ota-firmware-${{ matrix.environment }}
+          path: |
+            ota/*-OTA.bin
+            ota/*-OTA.bin.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      # Keep the remaining PlatformIO outputs for recovery/debug/manual flash,
+      # but label this bundle explicitly so it cannot be confused with OTA.
+      - name: Upload manual-flash/debug bundle (NOT OTA)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-flash-debug-${{ matrix.environment }}-NOT-OTA
           path: |
             .pio/build/${{ matrix.environment }}/*.bin
             .pio/build/${{ matrix.environment }}/firmware.elf
