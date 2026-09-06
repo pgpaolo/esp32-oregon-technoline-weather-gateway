@@ -9,20 +9,25 @@ import re
 # PlatformIO/SCons and normal Python inspection.
 root = Path(env.subst("$PROJECT_DIR"))
 
-# Give the remote tunnel a little more transient headroom without changing the
-# flash partition table (important: existing devices must remain OTA-compatible
-# with the current min_spiffs layout). The pass is idempotent for same-workspace
-# rebuilds performed by CI.
+# Give the remote tunnel enough transient headroom for the generated gzip Web
+# UI without changing the flash partition table. The current dashboard is about
+# 36 KiB compressed, so a 40 KiB local response ceiling plus a 56 KiB WebSocket
+# frame ceiling covers its Base64 expansion while keeping peak heap bounded on
+# the classic ESP32. Request bodies are raised more modestly to 16 KiB.
+# The pass is idempotent for same-workspace rebuilds performed by CI.
 remote_path = root / "src" / "remote_access.cpp"
 remote_text = remote_path.read_text(encoding="utf-8")
 old_limits = "constexpr size_t MAX_REQ=12288U, MAX_RESP=24576U, MAX_WS=38000U;"
-new_limits = "constexpr size_t MAX_REQ=16384U, MAX_RESP=28672U, MAX_WS=42000U;"
+previous_limits = "constexpr size_t MAX_REQ=16384U, MAX_RESP=28672U, MAX_WS=42000U;"
+new_limits = "constexpr size_t MAX_REQ=16384U, MAX_RESP=40960U, MAX_WS=57344U;"
 if old_limits in remote_text:
     remote_text = remote_text.replace(old_limits, new_limits, 1)
+elif previous_limits in remote_text:
+    remote_text = remote_text.replace(previous_limits, new_limits, 1)
 elif new_limits not in remote_text:
     raise RuntimeError("Remote memory limits: expected limits anchor missing")
 remote_path.write_text(remote_text, encoding="utf-8")
-print("AdminSensor Remote limits: request 16 KiB, response 28 KiB, WebSocket 42 kB")
+print("AdminSensor Remote limits: request 16 KiB, response 40 KiB, WebSocket 56 KiB")
 
 impl = root / "scripts" / "apply_remote_access_ota_impl.py"
 scope = {"__file__": str(impl), "__name__": "__main__"}
