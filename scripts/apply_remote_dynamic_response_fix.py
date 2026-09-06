@@ -39,7 +39,9 @@ else:
        largestBlock-reserveLen<HTTP_CONTIGUOUS_HEADROOM ||
        freeHeap-reserveLen<HTTP_TOTAL_HEADROOM){
         c.stop();
-        err="Heap insufficiente risposta locale: need="+String(reserveLen)+
+        // Keep the historical prefix as an idempotence sentinel for the
+        // preceding generator, then append live sizes for diagnostics.
+        err="Heap contiguo insufficiente per risposta locale: need="+String(reserveLen)+
             " block="+String(largestBlock)+" free="+String(freeHeap);
         return false;
     }
