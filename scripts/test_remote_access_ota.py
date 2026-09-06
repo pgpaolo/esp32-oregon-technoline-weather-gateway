@@ -32,6 +32,7 @@ dash = text("web/dashboard.html")
 require(pio, 'FIRMWARE_VERSION=\\"6.4.0-dev3\\"', "develop firmware identity")
 require(pio, "links2004/WebSockets@2.6.1", "WebSockets dependency")
 require(pio, "bblanchon/ArduinoJson@7.4.2", "ArduinoJson dependency")
+require(pio, "pre:scripts/repair_remote_heap_pre.py", "repeat-build remote heap repair pass")
 require(pio, "pre:scripts/apply_remote_access_ota.py", "late remote integration pass")
 require(pio, "pre:scripts/apply_remote_dynamic_response_fix.py", "Oregon dynamic response heap pass")
 require(pio, "pre:scripts/apply_remote_ui_polling.py", "remote UI polling/JSON pass")
@@ -64,7 +65,9 @@ require(remote, 'firmwareRemoteAbort("Connessione AdminSensor interrotta durante
 # dynamic replies retain the 24 KiB cap and are sent as 2 KiB raw chunks. For
 # Oregon /api/state, validate what actually remains after reserving the response
 # vector instead of assuming the vector and WSS chunk must share one pre-reserve
-# contiguous region.
+# contiguous region. Keep the historical error prefix as a harmless source
+# sentinel so apply_remote_access_ota.py recognizes an already-mutated localHttp
+# during the next build in the same PlatformIO workspace.
 require(remote, "constexpr size_t MAX_REQ=16384U, MAX_RESP=24576U, MAX_WS=38000U;", "bounded tunnel limits")
 require(remote, "constexpr UBaseType_t HTTP_QUEUE_LEN=2;", "bounded HTTP queue")
 require(remote, "ADMIN_SENSOR_HTTP_CHUNK_V2", "2 KiB dynamic response chunker")
@@ -76,6 +79,7 @@ require(remote, "FLASH_CHUNK_RAW=2048U", "2 KiB flash Web UI raw chunk")
 require(remote, "webUiGzipData()", "flash Web UI data use")
 require(remote, "webUiGzipSize()", "flash Web UI size use")
 require(remote, "ADMIN_SENSOR_DYNAMIC_HEAP_V4", "Oregon post-reserve heap marker")
+require(remote, "Heap contiguo insufficiente per risposta locale", "repeat-build heap compatibility sentinel")
 require(remote, "HTTP_POST_RESERVE_CONTIGUOUS=4096U", "4 KiB measured post-reserve block")
 require(remote, "HTTP_TOTAL_HEADROOM=16384U", "16 KiB total runtime headroom")
 require(remote, "postLargestBlock=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)", "post-reserve contiguous measurement")
