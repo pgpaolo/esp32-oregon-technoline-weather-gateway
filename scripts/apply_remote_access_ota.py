@@ -1,6 +1,7 @@
 Import("env")
 
 from pathlib import Path
+import re
 
 # SCons-safe entry point for the AdminSensor Remote integration.
 # The implementation remains a normal Python module-like script and receives
@@ -26,3 +27,25 @@ print("AdminSensor Remote limits: request 16 KiB, response 28 KiB, WebSocket 42 
 impl = root / "scripts" / "apply_remote_access_ota_impl.py"
 scope = {"__file__": str(impl), "__name__": "__main__"}
 exec(compile(impl.read_text(encoding="utf-8"), str(impl), "exec"), scope, scope)
+
+# Keep the pre-existing SD dashboard pass idempotent on PlatformIO's mandatory
+# second build. The Remote implementation originally appended 'remote' to the
+# shared cfg-page loop, which changed the exact semantic anchor used by the SD
+# pass on the next build. Handle the Remote page independently instead: the
+# normal loop remains unchanged, while this toggle activates/deactivates the
+# Remote page and the existing remote loader still runs only when selected.
+dash_path = root / "web" / "dashboard.html"
+dash = dash_path.read_text(encoding="utf-8")
+dash = re.sub(
+    r"(for\(const x of \[[^\]]*),\s*'remote'(\]\))",
+    r"\1\2",
+    dash,
+    count=1,
+)
+remote_toggle = "const rp=E('cfgRemote');if(rp)rp.classList.toggle('active',t==='remote');"
+if remote_toggle not in dash:
+    anchor = "function showCfgTab(t){"
+    if anchor not in dash:
+        raise RuntimeError("Remote integration: showCfgTab anchor missing for idempotence bridge")
+    dash = dash.replace(anchor, anchor + remote_toggle, 1)
+dash_path.write_text(dash, encoding="utf-8")
