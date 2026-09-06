@@ -10,32 +10,17 @@ import re
 # PlatformIO/SCons and normal Python inspection.
 root = Path(env.subst("$PROJECT_DIR"))
 
-# Size the transient tunnel buffers from the *actual* Web UI that will be
-# embedded in this build. This avoids a fixed response ceiling becoming stale
-# as dashboard.html grows, while keeping a bounded heap budget on classic ESP32.
-#
-# The local Web UI is always served gzip-compressed. Keep 8 KiB of response
-# headroom above the deterministic gzip payload. MAX_WS remains a safety ceiling
-# for all WSS protocol messages; large normal HTTP responses are fragmented
-# below into 4 KiB application-level chunks instead of one large JSON frame.
+# The classic ESP32 has limited contiguous 8-bit heap once RF, MQTT, SD, Web,
+# TLS and the AdminSensor task are all active. The Oregon dashboard is much
+# larger than the Davis UI, so buffering the full gzip body before chunking can
+# exhaust the largest free block and abort. Keep normal dynamic responses at a
+# Davis-sized ceiling and stream the root dashboard directly from flash below.
 dashboard_path = root / "web" / "dashboard.html"
 dashboard_gz_len = len(gzip.compress(dashboard_path.read_bytes(), compresslevel=9, mtime=0))
 
-
-def round_up(value, block=4096):
-    return ((value + block - 1) // block) * block
-
-
 max_req = 16384
-max_resp = max(40960, round_up(dashboard_gz_len + 8192))
-base64_resp = ((max_resp + 2) // 3) * 4
-max_ws = max(57344, round_up(base64_resp + 4096))
-
-if max_resp > 65536 or max_ws > 98304:
-    raise RuntimeError(
-        f"Remote tunnel buffers would be unsafe: gzip={dashboard_gz_len}, "
-        f"response={max_resp}, websocket={max_ws}"
-    )
+max_resp = 24576
+max_ws = 38000
 
 remote_path = root / "src" / "remote_access.cpp"
 remote_text = remote_path.read_text(encoding="utf-8")
@@ -60,10 +45,10 @@ impl = root / "scripts" / "apply_remote_access_ota_impl.py"
 scope = {"__file__": str(impl), "__name__": "__main__"}
 exec(compile(impl.read_text(encoding="utf-8"), str(impl), "exec"), scope, scope)
 
-# Keep the Oregon-specific asynchronous HTTP worker and guarded OTA, while the
-# separate reconnect pass verifies that the WSS lifecycle stays identical to
-# the known-good Davis develop-optimized timing (30/15/60 s retry cadence,
-# reconnect 5 s, heartbeat 30/5/2, no extra application ping).
+# Keep the Oregon-specific asynchronous HTTP worker and guarded OTA. The
+# reconnect pass retains the Davis-proven retry/reconnect cadence while using
+# the Oregon-tested JSON application heartbeat instead of a disconnecting
+# protocol-level heartbeat watchdog.
 reconnect = root / "scripts" / "apply_remote_reconnect_hardening.py"
 reconnect_scope = {
     "__file__": str(reconnect),
@@ -78,12 +63,9 @@ exec(compile(reconnect.read_text(encoding="utf-8"), str(reconnect), "exec"), rec
 # ---------------------------------------------------------------------------
 # Application-level HTTP response chunking.
 #
-# The Oregon dashboard is ~35 KiB gzip and becomes ~48 KiB when Base64-wrapped
-# into one JSON WebSocket text message. Real devices showed code=1005 exactly
-# while serving that frame. Keep legacy http_response for small replies, but
-# split larger bodies into start/chunk/end messages with 4 KiB raw chunks.
-# Each chunk frame is only ~5.6 KiB, sharply reducing TLS/WSS contiguous-heap
-# pressure and avoiding dependence on a large single-message path in proxies.
+# Keep legacy http_response for small replies, but split larger dynamic bodies
+# into start/chunk/end messages. Use 2 KiB raw chunks so the transient Base64
+# String stays below ~3 KiB even when the classic ESP32 heap is fragmented.
 # AdminSensor reassembles the fragments by request id and validates sequence and
 # declared size before resolving the original HTTP request.
 # ---------------------------------------------------------------------------
@@ -122,9 +104,9 @@ def function_bounds(text, signature):
     raise RuntimeError(f"Remote HTTP chunking: unclosed function: {signature}")
 
 
-chunked_send = r'''void sendResp(const String&id,LocalResp&r){ // ADMIN_SENSOR_HTTP_CHUNK_V1
+chunked_send = r'''void sendResp(const String&id,LocalResp&r){ // ADMIN_SENSOR_HTTP_CHUNK_V2
   constexpr size_t HTTP_RESP_LEGACY_MAX=4096U;
-  constexpr size_t HTTP_RESP_CHUNK_RAW=4096U;
+  constexpr size_t HTTP_RESP_CHUNK_RAW=2048U;
 
   JsonDocument hd;
   hd["content-type"]=r.type;
@@ -202,8 +184,8 @@ chunked_send = r'''void sendResp(const String&id,LocalResp&r){ // ADMIN_SENSOR_H
     vTaskDelay(pdMS_TO_TICKS(1));
   }
 
-  // The local gzip/vector is no longer needed once every fragment has been
-  // written to TLS. Release it before the final control frame.
+  // The dynamic response vector is no longer needed once every fragment has
+  // been written to TLS. Release it before the final control frame.
   std::vector<uint8_t>().swap(r.body);
 
   String end;
@@ -218,16 +200,216 @@ chunked_send = r'''void sendResp(const String&id,LocalResp&r){ // ADMIN_SENSOR_H
   if(take()){st.responses++;st.lastActivityMs=millis();st.lastError="";give();}
 }'''
 
-if "ADMIN_SENSOR_HTTP_CHUNK_V1" not in remote_text:
+if "ADMIN_SENSOR_HTTP_CHUNK_V2" not in remote_text:
     sig = "void sendResp(const String&id,const LocalResp&r)"
     if sig not in remote_text:
         sig = "void sendResp(const String&id,LocalResp&r)"
     start, end = function_bounds(remote_text, sig)
     remote_text = remote_text[:start] + chunked_send + remote_text[end:]
     remote_path.write_text(remote_text, encoding="utf-8")
-    print("AdminSensor Remote HTTP: large responses split into 4 KiB WSS chunks")
+    print("AdminSensor Remote HTTP: dynamic responses split into 2 KiB WSS chunks")
 else:
-    print("AdminSensor Remote HTTP: chunked response protocol already present")
+    print("AdminSensor Remote HTTP: 2 KiB chunked response protocol already present")
+
+# ---------------------------------------------------------------------------
+# Zero-copy root Web UI streaming for classic ESP32.
+#
+# The local WebServer already serves WEB_UI_GZ directly from PROGMEM. Doing a
+# loopback GET and then reserving another ~36 KiB std::vector defeats that
+# advantage and, on a feature-rich Oregon build, can exhaust the largest
+# contiguous heap block. Root GET therefore bypasses loopback HTTP and streams
+# the same embedded gzip image straight to AdminSensor in 2 KiB chunks.
+# ---------------------------------------------------------------------------
+remote_text = remote_path.read_text(encoding="utf-8")
+
+remote_text = remote_text.replace(
+    "constexpr UBaseType_t HTTP_QUEUE_LEN=4;",
+    "constexpr UBaseType_t HTTP_QUEUE_LEN=2;",
+)
+if "constexpr UBaseType_t HTTP_QUEUE_LEN=2;" not in remote_text:
+    raise RuntimeError("Remote flash UI: queue-length anchor missing")
+
+if "heap_caps_get_largest_free_block" not in remote_text:
+    inc = "#include <esp_random.h>\n"
+    if inc not in remote_text:
+        raise RuntimeError("Remote flash UI: esp_random include anchor missing")
+    remote_text = remote_text.replace(inc, inc + "#include <esp_heap_caps.h>\n", 1)
+
+reserve_old = "r.body.clear();r.body.reserve(haveLen?len:2048U);start=millis();"
+reserve_new = "r.body.clear();\n    const size_t reserveLen=haveLen?len:2048U;\n    const size_t largestBlock=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);\n    if(reserveLen>largestBlock||largestBlock-reserveLen<8192U){\n        c.stop();err=\"Heap contiguo insufficiente per risposta locale\";return false;\n    }\n    r.body.reserve(reserveLen);start=millis();"
+if reserve_old in remote_text:
+    remote_text = remote_text.replace(reserve_old, reserve_new, 1)
+elif "Heap contiguo insufficiente per risposta locale" not in remote_text:
+    raise RuntimeError("Remote flash UI: local response reserve anchor missing")
+
+reply_old = "struct RemoteReply { uint32_t session=0; String id; LocalResp response; };"
+reply_new = "struct RemoteReply { uint32_t session=0; String id; LocalResp response; bool webUi=false; };"
+if reply_old in remote_text:
+    remote_text = remote_text.replace(reply_old, reply_new, 1)
+elif reply_new not in remote_text:
+    raise RuntimeError("Remote flash UI: RemoteReply anchor missing")
+
+webh_path = root / "src" / "web_manager.h"
+webh_text = webh_path.read_text(encoding="utf-8")
+if "webUiGzipData" not in webh_text:
+    h_anchor = "bool webStarted();\n"
+    if h_anchor not in webh_text:
+        raise RuntimeError("Remote flash UI: webStarted declaration missing")
+    webh_text = webh_text.replace(
+        h_anchor,
+        h_anchor + "const uint8_t *webUiGzipData();\nsize_t webUiGzipSize();\n",
+        1,
+    )
+    webh_path.write_text(webh_text, encoding="utf-8")
+
+webcpp_path = root / "src" / "web_manager.cpp"
+webcpp_text = webcpp_path.read_text(encoding="utf-8")
+if "webUiGzipData()" not in webcpp_text:
+    c_anchor = "bool webStarted() { return webStartedFlag; }\n"
+    if c_anchor not in webcpp_text:
+        raise RuntimeError("Remote flash UI: webStarted implementation missing")
+    accessors = "const uint8_t *webUiGzipData() { return WEB_UI_GZ; }\nsize_t webUiGzipSize() { return WEB_UI_GZ_LEN; }\n"
+    webcpp_text = webcpp_text.replace(c_anchor, c_anchor + accessors, 1)
+    webcpp_path.write_text(webcpp_text, encoding="utf-8")
+
+flash_send = r'''void sendEmbeddedWebUi(const String&id){ // ADMIN_SENSOR_FLASH_UI_V2
+  constexpr size_t FLASH_CHUNK_RAW=2048U;
+  const uint8_t *data=webUiGzipData();
+  const size_t bodySize=webUiGzipSize();
+  if(!data||bodySize==0U){
+    LocalResp e;e.code=503;const char*m="Web UI non disponibile";e.body.assign(m,m+strlen(m));
+    sendResp(id,e);return;
+  }
+  const String escapedId=esc(id);
+  String start;
+  start.reserve(escapedId.length()+240U);
+  start+=F("{\"type\":\"http_response_start\",\"id\":\"");start+=escapedId;
+  start+=F("\",\"status\":200,\"headers\":{\"content-type\":\"text/html; charset=utf-8\",\"content-encoding\":\"gzip\",\"cache-control\":\"no-store\"},\"total_bytes\":");
+  start+=String(bodySize);start+='}';
+  if(start.length()>MAX_WS||!ws.sendTXT(start)){
+    if(take()){st.lastError="Invio inizio Web UI flash fallito";give();}
+    return;
+  }
+  uint32_t seq=0;
+  for(size_t off=0;off<bodySize;off+=FLASH_CHUNK_RAW){
+    const size_t left=bodySize-off;
+    const size_t n=left>FLASH_CHUNK_RAW?FLASH_CHUNK_RAW:left;
+    String frame;
+    const size_t encodedLen=b64EncodedLength(n);
+    if(!frame.reserve(escapedId.length()+128U+encodedLen)){
+      if(take()){st.lastError="Heap insufficiente per chunk Web UI";give();}
+      return;
+    }
+    frame+=F("{\"type\":\"http_response_chunk\",\"id\":\"");frame+=escapedId;
+    frame+=F("\",\"seq\":");frame+=String(seq);frame+=F(",\"body_b64\":\"");
+    const size_t bodyStart=frame.length();
+    const size_t finalLen=bodyStart+encodedLen+2U;
+    if(finalLen>MAX_WS||!frame.reserve(finalLen+1U)||
+       !appendB64(frame,data+off,n)||frame.length()!=bodyStart+encodedLen){
+      if(take()){st.lastError="Preparazione chunk Web UI flash fallita";give();}
+      return;
+    }
+    frame+=F("\"}");
+    if(frame.length()!=finalLen||!ws.sendTXT(frame)){
+      if(take()){st.lastError="Invio chunk Web UI flash fallito";give();}
+      return;
+    }
+    seq++;
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  String end;
+  end.reserve(escapedId.length()+128U);
+  end+=F("{\"type\":\"http_response_end\",\"id\":\"");end+=escapedId;
+  end+=F("\",\"chunks\":");end+=String(seq);end+=F(",\"total_bytes\":");
+  end+=String(bodySize);end+='}';
+  if(end.length()>MAX_WS||!ws.sendTXT(end)){
+    if(take()){st.lastError="Invio fine Web UI flash fallito";give();}
+    return;
+  }
+  if(take()){st.responses++;st.lastActivityMs=millis();st.lastError="";give();}
+}'''
+
+if "ADMIN_SENSOR_FLASH_UI_V2" not in remote_text:
+    senderr_pos = remote_text.find("void sendErr(")
+    if senderr_pos < 0:
+        raise RuntimeError("Remote flash UI: sendErr anchor missing")
+    remote_text = remote_text[:senderr_pos] + flash_send + "\n" + remote_text[senderr_pos:]
+
+worker_v2 = r'''void httpWorker(void*){ // ADMIN_SENSOR_FLASH_UI_WORKER_V2
+  for(;;){
+    RemoteReq*q=nullptr;
+    if(!requestQueue||xQueueReceive(requestQueue,&q,portMAX_DELAY)!=pdTRUE||!q)continue;
+    workerBusy=true;
+    RemoteReply*out=new(std::nothrow)RemoteReply();
+    if(out){
+      out->session=q->session;out->id=q->id;
+      const bool rootUi=q->method.equalsIgnoreCase("GET")&&(q->path=="/"||q->path.startsWith("/?"));
+      if(rootUi){
+        out->webUi=true;
+        out->response.code=200;
+        out->response.type="text/html; charset=utf-8";
+        out->response.encoding="gzip";
+        out->response.cache="no-store";
+      }else{
+        String e;
+        if(!localHttp(q->method,q->path,q->contentType,q->accept,q->body,out->response,e)){
+          out->response.code=502;out->response.type="text/plain; charset=utf-8";out->response.encoding="";
+          out->response.body.assign(e.c_str(),e.c_str()+e.length());
+        }
+      }
+      if(!responseQueue||xQueueSend(responseQueue,&out,pdMS_TO_TICKS(250))!=pdTRUE){
+        delete out;if(take()){queueDrops++;give();}
+      }
+    }else if(take()){queueDrops++;give();}
+    delete q;workerBusy=false;
+  }
+}'''
+if "ADMIN_SENSOR_FLASH_UI_WORKER_V2" not in remote_text:
+    w_start,w_end=function_bounds(remote_text,"void httpWorker(void*)")
+    remote_text=remote_text[:w_start]+worker_v2+remote_text[w_end:]
+
+drain_v2 = r'''void drainReplies(){ // ADMIN_SENSOR_FLASH_UI_DRAIN_V2
+  if(!responseQueue)return;
+  for(uint8_t i=0;i<2;i++){
+    RemoteReply*r=nullptr;if(xQueueReceive(responseQueue,&r,0)!=pdTRUE||!r)break;
+    uint32_t current=0;bool online=false;if(take()){current=wsSession;online=st.transportActive;give();}
+    if(online&&r->session==current){
+      if(r->webUi)sendEmbeddedWebUi(r->id);
+      else sendResp(r->id,r->response);
+    }
+    delete r;
+  }
+}'''
+if "ADMIN_SENSOR_FLASH_UI_DRAIN_V2" not in remote_text:
+    d_start,d_end=function_bounds(remote_text,"void drainReplies()")
+    remote_text=remote_text[:d_start]+drain_v2+remote_text[d_end:]
+
+limits_re = re.compile(r"constexpr size_t MAX_REQ=\d+U, MAX_RESP=\d+U, MAX_WS=\d+U;")
+remote_text,n_limits=limits_re.subn(
+    "constexpr size_t MAX_REQ=16384U, MAX_RESP=24576U, MAX_WS=38000U;",
+    remote_text,
+    count=1,
+)
+if n_limits!=1:
+    raise RuntimeError("Remote flash UI: final limit anchor missing")
+
+required_flash = (
+    "ADMIN_SENSOR_HTTP_CHUNK_V2",
+    "ADMIN_SENSOR_FLASH_UI_V2",
+    "ADMIN_SENSOR_FLASH_UI_WORKER_V2",
+    "ADMIN_SENSOR_FLASH_UI_DRAIN_V2",
+    "heap_caps_get_largest_free_block",
+    "constexpr UBaseType_t HTTP_QUEUE_LEN=2;",
+)
+for marker in required_flash:
+    if marker not in remote_text:
+        raise RuntimeError(f"Remote flash UI result missing: {marker}")
+
+remote_path.write_text(remote_text, encoding="utf-8")
+print(
+    "AdminSensor Remote Web UI: zero-copy flash stream in 2 KiB chunks; "
+    "dynamic response cap 24 KiB; HTTP queue 2"
+)
 
 # ---------------------------------------------------------------------------
 # Remote OTA image-type guard.
