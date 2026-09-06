@@ -33,6 +33,8 @@ require(pio, 'FIRMWARE_VERSION=\\"6.4.0-dev3\\"', "develop firmware identity")
 require(pio, "links2004/WebSockets@2.6.1", "WebSockets dependency")
 require(pio, "bblanchon/ArduinoJson@7.4.2", "ArduinoJson dependency")
 require(pio, "pre:scripts/apply_remote_access_ota.py", "late remote integration pass")
+require(pio, "pre:scripts/apply_remote_dynamic_response_fix.py", "Oregon dynamic response heap pass")
+require(pio, "pre:scripts/apply_remote_ui_polling.py", "remote UI polling/JSON pass")
 
 require(main, '#include "remote_access.h"', "remote main include")
 require(main, "initRemoteAccess();", "remote initialization")
@@ -61,7 +63,9 @@ require(remote, 'firmwareRemoteAbort("Connessione AdminSensor interrotta durante
 # Classic ESP32 heap safety. The root dashboard must never be copied into a
 # dynamic ~36 KiB response vector: it is streamed directly from the embedded
 # deterministic gzip image in 2 KiB chunks. Normal dynamic replies retain the
-# Davis-sized 24 KiB cap and a largest-contiguous-block preflight check.
+# 24 KiB cap, but Oregon /api/state uses a two-dimensional preflight: enough
+# contiguous space for the response + one 2 KiB Base64/WSS chunk, and a larger
+# total-heap floor for TLS/RF/MQTT/SD runtime state.
 require(remote, "constexpr size_t MAX_REQ=16384U, MAX_RESP=24576U, MAX_WS=38000U;", "bounded tunnel limits")
 require(remote, "constexpr UBaseType_t HTTP_QUEUE_LEN=2;", "bounded HTTP queue")
 require(remote, "ADMIN_SENSOR_HTTP_CHUNK_V2", "2 KiB dynamic response chunker")
@@ -72,11 +76,16 @@ require(remote, "ADMIN_SENSOR_FLASH_UI_DRAIN_V2", "zero-copy Web UI reply drain"
 require(remote, "FLASH_CHUNK_RAW=2048U", "2 KiB flash Web UI raw chunk")
 require(remote, "webUiGzipData()", "flash Web UI data use")
 require(remote, "webUiGzipSize()", "flash Web UI size use")
+require(remote, "ADMIN_SENSOR_DYNAMIC_HEAP_V3", "Oregon dynamic response heap marker")
+require(remote, "HTTP_CONTIGUOUS_HEADROOM=4096U", "4 KiB contiguous runtime headroom")
+require(remote, "HTTP_TOTAL_HEADROOM=16384U", "16 KiB total runtime headroom")
 require(remote, "heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)", "contiguous heap guard")
-require(remote, "Heap contiguo insufficiente per risposta locale", "heap-safe failure path")
+require(remote, "ESP.getFreeHeap()", "total heap guard")
+require(remote, "Heap insufficiente risposta locale: need=", "diagnostic heap failure path")
 require(remote, 'q->path=="/"||q->path.startsWith("/?")', "root Web UI flash bypass")
 forbid(remote, "MAX_RESP=45056U", "old dashboard-sized dynamic response buffer")
 forbid(remote, "HTTP_RESP_CHUNK_RAW=4096U", "old 4 KiB transient response chunks")
+forbid(remote, "largestBlock-reserveLen<8192U", "over-conservative old contiguous headroom")
 
 require(ota, "SHA-256 firmware non corrispondente", "remote SHA-256 verification")
 require(ota, "sequence!=expectedSequence", "strict remote sequence")
@@ -86,7 +95,13 @@ require(dash, 'id="tabRemote"', "Remote config tab")
 require(dash, 'id="cfgRemote"', "Remote config page")
 require(dash, "AdminSensor Remote", "Remote UI label")
 require(dash, "loadRemoteAccess()", "Remote UI state loader")
+require(dash, "ADMIN_SENSOR_REMOTE_POLL_V2", "remote-aware polling")
+require(dash, "ADMIN_SENSOR_FETCH_JSON_V3", "checked JSON transport")
+require(dash, "fetchJsonChecked('/api/state')", "checked state fetch")
+require(dash, "fetchJsonChecked('/api/mqtt')", "checked MQTT fetch")
+require(dash, "fetchJsonChecked('/api/as3935/state')", "checked lightning fetch")
 forbid(dash, "device_token", "device token exposure in dashboard")
+forbid(dash, "const s=await (await fetch('/api/state'", "unchecked state JSON parsing")
 
 # The dashboard is intentionally larger than the normal dynamic response cap.
 # That is now safe because root GET is served from flash without an intermediate
@@ -97,5 +112,6 @@ if dash_gz_len <= 24576:
 
 print(
     "AdminSensor Remote + guarded WSS OTA integration: OK "
-    f"(dashboard gzip {dash_gz_len} B streamed from flash, dynamic response 24 KiB, chunks 2 KiB)"
+    f"(dashboard gzip {dash_gz_len} B streamed from flash, dynamic response 24 KiB, "
+    "chunks 2 KiB, Oregon heap guard 4 KiB contiguous / 16 KiB total)"
 )
