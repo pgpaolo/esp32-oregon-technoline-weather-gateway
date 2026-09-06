@@ -60,3 +60,12 @@ print(
 impl = root / "scripts" / "apply_remote_access_ota_impl.py"
 scope = {"__file__": str(impl), "__name__": "__main__"}
 exec(compile(impl.read_text(encoding="utf-8"), str(impl), "exec"), scope, scope)
+
+# Keep the Oregon-specific asynchronous HTTP worker and guarded OTA, but apply
+# the WSS lifecycle proven on esp32-davis-weather-gateway/develop-optimized:
+# shorter reconnect/enroll cadence, Wi-Fi sleep disabled while tunnelling,
+# transport heartbeat plus application-level presence ping, and intentional
+# disconnect tracking so planned reconnects do not look like failures.
+reconnect = root / "scripts" / "apply_remote_reconnect_hardening.py"
+reconnect_scope = {"__file__": str(reconnect), "__name__": "__main__", "env": env}
+exec(compile(reconnect.read_text(encoding="utf-8"), str(reconnect), "exec"), reconnect_scope, reconnect_scope)
