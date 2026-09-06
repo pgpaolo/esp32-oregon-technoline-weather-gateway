@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Integration guard for AdminSensor Remote and local/remote OTA arbitration."""
 from pathlib import Path
+import gzip
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -17,6 +18,11 @@ def require(haystack, needle, label):
 def forbid(haystack, needle, label):
     if needle in haystack:
         raise SystemExit(f"REMOTE GUARD FAILED: forbidden {label}: {needle}")
+
+
+def round_up(value, block=4096):
+    return ((value + block - 1) // block) * block
+
 
 pio = text("platformio.ini")
 main = text("src/main.cpp")
@@ -60,4 +66,22 @@ require(dash, "AdminSensor Remote", "Remote UI label")
 require(dash, "loadRemoteAccess()", "Remote UI state loader")
 forbid(dash, "device_token", "device token exposure in dashboard")
 
-print("AdminSensor Remote + guarded WSS OTA integration: OK")
+# The root dashboard is the largest normal tunnel response. Guard the exact
+# build-time sizing policy so future Web UI growth cannot silently reintroduce
+# "Risposta locale troppo grande".
+dash_gz_len = len(gzip.compress((ROOT / "web" / "dashboard.html").read_bytes(), compresslevel=9, mtime=0))
+expected_resp = max(40960, round_up(dash_gz_len + 8192))
+expected_ws = max(57344, round_up((((expected_resp + 2) // 3) * 4) + 4096))
+expected_limits = (
+    f"constexpr size_t MAX_REQ=16384U, MAX_RESP={expected_resp}U, MAX_WS={expected_ws}U;"
+)
+require(remote, expected_limits, "dashboard-sized tunnel limits")
+if expected_resp <= dash_gz_len:
+    raise SystemExit("REMOTE GUARD FAILED: no response headroom above gzip dashboard")
+if expected_resp > 65536 or expected_ws > 98304:
+    raise SystemExit("REMOTE GUARD FAILED: tunnel buffer budget exceeds classic ESP32 safety cap")
+
+print(
+    "AdminSensor Remote + guarded WSS OTA integration: OK "
+    f"(dashboard gzip {dash_gz_len} B, response {expected_resp} B, websocket {expected_ws} B)"
+)
