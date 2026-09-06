@@ -20,10 +20,6 @@ def forbid(haystack, needle, label):
         raise SystemExit(f"REMOTE GUARD FAILED: forbidden {label}: {needle}")
 
 
-def round_up(value, block=4096):
-    return ((value + block - 1) // block) * block
-
-
 pio = text("platformio.ini")
 main = text("src/main.cpp")
 web = text("src/web_manager.cpp")
@@ -42,13 +38,18 @@ require(main, '#include "remote_access.h"', "remote main include")
 require(main, "initRemoteAccess();", "remote initialization")
 require(main, "serviceRemoteFirmwareUpdate();", "remote OTA reboot service")
 require(webh, "bool webStarted();", "Web readiness API")
+require(webh, "const uint8_t *webUiGzipData();", "flash Web UI data accessor")
+require(webh, "size_t webUiGzipSize();", "flash Web UI size accessor")
 require(web, "bool webStarted() { return webStartedFlag; }", "Web readiness implementation")
+require(web, "webUiGzipData() { return WEB_UI_GZ; }", "flash Web UI data implementation")
+require(web, "webUiGzipSize() { return WEB_UI_GZ_LEN; }", "flash Web UI size implementation")
 require(web, 'server.on("/api/remote/config"', "remote config route")
 require(web, 'server.on("/api/remote/status"', "remote status route")
 require(web, 'server.on("/api/firmware/remote-status"', "remote firmware status route")
 require(web, "firmwareLocalBeginGuard", "local OTA arbitration begin")
 require(web, "firmwareLocalReleaseGuard", "local OTA arbitration release")
 require(security, "webSecurityInternalAuthorizationHeader", "internal loopback auth")
+
 require(remote, 'ws.setExtraHeaders(wsAuth.c_str())', "Bearer WSS authentication")
 require(remote, 'c.setCACert(REMOTE_TRUST_CA)', "TLS CA validation")
 require(remote, 'q["firmware_version"]=FIRMWARE_VERSION', "enrollment firmware version")
@@ -56,9 +57,30 @@ require(remote, 'type=="firmware_begin"', "remote OTA begin protocol")
 require(remote, 'type=="firmware_chunk"', "remote OTA chunk protocol")
 require(remote, 'type=="firmware_end"', "remote OTA end protocol")
 require(remote, 'firmwareRemoteAbort("Connessione AdminSensor interrotta durante OTA")', "disconnect abort")
+
+# Classic ESP32 heap safety. The root dashboard must never be copied into a
+# dynamic ~36 KiB response vector: it is streamed directly from the embedded
+# deterministic gzip image in 2 KiB chunks. Normal dynamic replies retain the
+# Davis-sized 24 KiB cap and a largest-contiguous-block preflight check.
+require(remote, "constexpr size_t MAX_REQ=16384U, MAX_RESP=24576U, MAX_WS=38000U;", "bounded tunnel limits")
+require(remote, "constexpr UBaseType_t HTTP_QUEUE_LEN=2;", "bounded HTTP queue")
+require(remote, "ADMIN_SENSOR_HTTP_CHUNK_V2", "2 KiB dynamic response chunker")
+require(remote, "HTTP_RESP_CHUNK_RAW=2048U", "2 KiB dynamic raw chunk")
+require(remote, "ADMIN_SENSOR_FLASH_UI_V2", "zero-copy flash Web UI sender")
+require(remote, "ADMIN_SENSOR_FLASH_UI_WORKER_V2", "zero-copy Web UI worker path")
+require(remote, "ADMIN_SENSOR_FLASH_UI_DRAIN_V2", "zero-copy Web UI reply drain")
+require(remote, "FLASH_CHUNK_RAW=2048U", "2 KiB flash Web UI raw chunk")
+require(remote, "webUiGzipData()", "flash Web UI data use")
+require(remote, "webUiGzipSize()", "flash Web UI size use")
+require(remote, "heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)", "contiguous heap guard")
+require(remote, "Heap contiguo insufficiente per risposta locale", "heap-safe failure path")
+require(remote, 'q->path=="/"||q->path.startsWith("/?")', "root Web UI flash bypass")
+forbid(remote, "MAX_RESP=45056U", "old dashboard-sized dynamic response buffer")
+forbid(remote, "HTTP_RESP_CHUNK_RAW=4096U", "old 4 KiB transient response chunks")
+
 require(ota, "SHA-256 firmware non corrispondente", "remote SHA-256 verification")
 require(ota, "sequence!=expectedSequence", "strict remote sequence")
-require(ota, "data[0]!=0xE9U", "ESP32 image magic validation")
+require(ota, "looksLikeOtaApplication", "ESP32 application image validation")
 require(ota, "prepareSdLoggerForDeepSleep();", "SD shutdown before remote OTA")
 require(dash, 'id="tabRemote"', "Remote config tab")
 require(dash, 'id="cfgRemote"', "Remote config page")
@@ -66,22 +88,14 @@ require(dash, "AdminSensor Remote", "Remote UI label")
 require(dash, "loadRemoteAccess()", "Remote UI state loader")
 forbid(dash, "device_token", "device token exposure in dashboard")
 
-# The root dashboard is the largest normal tunnel response. Guard the exact
-# build-time sizing policy so future Web UI growth cannot silently reintroduce
-# "Risposta locale troppo grande".
+# The dashboard is intentionally larger than the normal dynamic response cap.
+# That is now safe because root GET is served from flash without an intermediate
+# heap allocation; this assertion prevents a future regression to full buffering.
 dash_gz_len = len(gzip.compress((ROOT / "web" / "dashboard.html").read_bytes(), compresslevel=9, mtime=0))
-expected_resp = max(40960, round_up(dash_gz_len + 8192))
-expected_ws = max(57344, round_up((((expected_resp + 2) // 3) * 4) + 4096))
-expected_limits = (
-    f"constexpr size_t MAX_REQ=16384U, MAX_RESP={expected_resp}U, MAX_WS={expected_ws}U;"
-)
-require(remote, expected_limits, "dashboard-sized tunnel limits")
-if expected_resp <= dash_gz_len:
-    raise SystemExit("REMOTE GUARD FAILED: no response headroom above gzip dashboard")
-if expected_resp > 65536 or expected_ws > 98304:
-    raise SystemExit("REMOTE GUARD FAILED: tunnel buffer budget exceeds classic ESP32 safety cap")
+if dash_gz_len <= 24576:
+    raise SystemExit("REMOTE GUARD FAILED: test no longer exercises flash-streaming path")
 
 print(
     "AdminSensor Remote + guarded WSS OTA integration: OK "
-    f"(dashboard gzip {dash_gz_len} B, response {expected_resp} B, websocket {expected_ws} B)"
+    f"(dashboard gzip {dash_gz_len} B streamed from flash, dynamic response 24 KiB, chunks 2 KiB)"
 )
