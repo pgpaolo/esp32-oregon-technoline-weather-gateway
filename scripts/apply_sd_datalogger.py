@@ -1,7 +1,24 @@
 Import("env")
 from pathlib import Path
+import re
 
 root = Path(env.subst("$PROJECT_DIR"))
+
+
+def _insert_after_call(text, call_name, insertion, label):
+    """Insert after a C++ call even if neighbouring lines changed.
+
+    Source archives may already contain the result of older PlatformIO
+    pre-script runs, so matching a two-line block is too fragile.  Keep the
+    semantic call as the anchor and preserve its indentation.
+    """
+    pattern = re.compile(rf"(?m)^([ \t]*{re.escape(call_name)}\s*\([^;\n]*\);[ \t]*\n)")
+    match = pattern.search(text)
+    if not match:
+        return None
+    indent = re.match(r"[ \t]*", match.group(1)).group(0)
+    addition = indent + insertion + "\n"
+    return text[:match.end()] + addition + text[match.end():]
 
 
 def patch_once(path, old, new, label):
@@ -9,25 +26,24 @@ def patch_once(path, old, new, label):
     text = p.read_text(encoding="utf-8")
 
     # Every PlatformIO pre-script mutates the working tree in place. A second
-    # build in the same workspace must therefore recognize the semantic result
-    # of this patch even when later pre-scripts have inserted code between the
-    # original anchor and the SD lines. Exact `new in text` remains useful for
-    # fresh/near-fresh trees; semantic markers make the pass fully idempotent.
+    # build in the same workspace, and even a source archive taken from such a
+    # workspace, must recognize the semantic result of this patch.  Do not
+    # depend on the exact arguments/whitespace of calls changed by later passes.
     semantic_done = {
         # main.cpp
         "main include": '#include "sd_logger.h"' in text,
-        "SD init after RF": "initSdLogger();" in text,
-        "Oregon enqueue": "enqueueSdOregon(reading, packet);" in text,
-        "Technoline enqueue": "enqueueSdTechnoline(lcReading, lcPacket);" in text,
-        "deferred SD service": "serviceSdLogger(station);" in text,
+        "SD init after RF": "initSdLogger(" in text,
+        "Oregon enqueue": "enqueueSdOregon(" in text,
+        "Technoline enqueue": "enqueueSdTechnoline(" in text,
+        "deferred SD service": "serviceSdLogger(" in text,
 
         # power_manager.cpp
         "power include": '#include "sd_logger.h"' in text,
-        "SD shutdown": "prepareSdLoggerForDeepSleep();" in text,
+        "SD shutdown": "prepareSdLoggerForDeepSleep(" in text,
 
         # web_manager.cpp
         "web include": '#include "sd_logger.h"' in text,
-        "state SD object": 'out += ",\\\"sd\\\":" + sdLoggerStatusJson();' in text,
+        "state SD object": "sdLoggerStatusJson()" in text and '\\"sd\\"' in text,
         "SD handlers": (
             "void handleSdConfigGet()" in text
             and "void handleSdConfigPost()" in text
@@ -35,20 +51,16 @@ def patch_once(path, old, new, label):
             and "void handleSdRemount()" in text
         ),
         "SD routes": (
-            'server.on("/api/sd", HTTP_GET, handleSdConfigGet);' in text
-            and 'server.on("/api/sd", HTTP_POST, handleSdConfigPost);' in text
-            and 'server.on("/api/sd/reset", HTTP_POST, handleSdConfigReset);' in text
-            and 'server.on("/api/sd/remount", HTTP_POST, handleSdRemount);' in text
+            'server.on("/api/sd"' in text
+            and 'server.on("/api/sd/reset"' in text
+            and 'server.on("/api/sd/remount"' in text
         ),
 
         # dashboard.html. Later UI passes can add tabs/pages after these, so
         # recognize the stable IDs/functions instead of neighbour HTML.
         "SD tab": 'id="tabSd"' in text,
         "SD page": 'id="cfgSd"' in text,
-        "SD cfg loop": (
-            "for(const x of ['net','thermo','mqtt','display','sd','lightning','backup'])" in text
-            or "for(const x of ['net','thermo','mqtt','display','sd','lightning','backup','remote'])" in text
-        ),
+        "SD cfg loop": "'sd'" in text and "for(const x of [" in text,
         "SD tab loader": "t==='sd')loadSd()" in text,
         "SD javascript": "async function loadSd()" in text and "async function saveSd()" in text,
     }
@@ -58,10 +70,34 @@ def patch_once(path, old, new, label):
 
     if new in text:
         return
-    if old not in text:
-        raise RuntimeError(f"SD datalogger patch anchor missing: {label} in {path}")
-    p.write_text(text.replace(old, new, 1), encoding="utf-8")
-    print(f"SD datalogger: patched {path} ({label})")
+
+    if old in text:
+        p.write_text(text.replace(old, new, 1), encoding="utf-8")
+        print(f"SD datalogger: patched {path} ({label})")
+        return
+
+    # Robust fallback for source archives/workspaces already transformed by
+    # other pre-scripts.  The publish/record calls are much more stable than
+    # their neighbouring LED lines, so insert the SD enqueue after the call.
+    if label == "Oregon enqueue":
+        patched = _insert_after_call(text, "publishWeatherReading", "enqueueSdOregon(reading, packet);", label)
+        if patched is None:
+            patched = _insert_after_call(text, "recordWebPacket", "enqueueSdOregon(reading, packet);", label)
+        if patched is not None:
+            p.write_text(patched, encoding="utf-8")
+            print(f"SD datalogger: patched {path} ({label}, semantic fallback)")
+            return
+
+    if label == "Technoline enqueue":
+        patched = _insert_after_call(text, "publishLaCrosseReading", "enqueueSdTechnoline(lcReading, lcPacket);", label)
+        if patched is None:
+            patched = _insert_after_call(text, "recordWebLaCrossePacket", "enqueueSdTechnoline(lcReading, lcPacket);", label)
+        if patched is not None:
+            p.write_text(patched, encoding="utf-8")
+            print(f"SD datalogger: patched {path} ({label}, semantic fallback)")
+            return
+
+    raise RuntimeError(f"SD datalogger patch anchor missing: {label} in {path}")
 
 
 # ---- main.cpp: init, enqueue only, deferred SD service ----
