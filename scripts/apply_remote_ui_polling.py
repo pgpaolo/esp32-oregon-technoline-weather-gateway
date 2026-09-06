@@ -7,8 +7,8 @@ root = Path(env.subst("$PROJECT_DIR"))
 path = root / "web" / "dashboard.html"
 text = path.read_text(encoding="utf-8")
 
-marker = "ADMIN_SENSOR_REMOTE_POLL_V2"
-if marker in text:
+poll_marker = "ADMIN_SENSOR_REMOTE_POLL_V2"
+if poll_marker in text:
     print("Remote UI polling: already optimized")
 else:
     # Work only on the startup/timer tail that follows the existing display
@@ -72,8 +72,75 @@ setTimeout(safeMqtt,remoteUi?2500:0);
 """
 
     text = head + helper + startup + timers
-    path.write_text(text, encoding="utf-8")
     print(
         "Remote UI polling: AdminSensor mode 5s state / 10s lightning / "
         "30s MQTT, no overlap"
     )
+
+# ---------------------------------------------------------------------------
+# Robust JSON transport handling.
+#
+# A reverse proxy must preserve an ESP HTTP error as an HTTP error. The old UI
+# immediately called Response.json(), so a legitimate 502 text/plain body such
+# as "Heap insufficiente ..." surfaced as the misleading browser error
+# "Unexpected token H". Check status/content type first and preserve a compact
+# device error in the visible Web status pill.
+# ---------------------------------------------------------------------------
+json_marker = "ADMIN_SENSOR_FETCH_JSON_V3"
+if json_marker in text:
+    print("Remote UI JSON transport: already hardened")
+else:
+    fetch_helper = r'''
+async function fetchJsonChecked(url,options){ // ADMIN_SENSOR_FETCH_JSON_V3
+ const opt=Object.assign({cache:'no-store'},options||{});
+ const r=await fetch(url,opt);
+ const body=await r.text();
+ const compact=(body||'').replace(/\s+/g,' ').trim();
+ if(!r.ok)throw new Error('HTTP '+r.status+(compact?' · '+compact.slice(0,140):''));
+ const ct=(r.headers.get('content-type')||'').toLowerCase();
+ if(ct&&ct.indexOf('json')<0)throw new Error('HTTP '+r.status+' · risposta non JSON'+(compact?' · '+compact.slice(0,100):''));
+ try{return JSON.parse(body)}catch(e){throw new Error('JSON non valido'+(compact?' · '+compact.slice(0,100):''))}
+}
+'''
+    anchor = "async function refresh(){"
+    pos = text.find(anchor)
+    if pos < 0:
+        raise RuntimeError("Remote UI JSON transport: refresh anchor missing")
+    text = text[:pos] + fetch_helper + text[pos:]
+
+    replacements = (
+        (
+            "const s=await (await fetch('/api/state',{cache:'no-store'})).json()",
+            "const s=await fetchJsonChecked('/api/state')",
+            "state",
+        ),
+        (
+            "const l=await (await fetch('/api/as3935/state',{cache:'no-store'})).json()",
+            "const l=await fetchJsonChecked('/api/as3935/state')",
+            "lightning state",
+        ),
+        (
+            "const m=await (await fetch('/api/mqtt',{cache:'no-store'})).json()",
+            "const m=await fetchJsonChecked('/api/mqtt')",
+            "MQTT",
+        ),
+        (
+            "const rr=await (await fetch('/api/raw',{cache:'no-store'})).json()",
+            "const rr=await fetchJsonChecked('/api/raw')",
+            "raw diagnostics",
+        ),
+        (
+            "const bb=await (await fetch('/api/bursts',{cache:'no-store'})).json()",
+            "const bb=await fetchJsonChecked('/api/bursts')",
+            "burst diagnostics",
+        ),
+    )
+
+    for old, new, label in replacements:
+        if old in text:
+            text = text.replace(old, new)
+            print(f"Remote UI JSON transport: hardened {label}")
+        elif new not in text:
+            raise RuntimeError(f"Remote UI JSON transport: {label} fetch anchor missing")
+
+path.write_text(text, encoding="utf-8")
