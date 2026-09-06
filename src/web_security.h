@@ -20,6 +20,11 @@ bool saveWebSecurityConfig(bool enabled, const String &username,
                            bool &changed, String &error);
 String webSecurityConfigJson();
 
+// Internal-only Authorization value used by the outbound AdminSensor worker
+// when it loops back into the protected local WebServer. This value must never
+// be exposed in JSON, logs or the browser UI.
+String webSecurityInternalAuthorizationHeader();
+
 // Non-empty only during the first boot in which a password is generated. It is
 // deliberately never exposed by the HTTP API; initWebSecurity() prints it to
 // Serial so the administrator can perform the initial login.

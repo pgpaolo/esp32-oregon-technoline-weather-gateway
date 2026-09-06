@@ -2,6 +2,7 @@
 
 #include <Preferences.h>
 #include <WebServer.h>
+#include <mbedtls/base64.h>
 
 namespace {
 constexpr const char *NVS_NS = "webauth";
@@ -208,6 +209,22 @@ String webSecurityConfigJson() {
     out += lockoutActive() ? "true" : "false";
     out += ",\"lock_remaining_ms\":" + String(lockoutRemainingMs());
     out += "}";
+    return out;
+}
+
+String webSecurityInternalAuthorizationHeader() {
+    if (!cfg.enabled || !validStoredPassword(password)) return String();
+    const String plain = cfg.username + ":" + password;
+    const size_t capacity = ((plain.length() + 2U) / 3U) * 4U + 1U;
+    std::unique_ptr<unsigned char[]> encoded(new (std::nothrow) unsigned char[capacity]);
+    if (!encoded) return String();
+    size_t written = 0;
+    if (mbedtls_base64_encode(encoded.get(), capacity, &written,
+                              reinterpret_cast<const unsigned char *>(plain.c_str()),
+                              plain.length()) != 0) return String();
+    String out = "Basic ";
+    out.reserve(6U + written);
+    out.concat(reinterpret_cast<const char *>(encoded.get()), written);
     return out;
 }
 

@@ -86,6 +86,9 @@ jobs:
       - name: Validate project attribution and installed version UI
         run: python scripts/test_project_attribution.py
 
+      - name: Validate AdminSensor Remote and guarded WSS OTA
+        run: python scripts/test_remote_access_ota.py
+
       - name: Verify real firmware.bin size
         shell: bash
         run: |
