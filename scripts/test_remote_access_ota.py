@@ -60,12 +60,11 @@ require(remote, 'type=="firmware_chunk"', "remote OTA chunk protocol")
 require(remote, 'type=="firmware_end"', "remote OTA end protocol")
 require(remote, 'firmwareRemoteAbort("Connessione AdminSensor interrotta durante OTA")', "disconnect abort")
 
-# Classic ESP32 heap safety. The root dashboard must never be copied into a
-# dynamic ~36 KiB response vector: it is streamed directly from the embedded
-# deterministic gzip image in 2 KiB chunks. Normal dynamic replies retain the
-# 24 KiB cap, but Oregon /api/state uses a two-dimensional preflight: enough
-# contiguous space for the response + one 2 KiB Base64/WSS chunk, and a larger
-# total-heap floor for TLS/RF/MQTT/SD runtime state.
+# Classic ESP32 heap safety. The root dashboard is zero-copy from flash. Normal
+# dynamic replies retain the 24 KiB cap and are sent as 2 KiB raw chunks. For
+# Oregon /api/state, validate what actually remains after reserving the response
+# vector instead of assuming the vector and WSS chunk must share one pre-reserve
+# contiguous region.
 require(remote, "constexpr size_t MAX_REQ=16384U, MAX_RESP=24576U, MAX_WS=38000U;", "bounded tunnel limits")
 require(remote, "constexpr UBaseType_t HTTP_QUEUE_LEN=2;", "bounded HTTP queue")
 require(remote, "ADMIN_SENSOR_HTTP_CHUNK_V2", "2 KiB dynamic response chunker")
@@ -76,16 +75,18 @@ require(remote, "ADMIN_SENSOR_FLASH_UI_DRAIN_V2", "zero-copy Web UI reply drain"
 require(remote, "FLASH_CHUNK_RAW=2048U", "2 KiB flash Web UI raw chunk")
 require(remote, "webUiGzipData()", "flash Web UI data use")
 require(remote, "webUiGzipSize()", "flash Web UI size use")
-require(remote, "ADMIN_SENSOR_DYNAMIC_HEAP_V3", "Oregon dynamic response heap marker")
-require(remote, "HTTP_CONTIGUOUS_HEADROOM=4096U", "4 KiB contiguous runtime headroom")
+require(remote, "ADMIN_SENSOR_DYNAMIC_HEAP_V4", "Oregon post-reserve heap marker")
+require(remote, "HTTP_POST_RESERVE_CONTIGUOUS=4096U", "4 KiB measured post-reserve block")
 require(remote, "HTTP_TOTAL_HEADROOM=16384U", "16 KiB total runtime headroom")
-require(remote, "heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)", "contiguous heap guard")
-require(remote, "ESP.getFreeHeap()", "total heap guard")
-require(remote, "Heap contiguo insufficiente per risposta locale: need=", "diagnostic heap failure path")
+require(remote, "postLargestBlock=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)", "post-reserve contiguous measurement")
+require(remote, "postFreeHeap=ESP.getFreeHeap()", "post-reserve total heap measurement")
+require(remote, "std::vector<uint8_t>().swap(r.body);", "release rejected dynamic reserve")
+require(remote, "Heap frammentato dopo reserve: need=", "post-reserve diagnostic failure path")
 require(remote, 'q->path=="/"||q->path.startsWith("/?")', "root Web UI flash bypass")
 forbid(remote, "MAX_RESP=45056U", "old dashboard-sized dynamic response buffer")
 forbid(remote, "HTTP_RESP_CHUNK_RAW=4096U", "old 4 KiB transient response chunks")
-forbid(remote, "largestBlock-reserveLen<8192U", "over-conservative old contiguous headroom")
+forbid(remote, "largestBlock-reserveLen<8192U", "old 8 KiB pre-reserve headroom")
+forbid(remote, "largestBlock-reserveLen<HTTP_CONTIGUOUS_HEADROOM", "V3 inferred post-reserve fragmentation")
 
 require(ota, "SHA-256 firmware non corrispondente", "remote SHA-256 verification")
 require(ota, "sequence!=expectedSequence", "strict remote sequence")
@@ -104,8 +105,8 @@ forbid(dash, "device_token", "device token exposure in dashboard")
 forbid(dash, "const s=await (await fetch('/api/state'", "unchecked state JSON parsing")
 
 # The dashboard is intentionally larger than the normal dynamic response cap.
-# That is now safe because root GET is served from flash without an intermediate
-# heap allocation; this assertion prevents a future regression to full buffering.
+# That is safe because root GET is served from flash without an intermediate
+# heap allocation; this assertion prevents regression to full buffering.
 dash_gz_len = len(gzip.compress((ROOT / "web" / "dashboard.html").read_bytes(), compresslevel=9, mtime=0))
 if dash_gz_len <= 24576:
     raise SystemExit("REMOTE GUARD FAILED: test no longer exercises flash-streaming path")
@@ -113,5 +114,5 @@ if dash_gz_len <= 24576:
 print(
     "AdminSensor Remote + guarded WSS OTA integration: OK "
     f"(dashboard gzip {dash_gz_len} B streamed from flash, dynamic response 24 KiB, "
-    "chunks 2 KiB, Oregon heap guard 4 KiB contiguous / 16 KiB total)"
+    "chunks 2 KiB, Oregon heap checked after reserve: 4 KiB contiguous / 16 KiB total)"
 )
