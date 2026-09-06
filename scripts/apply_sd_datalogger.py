@@ -15,7 +15,10 @@ def patch_once(path, old, new, label):
     semantic_done = {
         "SD tab": 'id="tabSd"' in text,
         "SD page": 'id="cfgSd"' in text,
-        "SD cfg loop": "for(const x of ['net','thermo','mqtt','display','sd','lightning','backup'])" in text,
+        "SD cfg loop": (
+            "for(const x of ['net','thermo','mqtt','display','sd','lightning','backup'])" in text
+            or "for(const x of ['net','thermo','mqtt','display','sd','lightning','backup','remote'])" in text
+        ),
         "SD tab loader": "t==='sd')loadSd()" in text,
         "SD javascript": "async function loadSd()" in text and "async function saveSd()" in text,
     }
@@ -134,7 +137,7 @@ void handleSdConfigPost() {
 void handleSdConfigReset() {
     bool changed = false;
     if (!resetSdLoggerConfigToDefaults(changed)) {
-        server.send(500, "application/json", "{\"ok\":false}");
+        server.send(500, "application/json", "{\"ok\":false}" );
         return;
     }
     handleSdConfigGet();
