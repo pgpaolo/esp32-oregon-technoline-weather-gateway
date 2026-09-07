@@ -74,6 +74,9 @@ jobs:
       - name: Build firmware
         run: pio run -e "${{ matrix.environment }}"
 
+      - name: Validate final MicroSD Web UI and CSV browser
+        run: python scripts/test_sd_webui_browser.py
+
       # PlatformIO pre-scripts intentionally patch generated source in-place.
       # A second build in the same checkout reproduces the local/Windows flow
       # and detects duplicate generated handlers, routes and UI blocks.
