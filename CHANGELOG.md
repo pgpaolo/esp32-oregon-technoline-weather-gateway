@@ -2,6 +2,51 @@
 
 All notable project changes are documented here.
 
+## 6.4.0-rc5 - AdminSensor Remote / OTA and repeat-build hardening
+
+RC5 is promoted from validated `develop` commit `4310a5097c0097df4b32ae08f548ceef57957c7b`, which is 39 commits ahead of the frozen RC4 branch. `release/6.4.0-rc4` and `release/6.4.0-rc3` remain frozen; `main` is not modified by this RC5 promotion.
+
+### AdminSensor Remote
+
+- Added outbound HTTPS enrollment and authenticated WSS management tunnel without router port-forwarding.
+- Added Bearer-authenticated device sessions with bounded retry/reconnect timing and JSON application heartbeat.
+- Disabled the Links2004 control-frame heartbeat watchdog for this tunnel after physical testing showed false disconnects with the server stack.
+- Added remote HTTP proxy support for the embedded Web UI and REST endpoints.
+- The large root dashboard is streamed directly from embedded gzip/flash in 2 KiB raw chunks instead of being copied into a large heap buffer.
+- Dynamic HTTP responses use 2 KiB raw WSS chunks with a 24 KiB response ceiling.
+- Oregon `/api/state` now validates the real heap layout after reserving the response buffer, preserving a 4 KiB contiguous block and 16 KiB total free-heap floor.
+- Remote Web polling is slower and non-overlapping compared with local polling; JSON fetches validate HTTP status/content type before parsing.
+- Added repeat-build compatibility repair for source archives already transformed by PlatformIO pre-scripts.
+
+### Remote OTA
+
+- Added WSS OTA on the same authenticated AdminSensor transport.
+- OTA checks exact image size, SHA-256 and strict chunk sequence.
+- ESP application-descriptor validation rejects bootloader, partition-table and merged images before flashing.
+- Local authenticated OTA and remote OTA are mutually exclusive.
+- SD logging is prepared/shut down before the remote firmware reboot path.
+- CI publishes one clearly named application OTA image plus SHA-256 per board, while manual-flash/debug artifacts remain separately labelled.
+
+### SD / build idempotence
+
+- Hardened SD datalogger and safe-format pre-scripts so already-mutated local/source-archive workspaces can be rebuilt.
+- Added repair passes for missing SD routes and remote heap compatibility anchors.
+- PlatformIO CI explicitly performs a second build in the same T3 V1.6.1 workspace to catch duplicate/generated-state regressions.
+
+### Validation reference
+
+The exact `develop` source promoted to RC5 completed successfully before branching:
+
+- Validate #272: **success**;
+- PlatformIO Build #348: **success**;
+- `t3-v161-433`: **success**;
+- `t3-s3-433`: **success**;
+- same-workspace T3 V1.6.1 rebuild/idempotence: **success**;
+- AdminSensor Remote + guarded WSS OTA integration guard: **success**;
+- physical firmware-size guard: **success**.
+
+RC5 release-branch CI must remain green after the firmware identity and documentation updates.
+
 ## 6.4.0-rc4 - refreshed from reviewed develop
 
 This RC4 line has been fully refreshed from validated `develop` commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`. `release/6.4.0-rc3` remains frozen. `main` now contains the selective BME280/I2C reliability backport merged through PR #23, while the complete RC4 feature set remains on this release branch.
