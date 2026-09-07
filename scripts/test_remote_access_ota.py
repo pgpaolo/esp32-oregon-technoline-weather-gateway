@@ -29,7 +29,7 @@ remote = text("src/remote_access.cpp")
 ota = text("src/remote_firmware_update.cpp")
 dash = text("web/dashboard.html")
 
-require(pio, 'FIRMWARE_VERSION=\\"6.4.0-dev3\\"', "develop firmware identity")
+require(pio, 'FIRMWARE_VERSION=\\"6.4.0-rc5\\"', "RC5 firmware identity")
 require(pio, "links2004/WebSockets@2.6.1", "WebSockets dependency")
 require(pio, "bblanchon/ArduinoJson@7.4.2", "ArduinoJson dependency")
 require(pio, "pre:scripts/repair_remote_heap_pre.py", "repeat-build remote heap repair pass")
