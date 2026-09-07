@@ -9,11 +9,12 @@ Autore e maintainer del progetto: **Gianpaolo P.** (`pgpaolo`) · Copyright © 2
 ```text
 main                 stabile / produzione + backport selettivo BME280/I2C (PR #23)
 release/6.4.0-rc3    RC storico congelato
-release/6.4.0-rc4    release candidate completa attuale (firmware 6.4.0-rc4)
-develop               sviluppo successivo (6.4.0-dev2)
+release/6.4.0-rc4    precedente release candidate completa congelata
+release/6.4.0-rc5    release candidate completa attuale (firmware 6.4.0-rc5)
+develop               sviluppo successivo (6.4.0-dev3)
 ```
 
-`release/6.4.0-rc4` è stata aggiornata integralmente con la soluzione revisionata su `develop` al commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`. RC3 resta congelata. `main` contiene ora il backport selettivo BME280/I2C mergiato tramite PR #23, mentre l'insieme completo delle funzioni RC4 resta isolato in questo branch fino a una decisione esplicita di promozione.
+`release/6.4.0-rc5` deriva dalla sorgente `develop` validata al commit `4310a5097c0097df4b32ae08f548ceef57957c7b`. Introduce AdminSensor Remote/WSS e OTA remoto protetto, trasporto Web remoto ottimizzato per la memoria del T3 classico, polling remoto adattivo con controllo HTTP/JSON e hardening delle build ripetute/source-archive, mantenendo tutto il set funzionale RC4. RC4 e RC3 restano congelate; `main` non viene modificato da questa promozione RC5.
 
 ## Funzioni principali
 
@@ -30,10 +31,14 @@ develop               sviluppo successivo (6.4.0-dev2)
 - BME280 locale opzionale;
 - AS3935 opzionale con Web, MQTT e OLED;
 - monitor hardware CPU, heap, flash, uptime, reset/build e temperatura interna MCU quando disponibile;
-- nuova pagina **CONFIGURAZIONE > I2C / HW** con scanner manuale e verifica chip-ID BME280;
+- pagina **CONFIGURAZIONE > I2C / HW** con scanner manuale e verifica chip-ID BME280;
 - datalogger microSD SdFat con retry, formattazione FAT e diagnostica;
 - provisioning Wi-Fi, scansione asincrona SSID, trial/rollback credenziali e recovery AP;
-- Basic Authentication Web, backup/ripristino configurazione e OTA autenticato;
+- Basic Authentication Web, backup/ripristino configurazione e OTA locale autenticato;
+- **AdminSensor Remote** con enrollment HTTPS outbound e tunnel WSS autenticato, senza port-forward sul router;
+- OTA remoto protetto via WSS con controllo tipo immagine, dimensione, SHA-256 e sequenza chunk;
+- dashboard remota zero-copy dalla gzip embedded in flash e risposte dinamiche in chunk raw da 2 KiB;
+- polling Web remoto più lento/non sovrapposto e parsing JSON solo dopo verifica HTTP/content-type;
 - riavvio e spegnimento software/deep sleep;
 - attribuzione Web discreta con copyright, identificativo GPL e **versione firmware realmente installata**, senza polling aggiuntivo.
 
@@ -113,7 +118,7 @@ L'interfaccia è organizzata in:
 
 1. **Dashboard** — Oregon, Technoline e sensori locali;
 2. **Hardware** — CPU/SoC, RAM, flash, uptime, temperatura MCU e rete/runtime;
-3. **Configurazione** — rete/Wi-Fi, Oregon, MQTT/TLS, display, BAROMETRO, I2C/HW, AS3935, microSD/archivio, backup/ripristino e sistema/sicurezza/OTA;
+3. **Configurazione** — rete/Wi-Fi, Oregon, MQTT/TLS, display, BAROMETRO, I2C/HW, AS3935, microSD/archivio, backup/ripristino, AdminSensor Remote e sistema/sicurezza/OTA;
 4. **Diagnostica** — RF mode/gain/profile, qualità sessione, RAW e burst.
 
 I pannelli dettagliati BME280 e AS3935 partono chiusi e si aprono cliccando il titolo.
@@ -165,16 +170,18 @@ password: admin
 
 Cambiarle subito da **CONFIGURAZIONE > SISTEMA**. Basic Auth su HTTP non cifra il traffico: usare LAN/VPN affidabile o un terminatore HTTPS sicuro.
 
-OTA Web richiede autenticazione e controlla immagine ESP, spazio OTA e mismatch evidente di famiglia T3 prima di riavviare.
+L'OTA Web locale richiede autenticazione e controlla immagine ESP, spazio OTA e mismatch evidente di famiglia T3 prima di riavviare.
 
-Documentazione: [docs/WEB_PROVISIONING_OTA_AUTH.md](docs/WEB_PROVISIONING_OTA_AUTH.md).
+AdminSensor Remote usa enrollment HTTPS outbound e tunnel WSS autenticato. L'OTA remoto usa lo stesso trasporto e verifica anche dimensione esatta, SHA-256, sequenza chunk e descrittore applicazione ESP; immagini bootloader/partizioni/merged vengono rifiutate. OTA locale e OTA remoto sono mutuamente esclusivi.
 
-## Compilazione da RC4
+Documentazione: [docs/WEB_PROVISIONING_OTA_AUTH.md](docs/WEB_PROVISIONING_OTA_AUTH.md) e [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md).
+
+## Compilazione da RC5
 
 ```bash
 git clone https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway.git
 cd esp32-oregon-technoline-weather-gateway
-git checkout release/6.4.0-rc4
+git checkout release/6.4.0-rc5
 cp src/config_private.example.h src/config_private.h
 pio run -e t3-v161-433
 pio run -e t3-v161-433 -t upload
@@ -206,9 +213,11 @@ La matrice verifica:
 - seconda build T3 V1.6.1 nello stesso workspace per controllare l'idempotenza dei pre-script;
 - guard di integrazione I2C/HW generata;
 - guard dell'attribuzione progetto e della versione firmware installata;
-- dimensione reale `firmware.bin` rispetto allo slot OTA `0x1E0000`.
+- guard AdminSensor Remote + OTA WSS protetto;
+- dimensione reale `firmware.bin` rispetto allo slot OTA `0x1E0000`;
+- artifact OTA separato e non ambiguo rispetto al bundle manual-flash/debug.
 
-La sorgente esatta promossa da `develop` ha superato Validate #192 e PlatformIO Build #268. Anche il branch RC4 deve restare verde dopo i commit di identità, attribuzione e documentazione prima di qualunque merge verso `main`.
+La sorgente esatta promossa da `develop` ha superato Validate #272 e PlatformIO Build #348. Anche il branch RC5 deve restare verde dopo i commit di identità e documentazione prima di qualunque merge verso `main`.
 
 Per le dimensioni esatte del firmware usare sempre l'ultima workflow riuscita, perché l'ID Git è incorporato nel binario.
 
@@ -216,7 +225,8 @@ Per le dimensioni esatte del firmware usare sempre l'ultima workflow riuscita, p
 
 API HTTP: [docs/API.md](docs/API.md)  
 Backup configurazione: [docs/CONFIG_BACKUP.md](docs/CONFIG_BACKUP.md)  
-Note RC4: [docs/RELEASE_6.4.0_RC4.md](docs/RELEASE_6.4.0_RC4.md)  
+AdminSensor Remote: [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md)  
+Note RC5: [docs/RELEASE_6.4.0_RC5.md](docs/RELEASE_6.4.0_RC5.md)  
 Sicurezza: [SECURITY.md](SECURITY.md)
 
 Non esporre direttamente il servizio HTTP dell'ESP32 su Internet e preferire MQTT TLS verificato con CA fuori da una LAN affidabile.
