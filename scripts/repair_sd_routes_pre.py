@@ -76,3 +76,18 @@ else:
         path.write_text(text, encoding="utf-8")
         repaired = ", ".join(f"{method} {url}" for url, method, _ in missing)
         print(f"SD route repair: restored {repaired}")
+
+# The late SD browser pass intentionally upgrades the configuration loader from
+# loadSd() to loadSdPanel().  On a second PlatformIO build the older SD generator
+# runs first and used to interpret that upgrade as a missing patch anchor.
+# Normalize only this one loader back to the generator form here; the late
+# browser pass will upgrade it again before gzip generation.  This keeps clean
+# builds, source archives and same-workspace rebuilds equivalent.
+dash_path = root / "web" / "dashboard.html"
+dash = dash_path.read_text(encoding="utf-8")
+if "t==='sd')loadSdPanel()" in dash and "t==='sd')loadSd()" not in dash:
+    dash = dash.replace("t==='sd')loadSdPanel()", "t==='sd')loadSd()", 1)
+    dash_path.write_text(dash, encoding="utf-8")
+    print("SD route repair: restored base MICROSD loader for repeat build")
+elif 'id="tabSd"' in dash:
+    print("SD route repair: MICROSD loader already compatible")
