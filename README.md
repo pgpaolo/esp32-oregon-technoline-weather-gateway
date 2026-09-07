@@ -16,11 +16,12 @@ Project author and maintainer: **Gianpaolo P.** (`pgpaolo`) · Copyright © 2026
 ```text
 main                 stable / production + selective BME280/I2C reliability backport (PR #23)
 release/6.4.0-rc3    frozen historical RC validation line
-release/6.4.0-rc4    current complete release candidate (firmware 6.4.0-rc4)
-develop               next-development line (6.4.0-dev2)
+release/6.4.0-rc4    frozen previous complete release candidate
+release/6.4.0-rc5    current complete release candidate (firmware 6.4.0-rc5)
+develop               next-development line (6.4.0-dev3)
 ```
 
-`release/6.4.0-rc4` has been fully refreshed from the reviewed `develop` solution at commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`. RC3 remains frozen. `main` now contains the selective BME280/I2C reliability backport merged through PR #23, while the complete RC4 feature set remains isolated in this release branch until an explicit promotion decision.
+`release/6.4.0-rc5` is promoted from validated `develop` commit `4310a5097c0097df4b32ae08f548ceef57957c7b`. It adds AdminSensor Remote/WSS management and guarded remote OTA, heap-safe remote Web UI transport, remote-aware polling/JSON handling and repeat-build/source-archive hardening while retaining the complete RC4 RF, storage, MQTT, barometer, AS3935 and Web feature set. RC4 and RC3 remain frozen; `main` is not modified by this RC5 promotion.
 
 ## Main features
 
@@ -40,7 +41,11 @@ develop               next-development line (6.4.0-dev2)
 - Dedicated **CONFIGURAZIONE > I2C / HW** diagnostics page with manual bus scan and BME280 chip-ID check.
 - SdFat microSD logger with mount retry, FAT formatting tools and live status.
 - Web Wi-Fi provisioning, asynchronous SSID scan, credential trial/rollback and recovery AP.
-- Web Basic Authentication, configuration backup/restore and authenticated OTA.
+- Web Basic Authentication, configuration backup/restore and authenticated local OTA.
+- **AdminSensor Remote** outbound HTTPS enrollment + authenticated WSS tunnel, with no router port-forward required.
+- Guarded remote OTA over WSS with image type, size, SHA-256 and strict sequence validation.
+- Heap-safe remote dashboard streaming from embedded gzip flash plus 2 KiB dynamic response chunks.
+- Remote-aware Web polling with checked HTTP/JSON responses and no overlapping fetches.
 - Restart and controlled deep-sleep power-off.
 - Low-profile Web attribution showing copyright, GPL identifier and the **installed firmware version** without extra polling.
 
@@ -107,7 +112,7 @@ The embedded Web UI is divided into:
 
 1. **Dashboard** — Oregon, Technoline and local sensors.
 2. **Hardware** — CPU/SoC, heap, flash, uptime, MCU temperature and network/runtime information.
-3. **Configuration** — network/Wi-Fi, Oregon, MQTT/TLS, display, BAROMETRO, I2C/HW, AS3935, microSD/archive, backup/restore and system/security/OTA controls.
+3. **Configuration** — network/Wi-Fi, Oregon, MQTT/TLS, display, BAROMETRO, I2C/HW, AS3935, microSD/archive, backup/restore, AdminSensor Remote and system/security/OTA controls.
 4. **Diagnostics** — RF mode/gain/profile, session quality, RAW frames and burst diagnostics.
 
 BME280 and AS3935 detailed Dashboard panels are collapsed by default and expand on title click.
@@ -157,16 +162,18 @@ password: admin
 
 Change them immediately from **CONFIGURAZIONE > SISTEMA**. Basic Authentication on plain HTTP does not provide transport encryption; keep the device on a trusted LAN/VPN or behind a trusted HTTPS terminator.
 
-Authenticated OTA accepts the correct PlatformIO/GitHub `firmware.bin`, checks ESP image header/space/basic board-family mismatch and only reboots after a valid completed update.
+Authenticated local OTA accepts the correct PlatformIO/GitHub application `firmware.bin`, checks ESP image header/space/basic board-family mismatch and only reboots after a valid completed update.
 
-Reference: [docs/WEB_PROVISIONING_OTA_AUTH.md](docs/WEB_PROVISIONING_OTA_AUTH.md).
+AdminSensor Remote uses outbound HTTPS enrollment and an authenticated WSS tunnel. Remote OTA shares that transport but additionally validates the exact image size, SHA-256, strict chunk sequence and ESP application descriptor; bootloader/partition/merged images are rejected. Local and remote OTA are mutually exclusive.
 
-## Quick start from RC4
+References: [docs/WEB_PROVISIONING_OTA_AUTH.md](docs/WEB_PROVISIONING_OTA_AUTH.md) and [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md).
+
+## Quick start from RC5
 
 ```bash
 git clone https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway.git
 cd esp32-oregon-technoline-weather-gateway
-git checkout release/6.4.0-rc4
+git checkout release/6.4.0-rc5
 cp src/config_private.example.h src/config_private.h
 pio run -e t3-v161-433
 pio run -e t3-v161-433 -t upload
@@ -198,9 +205,11 @@ The build matrix checks:
 - a second same-workspace T3 V1.6.1 build to detect non-idempotent pre-scripts;
 - generated I2C/HW integration guard;
 - project attribution + installed-version UI guard;
-- real `firmware.bin` size against the `0x1E0000` OTA application slot.
+- AdminSensor Remote + guarded WSS OTA integration guard;
+- real `firmware.bin` size against the `0x1E0000` OTA application slot;
+- separate OTA-only and manual-flash/debug workflow artifacts.
 
-The exact source promoted from `develop` passed Validate #192 and PlatformIO Build #268. The RC4 branch must also remain green after its release-identity and attribution/documentation commits before any merge to `main`.
+The exact source promoted from `develop` passed Validate #272 and PlatformIO Build #348. The RC5 branch must also remain green after its release-identity/documentation commits before any merge to `main`.
 
 Because the firmware embeds its Git commit ID, use the latest successful workflow for exact current binary sizes.
 
@@ -208,7 +217,8 @@ Because the firmware embeds its Git commit ID, use the latest successful workflo
 
 HTTP API: [docs/API.md](docs/API.md)  
 Configuration backup: [docs/CONFIG_BACKUP.md](docs/CONFIG_BACKUP.md)  
-RC4 release notes: [docs/RELEASE_6.4.0_RC4.md](docs/RELEASE_6.4.0_RC4.md)
+AdminSensor Remote: [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md)  
+RC5 release notes: [docs/RELEASE_6.4.0_RC5.md](docs/RELEASE_6.4.0_RC5.md)
 
 ## Security
 
