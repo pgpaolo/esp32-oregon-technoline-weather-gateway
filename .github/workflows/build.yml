@@ -73,6 +73,9 @@ jobs:
       - name: Build firmware
         run: pio run -e "${{ matrix.environment }}"
 
+      - name: Validate MB public TLS integration
+        run: python scripts/test_mb_public_tls.py
+
       - name: Validate final MicroSD Web UI and CSV browser
         run: python scripts/test_sd_webui_browser.py
 
