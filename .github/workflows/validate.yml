@@ -6,6 +6,7 @@ on:
       - 'main'
       - 'develop'
       - 'release/6.4.0-rc4'
+      - 'release/6.4.0-rc6'
   pull_request:
     branches:
       - 'main'
