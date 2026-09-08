@@ -10,6 +10,18 @@ build_root = Path(env.subst("$BUILD_DIR"))
 generated_dir = build_root / pioenv / "generated"
 generated_dir.mkdir(parents=True, exist_ok=True)
 
+# A source archive/workspace may already contain the final serialized startup
+# block from a previous build. Restore Runtime V2's canonical anchor first so
+# the final runtime + state-fastpath chain remains repeat-build idempotent.
+repeat_repair = project_dir / "scripts" / "repair_remote_runtime_repeat_pre.py"
+repeat_scope = {
+    "__file__": str(repeat_repair),
+    "__name__": "__main__",
+    "env": env,
+    "Import": lambda *args: None,
+}
+exec(compile(repeat_repair.read_text(encoding="utf-8"), str(repeat_repair), "exec"), repeat_scope, repeat_scope)
+
 # Final runtime optimization must run after all Web/SD generators and before the
 # dashboard is compressed. This keeps AdminSensor WSS direct-reconnect, adaptive
 # remote polling and the local-only SD badge timer as the actual shipped UI.
@@ -34,6 +46,18 @@ state_scope = {
     "Import": lambda *args: None,
 }
 exec(compile(state_fastpath.read_text(encoding="utf-8"), str(state_fastpath), "exec"), state_scope, state_scope)
+
+# Measure the two transfers that define perceived remote startup latency without
+# adding any extra polling: compressed root Web UI send time and /api/state
+# loopback + WSS send time. Values are exposed in /api/remote/status.
+transport_metrics = project_dir / "scripts" / "apply_remote_transport_metrics.py"
+transport_scope = {
+    "__file__": str(transport_metrics),
+    "__name__": "__main__",
+    "env": env,
+    "Import": lambda *args: None,
+}
+exec(compile(transport_metrics.read_text(encoding="utf-8"), str(transport_metrics), "exec"), transport_scope, transport_scope)
 
 source_path = project_dir / "web" / "dashboard.html"
 payload = gzip.compress(source_path.read_bytes(), compresslevel=9, mtime=0)
