@@ -100,7 +100,10 @@ require(dash, 'id="tabRemote"', "Remote config tab")
 require(dash, 'id="cfgRemote"', "Remote config page")
 require(dash, "AdminSensor Remote", "Remote UI label")
 require(dash, "loadRemoteAccess()", "Remote UI state loader")
-require(dash, "ADMIN_SENSOR_REMOTE_POLL_V2", "remote-aware polling")
+# Runtime V2's final adaptive/lazy pass upgrades the earlier polling marker
+# from ADMIN_SENSOR_REMOTE_POLL_V2 to V3. The final generated dashboard must
+# carry V3; requiring V2 here made the CI reject the intended final state.
+require(dash, "ADMIN_SENSOR_REMOTE_POLL_V3", "adaptive remote-aware polling")
 require(dash, "ADMIN_SENSOR_FETCH_JSON_V3", "checked JSON transport")
 require(dash, "fetchJsonChecked('/api/state')", "checked state fetch")
 require(dash, "fetchJsonChecked('/api/mqtt')", "checked MQTT fetch")
