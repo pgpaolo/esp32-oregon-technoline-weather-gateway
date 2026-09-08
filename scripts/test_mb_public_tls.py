@@ -7,6 +7,7 @@ remote_cpp = (root / "src/remote_access.cpp").read_text(encoding="utf-8")
 remote_hdr = (root / "src/remote_access.h").read_text(encoding="utf-8")
 dash = (root / "web/dashboard.html").read_text(encoding="utf-8")
 ini = (root / "platformio.ini").read_text(encoding="utf-8")
+generator = (root / "scripts/generate_web_ui.py").read_text(encoding="utf-8")
 
 required_cpp = [
     '// MB_PUBLIC_TLS_V2',
@@ -34,9 +35,10 @@ required_cpp = [
     'client.stop();',
     'return "PUBLIC_CA";',
     'return "CUSTOM_CA";',
+    '"worker_stack_hwm"',
 ]
 for needle in required_cpp:
-    assert needle in cpp, f"missing MB public TLS integration: {needle}"
+    assert needle in cpp, f"missing MB public TLS/runtime integration: {needle}"
 
 required_remote = [
     '// MB_TLS_REMOTE_PAUSE_V1',
@@ -44,13 +46,27 @@ required_remote = [
     'externalTlsPauseRequest',
     'externalTlsPaused',
     'st.state="PAUSED_TLS"',
-    'st.lastWsEvent="EXTERNAL_TLS_PAUSE"',
-    'st.lastWsEvent="EXTERNAL_TLS_RESUME"',
     'firmwareUpdateInProgress()',
     'vTaskDelay(pdMS_TO_TICKS(40))',
+    'ADMIN_SENSOR_RUNTIME_V2',
+    'const String resumeUrl=activeWsUrl;',
+    'directReconnect=startWs(resumeUrl);',
+    'EXTERNAL_TLS_DIRECT_RECONNECT',
+    'externalTlsPauseCount',
+    'externalTlsDirectReconnectCount',
+    '"heap_largest"',
+    '"stack_admin_hwm"',
+    '"stack_http_hwm"',
+    '"tls_pause_count"',
+    '"tls_direct_reconnects"',
 ]
 for needle in required_remote:
-    assert needle in remote_cpp, f"missing Remote TLS arbitration: {needle}"
+    assert needle in remote_cpp, f"missing Remote TLS/runtime V2 integration: {needle}"
+
+pause_start = remote_cpp.index('// MB_TLS_REMOTE_PAUSE_V1')
+pause_end = remote_cpp.index('RemoteAccessConfig c;if(take()){c=cfg;give();}', pause_start)
+pause_segment = remote_cpp[pause_start:pause_end]
+assert 'activeWsUrl="";' not in pause_segment, 'runtime V2 must preserve the approved WSS URL during MB pause'
 
 assert 'bool remoteAccessPauseForExternalTls(uint32_t timeoutMs);' in remote_hdr
 assert 'void remoteAccessResumeAfterExternalTls();' in remote_hdr
@@ -66,7 +82,16 @@ assert 'CA pubblica (ISRG X1/X2)' in dash
 assert '<option value="2">CA personalizzata</option>' in dash
 assert '<option value="1">Senza verifica (solo test)</option>' in dash
 assert 'ISRG Root X1/X2 gia presenti nel firmware' in dash
+assert 'ADMIN_SENSOR_REMOTE_POLL_V3' in dash
+assert "if(mainTab==='config')return 15000" in dash
+assert "if(mainTab==='diag')return 8000" in dash
+assert "if(mainTab==='hardware')return 8000" in dash
+assert "if(!remoteUi){refreshSdHeader();setInterval(refreshSdHeader,4000);}" in dash
+assert 'remoteUi?15000:4000' not in dash
+assert "if(t==='config')loadNetwork();if(t==='config')loadMqtt();" not in dash
+
 assert 'pre:scripts/apply_mb_public_tls_fix.py' in ini
 assert 'apply_mb_tls_memory_arbitration.py' in (root / 'scripts/apply_remote_dynamic_response_fix.py').read_text(encoding='utf-8')
+assert 'apply_remote_runtime_v2.py' in generator
 
-print('MB public TLS + diagnostics + WSS heap arbitration: OK')
+print('MB public TLS + AdminSensor runtime V2 + adaptive remote UI: OK')
