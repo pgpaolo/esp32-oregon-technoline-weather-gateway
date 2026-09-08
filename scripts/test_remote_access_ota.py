@@ -62,16 +62,18 @@ require(remote, 'type=="firmware_end"', "remote OTA end protocol")
 require(remote, 'firmwareRemoteAbort("Connessione AdminSensor interrotta durante OTA")', "disconnect abort")
 
 # Classic ESP32 heap safety. The root dashboard is zero-copy from flash. Normal
-# dynamic replies retain the 24 KiB cap and are sent as 2 KiB raw chunks. For
-# Oregon /api/state, validate what actually remains after reserving the response
-# vector instead of assuming the vector and WSS chunk must share one pre-reserve
-# contiguous region. Keep the historical error prefix as a harmless source
-# sentinel so apply_remote_access_ota.py recognizes an already-mutated localHttp
-# during the next build in the same PlatformIO workspace.
+# dynamic replies retain the 24 KiB cap and are sent as 2 KiB raw chunks. The
+# large Oregon /api/state loopback body is now segmented into independent 2 KiB
+# allocations, so opening the remote dashboard no longer requires a second
+# contiguous ~9 KiB vector while WSS/MQTT/RF/SD are resident.
 require(remote, "constexpr size_t MAX_REQ=16384U, MAX_RESP=24576U, MAX_WS=38000U;", "bounded tunnel limits")
 require(remote, "constexpr UBaseType_t HTTP_QUEUE_LEN=2;", "bounded HTTP queue")
 require(remote, "ADMIN_SENSOR_HTTP_CHUNK_V2", "2 KiB dynamic response chunker")
 require(remote, "HTTP_RESP_CHUNK_RAW=2048U", "2 KiB dynamic raw chunk")
+require(remote, "ADMIN_SENSOR_STATE_SEGMENTED_V1", "segmented /api/state loopback fastpath")
+require(remote, "segmentedBody", "segmented state body storage")
+require(remote, "STATE_SEGMENT_RAW=2048U", "2 KiB state body segments")
+require(remote, 'path=="/api/state" || path.startsWith("/api/state?")', "state-only segmented path")
 require(remote, "ADMIN_SENSOR_FLASH_UI_V2", "zero-copy flash Web UI sender")
 require(remote, "ADMIN_SENSOR_FLASH_UI_WORKER_V2", "zero-copy Web UI worker path")
 require(remote, "ADMIN_SENSOR_FLASH_UI_DRAIN_V2", "zero-copy Web UI reply drain")
@@ -100,10 +102,9 @@ require(dash, 'id="tabRemote"', "Remote config tab")
 require(dash, 'id="cfgRemote"', "Remote config page")
 require(dash, "AdminSensor Remote", "Remote UI label")
 require(dash, "loadRemoteAccess()", "Remote UI state loader")
-# Runtime V2's final adaptive/lazy pass upgrades the earlier polling marker
-# from ADMIN_SENSOR_REMOTE_POLL_V2 to V3. The final generated dashboard must
-# carry V3; requiring V2 here made the CI reject the intended final state.
 require(dash, "ADMIN_SENSOR_REMOTE_POLL_V3", "adaptive remote-aware polling")
+require(dash, "ADMIN_SENSOR_REMOTE_BOOT_SERIAL_V1", "serialized first remote state load")
+require(dash, "safeRefresh(true).finally", "first state before secondary API timers")
 require(dash, "ADMIN_SENSOR_FETCH_JSON_V3", "checked JSON transport")
 require(dash, "fetchJsonChecked('/api/state')", "checked state fetch")
 require(dash, "fetchJsonChecked('/api/mqtt')", "checked MQTT fetch")
@@ -120,6 +121,6 @@ if dash_gz_len <= 24576:
 
 print(
     "AdminSensor Remote + guarded WSS OTA integration: OK "
-    f"(dashboard gzip {dash_gz_len} B streamed from flash, dynamic response 24 KiB, "
-    "chunks 2 KiB, Oregon heap checked after reserve: 4 KiB contiguous / 16 KiB total)"
+    f"(dashboard gzip {dash_gz_len} B streamed from flash, /api/state segmented 2 KiB, "
+    "dynamic response cap 24 KiB, OTA guarded)"
 )
