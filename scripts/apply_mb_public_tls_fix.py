@@ -2,7 +2,7 @@ Import("env")
 from pathlib import Path
 
 root = Path(env.subst("$PROJECT_DIR"))
-MARKER = "// MB_PUBLIC_TLS_V1"
+MARKER = "// MB_PUBLIC_TLS_V2"
 
 
 def read(path):
@@ -17,12 +17,14 @@ def write(path, text):
 # COMPATIBLE MB public HTTPS trust.
 #
 # Keep the existing NVS numeric values backward compatible:
-#   0 = verified public CA (now uses the firmware ISRG X1/X2 trust bundle)
+#   0 = verified public CA (firmware ISRG X1/X2 trust bundle)
 #   1 = insecure/test mode
 #   2 = explicit custom CA from NVS
 #
-# The public trust bundle is the same one already proven by AdminSensor Remote,
-# so normal Let's Encrypt endpoints no longer need a duplicated PEM in NVS.
+# V2 also exposes the real WiFiClientSecure/mbedTLS error and performs a
+# lightweight plain-TCP probe only after a failed HTTPS attempt.  HTTPClient's
+# generic -1 text is "connection refused" even for DNS/TLS/heap failures, which
+# made field diagnosis misleading on a fragmented ESP32 heap.
 # ---------------------------------------------------------------------------
 hdr_path = "src/mb_compatible_publisher.h"
 hdr = read(hdr_path)
@@ -50,14 +52,22 @@ if '#include "remote_trust.h"' not in cpp:
         raise RuntimeError("MB public TLS: remote trust include anchor missing")
     cpp = cpp.replace(anchor, anchor + '#include "remote_trust.h"\n', 1)
 
-if MARKER not in cpp:
-    start = cpp.find("void performHttp(const String &url, const String &payload, const MbCompatibleConfig &cfg) {")
-    end = cpp.find("\nvoid worker(void *)", start)
-    if start < 0 or end < 0:
-        raise RuntimeError("MB public TLS: performHttp function anchor missing")
+if '#include <esp_heap_caps.h>' not in cpp:
+    anchor = '#include <time.h>\n'
+    if anchor not in cpp:
+        raise RuntimeError("MB public TLS: heap include anchor missing")
+    cpp = cpp.replace(anchor, anchor + '#include <esp_heap_caps.h>\n', 1)
 
-    replacement = r'''void performHttp(const String &url, const String &payload, const MbCompatibleConfig &cfg) {
-    // MB_PUBLIC_TLS_V1
+# Canonicalize performHttp every pass.  This deliberately upgrades source
+# archives that were already mutated by V1 and remains stable on a second build
+# in the same PlatformIO workspace.
+start = cpp.find("void performHttp(const String &url, const String &payload, const MbCompatibleConfig &cfg) {")
+end = cpp.find("\nvoid worker(void *)", start)
+if start < 0 or end < 0:
+    raise RuntimeError("MB public TLS: performHttp function anchor missing")
+
+replacement = r'''void performHttp(const String &url, const String &payload, const MbCompatibleConfig &cfg) {
+    // MB_PUBLIC_TLS_V2
     gBusy = true;
     gLastAttemptMs = millis();
     int httpCode = 0;
@@ -65,8 +75,8 @@ if MARKER not in cpp:
     String error;
     HTTPClient http;
 
-    // Match the proven Davis transport envelope.  A saved shorter timeout is
-    // still accepted by the UI/NVS, but HTTPS gets enough time for DNS + TLS.
+    // Match the proven Davis transport envelope. A saved shorter timeout is
+    // still accepted by UI/NVS, but HTTPS gets enough time for DNS + TLS.
     const uint32_t connectTimeoutMs = cfg.timeoutMs < 5000U ? 5000U : cfg.timeoutMs;
     const uint32_t requestTimeoutMs = cfg.timeoutMs < 7000U ? 7000U : cfg.timeoutMs;
     http.setConnectTimeout(connectTimeoutMs);
@@ -77,6 +87,8 @@ if MARKER not in cpp:
     bool begun = false;
 
     if (requestUrl.startsWith("https://")) {
+        const uint32_t heapBefore = ESP.getFreeHeap();
+        const uint32_t blockBefore = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
         WiFiClientSecure client;
         if (cfg.tlsMode == MbCompatibleTlsMode::Insecure) {
             client.setInsecure();
@@ -88,17 +100,57 @@ if MARKER not in cpp:
             }
         } else {
             // Normal Internet HTTPS: reuse the public ISRG X1/X2 bundle already
-            // used by AdminSensor Remote.  No PEM copy from NVS is required.
+            // used by AdminSensor Remote. No PEM copy from NVS is required.
             client.setCACert(REMOTE_TRUST_CA);
         }
 
         if (error.length() == 0U) {
             client.setTimeout((requestTimeoutMs + 999U) / 1000U);
+            client.setHandshakeTimeout((requestTimeoutMs + 999U) / 1000U);
             begun = http.begin(client, requestUrl);
             if (begun) {
                 httpCode = http.GET();
-                if (httpCode > 0) response = http.getString();
-                else error = String("HTTPS transport error ") + http.errorToString(httpCode);
+                if (httpCode > 0) {
+                    response = http.getString();
+                } else {
+                    // HTTPClient collapses all client.connect() failures to -1.
+                    // Preserve the underlying mbedTLS error before destroying the
+                    // secure client, then distinguish transport from TLS/heap by
+                    // probing the same host with a plain TCP socket.
+                    char sslText[112] = {0};
+                    const int sslCode = client.lastError(sslText, sizeof(sslText));
+
+                    String authority = requestUrl.substring(8);
+                    const int slash = authority.indexOf('/');
+                    if (slash >= 0) authority.remove(slash);
+                    String host = authority;
+                    uint16_t port = 443U;
+                    const int colon = authority.lastIndexOf(':');
+                    if (colon > 0) {
+                        const long parsedPort = authority.substring(colon + 1).toInt();
+                        if (parsedPort > 0 && parsedPort <= 65535) port = static_cast<uint16_t>(parsedPort);
+                        host = authority.substring(0, colon);
+                    }
+                    IPAddress resolved;
+                    const bool dnsOk = WiFi.hostByName(host.c_str(), resolved);
+                    bool tcpOk = false;
+                    if (dnsOk) {
+                        WiFiClient probe;
+                        probe.setTimeout(2);
+                        tcpOk = probe.connect(resolved, port, 2000) == 1;
+                        probe.stop();
+                    }
+
+                    char diag[320];
+                    snprintf(diag, sizeof(diag),
+                             "HTTPS fail http=%d ssl=%d %s dns=%s tcp=%s ip=%s heap=%lu block=%lu",
+                             httpCode, sslCode, sslText[0] ? sslText : "n/a",
+                             dnsOk ? "ok" : "fail", tcpOk ? "ok" : "fail",
+                             dnsOk ? resolved.toString().c_str() : "--",
+                             static_cast<unsigned long>(heapBefore),
+                             static_cast<unsigned long>(blockBefore));
+                    error = diag;
+                }
                 http.end();
             } else {
                 error = "HTTPS begin failed";
@@ -129,7 +181,7 @@ if MARKER not in cpp:
     if (gMutex && xSemaphoreTake(gMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         gLastHttpCode = httpCode;
         gLastResponse = response.substring(0, 96);
-        gLastError = success ? String("") : error.substring(0, 160);
+        gLastError = success ? String("") : error.substring(0, 300);
         if (success) gLastSuccessMs = millis();
         xSemaphoreGive(gMutex);
     }
@@ -140,7 +192,7 @@ if MARKER not in cpp:
     gBusy = false;
 }
 '''
-    cpp = cpp[:start] + replacement + cpp[end:]
+cpp = cpp[:start] + replacement + cpp[end:]
 
 old_name = '''const char *mbCompatibleTlsModeName(MbCompatibleTlsMode mode) {
     return mode == MbCompatibleTlsMode::Insecure ? "INSECURE" : "CA_VERIFIED";
@@ -191,4 +243,4 @@ if old_note in dash:
     dash = dash.replace(old_note, new_note, 1)
 
 write(dash_path, dash)
-print("MB-compatible TLS: public ISRG trust + Davis-style HTTP transport enabled")
+print("MB-compatible TLS: public ISRG trust + real TLS/TCP diagnostics enabled")
