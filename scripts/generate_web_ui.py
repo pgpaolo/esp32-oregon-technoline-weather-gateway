@@ -10,6 +10,18 @@ build_root = Path(env.subst("$BUILD_DIR"))
 generated_dir = build_root / pioenv / "generated"
 generated_dir.mkdir(parents=True, exist_ok=True)
 
+# Final runtime optimization must run after all Web/SD generators and before the
+# dashboard is compressed. This keeps AdminSensor WSS direct-reconnect, adaptive
+# remote polling and the local-only SD badge timer as the actual shipped UI.
+runtime_v2 = project_dir / "scripts" / "apply_remote_runtime_v2.py"
+runtime_scope = {
+    "__file__": str(runtime_v2),
+    "__name__": "__main__",
+    "env": env,
+    "Import": lambda *args: None,
+}
+exec(compile(runtime_v2.read_text(encoding="utf-8"), str(runtime_v2), "exec"), runtime_scope, runtime_scope)
+
 source_path = project_dir / "web" / "dashboard.html"
 payload = gzip.compress(source_path.read_bytes(), compresslevel=9, mtime=0)
 
