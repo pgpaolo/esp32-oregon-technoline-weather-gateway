@@ -66,4 +66,15 @@ else:
     d = d[:func.start()] + "function showCfgTab(t){" + canonical_loop + d[abs_end:]
     print("SD browser anchor repair: showCfgTab loop canonicalized")
 
+# The final Remote runtime V2 pass intentionally removes the dedicated remote
+# /api/sd badge timer after the SD browser has run. PlatformIO then rebuilds the
+# same mutated workspace in CI. Restore the browser's expected intermediate
+# marker here so its own idempotence check succeeds; Remote runtime V2 will turn
+# it back into local-only polling later in the same build.
+local_only_poll = "if(!remoteUi){refreshSdHeader();setInterval(refreshSdHeader,4000);}"
+remote_aware_poll = "setTimeout(refreshSdHeader,remoteUi?3500:0);setInterval(refreshSdHeader,remoteUi?15000:4000);"
+if local_only_poll in d and remote_aware_poll not in d:
+    d = d.replace(local_only_poll, remote_aware_poll, 1)
+    print("SD browser anchor repair: restored intermediate SD timer for repeat build")
+
 path.write_text(d, encoding="utf-8")
