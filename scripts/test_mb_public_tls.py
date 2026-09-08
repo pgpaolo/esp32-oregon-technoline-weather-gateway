@@ -3,12 +3,16 @@ from pathlib import Path
 root = Path(__file__).resolve().parent.parent
 cpp = (root / "src/mb_compatible_publisher.cpp").read_text(encoding="utf-8")
 hdr = (root / "src/mb_compatible_publisher.h").read_text(encoding="utf-8")
+remote_cpp = (root / "src/remote_access.cpp").read_text(encoding="utf-8")
+remote_hdr = (root / "src/remote_access.h").read_text(encoding="utf-8")
 dash = (root / "web/dashboard.html").read_text(encoding="utf-8")
 ini = (root / "platformio.ini").read_text(encoding="utf-8")
 
 required_cpp = [
     '// MB_PUBLIC_TLS_V2',
+    '// MB_TLS_MEMORY_ARBITRATION_V1',
     '#include "remote_trust.h"',
+    '#include "remote_access.h"',
     '#include <esp_heap_caps.h>',
     'client.setCACert(REMOTE_TRUST_CA);',
     'MbCompatibleTlsMode::CustomCa',
@@ -23,12 +27,33 @@ required_cpp = [
     'WiFi.hostByName(host.c_str(), resolved)',
     'probe.connect(resolved, port, 2000)',
     'HTTPS fail http=%d ssl=%d',
+    'MB_TLS_HEAP_PAUSE_THRESHOLD = 32768U',
+    'remoteAccessPauseForExternalTls(2000U)',
+    'remoteAccessResumeAfterExternalTls()',
+    'remote_pause=%s',
     'client.stop();',
     'return "PUBLIC_CA";',
     'return "CUSTOM_CA";',
 ]
 for needle in required_cpp:
     assert needle in cpp, f"missing MB public TLS integration: {needle}"
+
+required_remote = [
+    '// MB_TLS_REMOTE_PAUSE_V1',
+    '// MB_TLS_REMOTE_API_V1',
+    'externalTlsPauseRequest',
+    'externalTlsPaused',
+    'st.state="PAUSED_TLS"',
+    'st.lastWsEvent="EXTERNAL_TLS_PAUSE"',
+    'st.lastWsEvent="EXTERNAL_TLS_RESUME"',
+    'firmwareUpdateInProgress()',
+    'vTaskDelay(pdMS_TO_TICKS(40))',
+]
+for needle in required_remote:
+    assert needle in remote_cpp, f"missing Remote TLS arbitration: {needle}"
+
+assert 'bool remoteAccessPauseForExternalTls(uint32_t timeoutMs);' in remote_hdr
+assert 'void remoteAccessResumeAfterExternalTls();' in remote_hdr
 
 assert 'CustomCa = 2' in hdr
 assert 'Insecure = 1' in hdr
@@ -42,5 +67,6 @@ assert '<option value="2">CA personalizzata</option>' in dash
 assert '<option value="1">Senza verifica (solo test)</option>' in dash
 assert 'ISRG Root X1/X2 gia presenti nel firmware' in dash
 assert 'pre:scripts/apply_mb_public_tls_fix.py' in ini
+assert 'apply_mb_tls_memory_arbitration.py' in (root / 'scripts/apply_remote_dynamic_response_fix.py').read_text(encoding='utf-8')
 
-print('MB public TLS integration + failure diagnostics: OK')
+print('MB public TLS + diagnostics + WSS heap arbitration: OK')
