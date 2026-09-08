@@ -22,6 +22,19 @@ runtime_scope = {
 }
 exec(compile(runtime_v2.read_text(encoding="utf-8"), str(runtime_v2), "exec"), runtime_scope, runtime_scope)
 
+# The first remote /api/state reply is larger than the largest contiguous heap
+# block seen on loaded T3 V1.6.1 units. Segment only the internal loopback copy
+# into 2 KiB blocks and serialize the initial dashboard fetch before AS3935/MQTT
+# secondary requests. The public local API remains unchanged.
+state_fastpath = project_dir / "scripts" / "apply_remote_state_fastpath.py"
+state_scope = {
+    "__file__": str(state_fastpath),
+    "__name__": "__main__",
+    "env": env,
+    "Import": lambda *args: None,
+}
+exec(compile(state_fastpath.read_text(encoding="utf-8"), str(state_fastpath), "exec"), state_scope, state_scope)
+
 source_path = project_dir / "web" / "dashboard.html"
 payload = gzip.compress(source_path.read_bytes(), compresslevel=9, mtime=0)
 
