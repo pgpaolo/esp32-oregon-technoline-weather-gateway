@@ -116,6 +116,9 @@ write("src/mb_compatible_publisher.h", header)
 # ---------------------------------------------------------------------------
 # Web UI: replace the old priority/fallback wording with an exclusive station
 # selector. The element id remains mbPriority to keep the existing API stable.
+# The descriptive note may subsequently be extended by the public-TLS pass, so
+# repeat builds recognize the stable single-source semantic prefix instead of
+# requiring an exact copy of the older TLS wording.
 # ---------------------------------------------------------------------------
 dash = read("web/dashboard.html")
 old_select = '<label><span>Sorgente primaria</span><select id="mbPriority"><option value="0">Oregon, fallback Technoline</option><option value="1">Technoline, fallback Oregon</option></select></label>'
@@ -127,9 +130,14 @@ elif new_select not in dash:
 
 old_note = "Pacchetto Meteobridge/Aurora-compatible a 192 campi: i valori realmente disponibili vengono inviati, gli altri restano <code>--</code>. HTTPS verificato richiede una CA PEM; la modalita senza verifica e solo diagnostica."
 new_note = "Pacchetto Meteobridge/Aurora-compatible a 192 campi. Tutti i dati esterni provengono esclusivamente dalla stazione sorgente selezionata: nessun fallback o mescolamento Oregon/Technoline. I valori non disponibili restano <code>--</code>. Il BME280 locale resta indipendente dalla scelta. HTTPS verificato richiede una CA PEM; la modalita senza verifica e solo diagnostica."
+single_source_note_marker = "Tutti i dati esterni provengono esclusivamente dalla stazione sorgente selezionata: nessun fallback o mescolamento Oregon/Technoline."
 if old_note in dash:
     dash = dash.replace(old_note, new_note, 1)
-elif new_note not in dash:
+elif new_note in dash or single_source_note_marker in dash:
+    # Already single-source. A later pass may have replaced only the TLS tail
+    # with the public-CA description; preserve that newer wording verbatim.
+    pass
+else:
     raise RuntimeError("MB single-source: dashboard note anchor missing")
 write("web/dashboard.html", dash)
 
