@@ -92,3 +92,15 @@ else:
         "AdminSensor Remote dynamic heap: post-reserve validation enabled "
         "(4 KiB actual contiguous + 16 KiB total headroom)"
     )
+
+# The MB publisher can need a second simultaneous TLS allocation while the
+# AdminSensor WSS is connected. Apply the late arbitration pass only after the
+# Remote lifecycle and dynamic-response code have reached their final form.
+arb = root / "scripts" / "apply_mb_tls_memory_arbitration.py"
+arb_scope = {
+    "__file__": str(arb),
+    "__name__": "__main__",
+    "env": env,
+    "Import": lambda *args: None,
+}
+exec(compile(arb.read_text(encoding="utf-8"), str(arb), "exec"), arb_scope, arb_scope)
