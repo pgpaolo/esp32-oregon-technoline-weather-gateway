@@ -25,6 +25,7 @@ web = text("src/web_manager.cpp")
 dash = text("web/dashboard.html")
 
 require(pio, "pre:scripts/apply_sd_webui_browser.py", "late SD browser pass")
+require(pio, "pre:scripts/apply_sd_header_indicator.py", "stable SD header pass")
 require(h, "ADMIN_SENSOR_SD_BROWSER_V1", "SD public API marker")
 require(h, "sdLoggerFilesJson", "file list declaration")
 require(h, "sdLoggerReadFileChunk", "chunk reader declaration")
@@ -50,8 +51,24 @@ require(dash, 'id="sdBrowserPanel"', "SD archive panel")
 require(dash, "async function loadSdFiles()", "file-list loader")
 require(dash, "async function downloadSdPath", "chunked browser download")
 require(dash, "step=6144", "browser chunk size")
-require(dash, "remoteUi?15000:4000", "reduced remote SD poll")
-require(dash, "remoteUi?3500:0", "staggered remote SD startup")
-forbid(dash, "refreshSdHeader();setInterval(refreshSdHeader,4000);", "old competing SD poll")
 
-print("MicroSD final Web UI + authenticated remote-safe CSV browser: OK")
+# The runtime V2 final pass removes the dedicated remote /api/sd badge poll.
+# Before that final pass, the browser layer uses a staggered 15 s remote poll.
+if "ADMIN_SENSOR_REMOTE_POLL_V3" in dash:
+    require(dash, "if(!remoteUi){refreshSdHeader();setInterval(refreshSdHeader,4000);}", "local-only SD header poll")
+    forbid(dash, "remoteUi?15000:4000", "remote SD badge polling after runtime V2")
+else:
+    require(dash, "remoteUi?15000:4000", "reduced remote SD poll")
+    require(dash, "remoteUi?3500:0", "staggered remote SD startup")
+
+# Fixed-width SD header indicator: state is colour-only, visible text never
+# changes, so header/tile geometry cannot reflow when a write is observed.
+require(dash, "SD_HEADER_STABLE_V2", "stable SD header marker")
+require(dash, 'class="statusPill sdPill wait"', "fixed SD pill class")
+require(dash, ".statusPill.sdPill{width:72px;min-width:72px;flex:0 0 72px", "fixed SD pill width")
+require(dash, "e.textContent='SD';", "constant SD label")
+require(dash, "cls='write';state='scrittura in corso'", "write colour state")
+for legacy in ("SD SCRIVE", "SD ON", "SD PRONTA", "SD KO", "SD OFF", "SD ERR"):
+    forbid(dash, legacy, f"variable-width SD label {legacy}")
+
+print("MicroSD final Web UI + stable fixed-width header + authenticated remote-safe CSV browser: OK")
