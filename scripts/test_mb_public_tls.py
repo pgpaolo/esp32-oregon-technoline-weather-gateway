@@ -35,7 +35,7 @@ required_cpp = [
     'client.stop();',
     'return "PUBLIC_CA";',
     'return "CUSTOM_CA";',
-    '"worker_stack_hwm"',
+    'worker_stack_hwm',
 ]
 for needle in required_cpp:
     assert needle in cpp, f"missing MB public TLS/runtime integration: {needle}"
@@ -54,11 +54,11 @@ required_remote = [
     'EXTERNAL_TLS_DIRECT_RECONNECT',
     'externalTlsPauseCount',
     'externalTlsDirectReconnectCount',
-    '"heap_largest"',
-    '"stack_admin_hwm"',
-    '"stack_http_hwm"',
-    '"tls_pause_count"',
-    '"tls_direct_reconnects"',
+    'heap_largest',
+    'stack_admin_hwm',
+    'stack_http_hwm',
+    'tls_pause_count',
+    'tls_direct_reconnects',
 ]
 for needle in required_remote:
     assert needle in remote_cpp, f"missing Remote TLS/runtime V2 integration: {needle}"
