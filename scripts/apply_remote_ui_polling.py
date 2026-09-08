@@ -8,7 +8,13 @@ path = root / "web" / "dashboard.html"
 text = path.read_text(encoding="utf-8")
 
 poll_marker = "ADMIN_SENSOR_REMOTE_POLL_V2"
-if poll_marker in text:
+poll_marker_v3 = "ADMIN_SENSOR_REMOTE_POLL_V3"
+if poll_marker in text or poll_marker_v3 in text:
+    # A later runtime pass upgrades V2 to V3 in-place. Repeated PlatformIO
+    # builds and source archives captured after a previous build must therefore
+    # treat either marker as already optimized; otherwise this V2 pass looks
+    # for the original refresh()/refreshLightning()/loadMqtt() timers that V3
+    # has intentionally replaced and aborts with state=0/lightning=0/mqtt=0.
     print("Remote UI polling: already optimized")
 else:
     # Work only on the startup/timer tail that follows the existing display
