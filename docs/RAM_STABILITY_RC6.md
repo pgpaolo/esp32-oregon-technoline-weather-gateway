@@ -1,18 +1,28 @@
 # RC6 RAM stability experiment
 
-Branch: `develop-ram-stability`, based on `release/6.4.0-rc6`.
+Branch: `develop-ram-stability`, based on frozen `release/6.4.0-rc6`.
 
-This branch intentionally leaves the Oregon/Technoline RF decoding path unchanged.
+This branch intentionally leaves the Oregon/Technoline RF decoding path and the RC6 boot/service ordering unchanged.
 
-Memory changes are applied as the final PlatformIO generation pass so they affect the actual compiled source after AdminSensor, COMPATIBLE MB, SD and Web generation:
+## Current SAFE V2 state
 
-- COMPATIBLE MB worker is created lazily instead of reserving its 8 KiB task stack while disabled.
-- AdminSensor Remote HTTP/WSS tasks and queues are created lazily when no portal is configured, avoiding 7,168 + 12,288 bytes of task stack on unconfigured installations.
-- Web raw-packet history is reduced from 32 to 16 entries.
-- `/api/state` exposes `heap_largest_free`, `heap_largest_min` and `heap_fragmentation_pct` in addition to existing free/min heap values.
-- Remote and MB status payloads retain the RC6 Runtime V2 FreeRTOS stack high-water diagnostics so task stacks can later be right-sized from real-device measurements rather than estimates.
-- The existing RC6 Runtime V2 dashboard scheduler is deliberately unchanged because its adaptive remote polling and repeat-build repair depend on canonical timer anchors.
+The first RAM experiment tried lazy COMPATIBLE MB and AdminSensor Remote task allocation. Although CI passed, the real T3 V1.6.1 did not reach normal Wi-Fi provisioning. Those lifecycle changes were therefore fully reverted. The current branch keeps the RC6 task lifecycle and service order.
+
+Current runtime changes are deliberately low risk:
+
+- Web raw-packet history is reduced from 32 to 16 entries, saving about 3.5 KiB of static RAM.
+- `/api/state` exposes `heap_largest_free`, `heap_largest_min` and `heap_fragmentation_pct` in addition to existing heap diagnostics.
+- Espressif32 is pinned to the known-good `7.1.2` toolchain used by the stable RC6 build.
+- All external Arduino libraries are pinned to the exact versions resolved by the known-good `d5aabb35` CI build; AS3935MI remains pinned to its exact Git commit.
+- RTC-only boot diagnostics record the current and previous boot checkpoint, Wi-Fi milestone and reset reason without adding NVS/flash writes.
+- Boot diagnostics are exposed under the `boot` object in `/api/state` and printed once on Serial after startup begins.
 
 Existing RC6 safeguards are preserved, including 2 KiB chunked AdminSensor WSS responses, the two-entry Remote HTTP queue, segmented `/api/state` loopback transfer, post-allocation heap checks and TLS arbitration between AdminSensor and COMPATIBLE MB.
 
-The next decision on reducing the 12,288 / 7,168 / 8,192-byte task stacks should be based on measured high-water values from a real T3 V1.6.1 after sustained operation.
+## Boot checkpoint interpretation
+
+A checkpoint is written immediately before entering each initialization stage. If a reset occurs before the firmware reaches `READY`, the next boot reports the retained `previous_checkpoint`. Network progress is tracked independently as `STA_PENDING`, `STA_CONNECTED`, `RECOVERY_AP` or `LOST`.
+
+Typical reset reasons are `POWERON`, `SOFTWARE`, `PANIC`, `INT_WDT`, `TASK_WDT`, `WDT`, `DEEPSLEEP` and `BROWNOUT`.
+
+The 12,288 / 7,168 / 8,192-byte AdminSensor, remote HTTP and COMPATIBLE MB task stacks remain unchanged. Any future reduction must be based on real-device high-water measurements after sustained RF, Web, TLS, MQTT, SD and OTA testing.
