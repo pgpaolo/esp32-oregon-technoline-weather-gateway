@@ -46,21 +46,16 @@ def function_bounds(text, signature):
 
 
 # ---------------------------------------------------------------------------
-# COMPATIBLE MB: do not reserve an 8 KiB FreeRTOS stack when the publisher is
-# disabled. The worker is created on first real send/test instead. This leaves
-# RF behaviour untouched and preserves the existing asynchronous transport.
+# COMPATIBLE MB: do not reserve an 8 KiB FreeRTOS stack while the publisher is
+# disabled. Runtime V2 already exposes the worker stack high-water mark, so the
+# actual 8 KiB size is deliberately left unchanged until real-device data is
+# available.
 # ---------------------------------------------------------------------------
 mb_path = "src/mb_compatible_publisher.cpp"
 mb = read(mb_path)
 mb_marker = "RAM_STABILITY_MB_LAZY_V1"
 
 if mb_marker not in mb:
-    if "#include <freertos/task.h>" not in mb:
-        inc = "#include <time.h>\n"
-        if inc not in mb:
-            raise RuntimeError("RAM stability MB: include anchor missing")
-        mb = mb.replace(inc, inc + "#include <freertos/task.h>\n", 1)
-
     init_sig = "void initMbCompatiblePublisher(StationState &state)"
     init_start = mb.find(init_sig)
     if init_start < 0:
@@ -87,9 +82,8 @@ if mb_marker not in mb:
     loadConfig();
     loadDailyBaselines();
     configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
-    // RAM_STABILITY_MB_LAZY_V1: worker allocation is deferred until a real
-    // transmission/test is requested. Disabled-by-default now costs no 8 KiB
-    // task stack at boot.
+    // RAM_STABILITY_MB_LAZY_V1: allocation of the 8 KiB worker is deferred
+    // until a real transmission or Web test is requested.
     Serial.println(F("[MB-COMPAT] publisher initialized (lazy worker)"));
 }'''
     mb = mb[:s] + init_new + mb[e:]
@@ -113,22 +107,6 @@ if mb_marker not in mb:
         raise RuntimeError("RAM stability MB: enable/test anchor missing")
     mb = mb.replace(old, new, 1)
 
-    # Expose measured free stack so a later release can safely right-size the
-    # 8 KiB worker instead of guessing.
-    status_sig = "String mbCompatibleConfigStatusJson()"
-    s, e = function_bounds(mb, status_sig)
-    block = mb[s:e]
-    if "worker_stack_hwm_bytes" not in block:
-        anchor = '    out += ",\\\"pending\\\":"; out += gPending ? "true" : "false";\n'
-        if anchor not in block:
-            raise RuntimeError("RAM stability MB: status pending anchor missing")
-        extra = (
-            anchor
-            + '    out += ",\\\"worker_stack_hwm_bytes\\\":" + String(gWorkerTask ? static_cast<uint32_t>(uxTaskGetStackHighWaterMark(gWorkerTask)) : 0U);\n'
-        )
-        block = block.replace(anchor, extra, 1)
-        mb = mb[:s] + block + mb[e:]
-
     write(mb_path, mb)
     print("RAM stability: COMPATIBLE MB worker is lazy; 8 KiB stack avoided while disabled")
 else:
@@ -136,9 +114,10 @@ else:
 
 
 # ---------------------------------------------------------------------------
-# AdminSensor Remote: avoid reserving ~19 KiB of task stacks plus queue storage
-# when no portal is configured. Runtime is instantiated on first configuration
-# save/retry. Existing chunked WSS/TLS memory safeguards remain untouched.
+# AdminSensor Remote: avoid reserving 7,168 + 12,288 bytes of task stacks and
+# queue storage on installations where no Remote portal is configured. Existing
+# configured devices start the same runtime; saving a portal URL instantiates it
+# immediately. Runtime V2 already exposes both task high-water marks.
 # ---------------------------------------------------------------------------
 remote_path = "src/remote_access.cpp"
 remote = read(remote_path)
@@ -187,9 +166,8 @@ if remote_marker not in remote:
         give();
     }
     ws.onEvent(wsEvent);
-    // RAM_STABILITY_REMOTE_LAZY_V1: an unconfigured device keeps no Remote
-    // HTTP/AdminSensor task stacks. Existing configured installations start
-    // exactly as before.
+    // RAM_STABILITY_REMOTE_LAZY_V1: an unconfigured gateway keeps no Remote
+    // worker/AdminSensor task stacks. Configured installations behave as RC6.
     if(!cfg.portalUrl.isEmpty())ensureRemoteRuntime();
     Serial.print(F("[REMOTE] Device ID: "));Serial.println(remoteDefaultDeviceId());
     Serial.println(F("[REMOTE] Token in NVS (non mostrato)"));
@@ -201,7 +179,7 @@ if remote_marker not in remote:
     block = remote[s:e]
     if "ensureRemoteRuntime" not in block:
         old = "generation++;return true;"
-        new = "generation++;if(!u.isEmpty()&&!ensureRemoteRuntime())return false;return true;"
+        new = "generation++;if(!u.isEmpty())ensureRemoteRuntime();return true;"
         if old not in block:
             raise RuntimeError("RAM stability Remote: save generation anchor missing")
         block = block.replace(old, new, 1)
@@ -215,20 +193,6 @@ if remote_marker not in remote:
             1,
         )
 
-    status_sig = "String remoteAccessStatusJson()"
-    s, e = function_bounds(remote, status_sig)
-    block = remote[s:e]
-    if "task_stack_hwm_bytes" not in block:
-        anchor = 'j+=",\\\"last_activity_age_ms\\\":"'
-        if anchor not in block:
-            raise RuntimeError("RAM stability Remote: status activity anchor missing")
-        extra = (
-            'j+=",\\\"task_stack_hwm_bytes\\\":"+String(taskHandle?static_cast<uint32_t>(uxTaskGetStackHighWaterMark(taskHandle)):0U);'
-            'j+=",\\\"http_stack_hwm_bytes\\\":"+String(workerHandle?static_cast<uint32_t>(uxTaskGetStackHighWaterMark(workerHandle)):0U);'
-        )
-        block = block.replace(anchor, extra + anchor, 1)
-        remote = remote[:s] + block + remote[e:]
-
     write(remote_path, remote)
     print("RAM stability: AdminSensor Remote task stacks are lazy when unconfigured")
 else:
@@ -236,9 +200,9 @@ else:
 
 
 # ---------------------------------------------------------------------------
-# Web diagnostics: halve raw history RAM and expose contiguous heap health.
-# Free heap alone can look healthy while TLS fails because the largest block is
-# small; report both current/minimum largest block and fragmentation percentage.
+# Web diagnostics: halve the always-resident raw packet history and expose the
+# allocator metric that matters for TLS failures: largest contiguous 8-bit heap.
+# Keep a runtime minimum as well as an easy fragmentation percentage.
 # ---------------------------------------------------------------------------
 web_path = "src/web_manager.cpp"
 web = read(web_path)
@@ -289,18 +253,26 @@ else:
 
 
 # ---------------------------------------------------------------------------
-# Dashboard polling: 2 s local state refresh is unnecessarily allocation-heavy
-# for a weather gateway. 3 s keeps the UI responsive while cutting state JSON
-# construction churn by one third. Remote remains at its existing 5 s cadence.
+# Dashboard allocation churn: Runtime V2 leaves the local UI on a 2 s timer and
+# applies its own adaptive periods remotely. Increase only the local scheduler
+# tick to 3 s; the remote effective periods remain unchanged.
 # ---------------------------------------------------------------------------
 dash_path = "web/dashboard.html"
 dash = read(dash_path)
-poll_old = "setInterval(safeRefresh,remoteUi?5000:2000);"
-poll_new = "setInterval(safeRefresh,remoteUi?5000:3000); // RAM_STABILITY_WEB_POLL_V1"
-if poll_old in dash:
-    dash = dash.replace(poll_old, poll_new, 1)
+poll_candidates = (
+    "setInterval(()=>safeRefresh(false),2000);",
+    "setInterval(safeRefresh,remoteUi?5000:2000);",
+)
+poll_new = "setInterval(()=>safeRefresh(false),3000); // RAM_STABILITY_WEB_POLL_V1"
+changed = False
+for old in poll_candidates:
+    if old in dash:
+        dash = dash.replace(old, poll_new, 1)
+        changed = True
+        break
+if changed:
     write(dash_path, dash)
-    print("RAM stability: local dashboard state polling 2 s -> 3 s")
+    print("RAM stability: local dashboard state scheduler 2 s -> 3 s")
 elif "RAM_STABILITY_WEB_POLL_V1" in dash:
     print("RAM stability: dashboard polling already optimized")
 else:
