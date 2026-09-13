@@ -59,6 +59,19 @@ transport_scope = {
 }
 exec(compile(transport_metrics.read_text(encoding="utf-8"), str(transport_metrics), "exec"), transport_scope, transport_scope)
 
+# Final RAM-stability pass. It runs after every source/UI generator so the
+# shipped binary gets the low-risk memory changes rather than only the source
+# templates: lazy optional workers, smaller raw history, contiguous-heap
+# telemetry and lower local /api/state polling churn.
+ram_stability = project_dir / "scripts" / "apply_ram_stability.py"
+ram_scope = {
+    "__file__": str(ram_stability),
+    "__name__": "__main__",
+    "env": env,
+    "Import": lambda *args: None,
+}
+exec(compile(ram_stability.read_text(encoding="utf-8"), str(ram_stability), "exec"), ram_scope, ram_scope)
+
 source_path = project_dir / "web" / "dashboard.html"
 payload = gzip.compress(source_path.read_bytes(), compresslevel=9, mtime=0)
 
