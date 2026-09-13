@@ -9,6 +9,7 @@ on:
       - release/6.4.0-rc4
       - release/6.4.0-rc6
       - develop
+      - develop-ram-stability
   pull_request:
     branches:
       - main
