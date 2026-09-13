@@ -13,219 +13,34 @@ def write(path, text):
     (root / path).write_text(text, encoding="utf-8")
 
 
-def function_bounds(text, signature):
-    start = text.find(signature)
-    if start < 0:
-        raise RuntimeError(f"RAM stability: function missing: {signature}")
-    brace = text.find("{", start)
-    if brace < 0:
-        raise RuntimeError(f"RAM stability: opening brace missing: {signature}")
-    depth = 0
-    quote = None
-    escape = False
-    for i in range(brace, len(text)):
-        ch = text[i]
-        if quote:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == quote:
-                quote = None
-            continue
-        if ch in ('"', "'"):
-            quote = ch
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return start, i + 1
-    raise RuntimeError(f"RAM stability: unclosed function: {signature}")
+# RAM_STABILITY_SAFE_V2
+#
+# Keep the RC6 boot/network/Remote/MB runtime byte-for-byte in behaviour. The
+# first RAM experiment changed task creation timing; although CI compiled and
+# passed static regression tests, a real T3 V1.6.1 failed to reach normal Wi-Fi
+# provisioning. V2 therefore limits itself to passive diagnostics plus a static
+# diagnostic-history reduction. No task lifecycle, Wi-Fi, Web provisioning,
+# MQTT, TLS, RF or dashboard scheduling path is changed here.
 
-
-# ---------------------------------------------------------------------------
-# COMPATIBLE MB: do not reserve an 8 KiB FreeRTOS stack while the publisher is
-# disabled. Runtime V2 already exposes the worker stack high-water mark, so the
-# actual 8 KiB size is deliberately left unchanged until real-device data is
-# available.
-# ---------------------------------------------------------------------------
-mb_path = "src/mb_compatible_publisher.cpp"
-mb = read(mb_path)
-mb_marker = "RAM_STABILITY_MB_LAZY_V1"
-
-if mb_marker not in mb:
-    init_sig = "void initMbCompatiblePublisher(StationState &state)"
-    init_start = mb.find(init_sig)
-    if init_start < 0:
-        raise RuntimeError("RAM stability MB: init function missing")
-
-    helper = r'''bool ensureMbCompatibleWorker() { // RAM_STABILITY_MB_LAZY_V1
-    if (gWorkerTask) return true;
-    const BaseType_t core = 0;
-    if (xTaskCreatePinnedToCore(worker, "mb-compatible", WORKER_STACK, nullptr, 1, &gWorkerTask, core) != pdPASS) {
-        gWorkerTask = nullptr;
-        setStatusError("worker task creation failed");
-        return false;
-    }
-    return true;
-}
-
-'''
-    mb = mb[:init_start] + helper + mb[init_start:]
-
-    s, e = function_bounds(mb, init_sig)
-    init_new = r'''void initMbCompatiblePublisher(StationState &state) {
-    gState = &state;
-    gMutex = xSemaphoreCreateMutex();
-    loadConfig();
-    loadDailyBaselines();
-    configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
-    // RAM_STABILITY_MB_LAZY_V1: allocation of the 8 KiB worker is deferred
-    // until a real transmission or Web test is requested.
-    Serial.println(F("[MB-COMPAT] publisher initialized (lazy worker)"));
-}'''
-    mb = mb[:s] + init_new + mb[e:]
-
-    old = "    if (!gState || !gWorkerTask || !wifiConnected() || gBusy || gPending) return;"
-    new = "    if (!gState || !wifiConnected() || gBusy || gPending) return;"
-    if old not in mb:
-        raise RuntimeError("RAM stability MB: service guard anchor missing")
-    mb = mb.replace(old, new, 1)
-
-    old = "    const bool force = gForceTest;\n    if (!force && !cfg.enabled) return;"
-    new = (
-        "    const bool force = gForceTest;\n"
-        "    if (!force && !cfg.enabled) return;\n"
-        "    if (!ensureMbCompatibleWorker()) {\n"
-        "        if (force) gForceTest = false;\n"
-        "        return;\n"
-        "    }"
-    )
-    if old not in mb:
-        raise RuntimeError("RAM stability MB: enable/test anchor missing")
-    mb = mb.replace(old, new, 1)
-
-    write(mb_path, mb)
-    print("RAM stability: COMPATIBLE MB worker is lazy; 8 KiB stack avoided while disabled")
-else:
-    print("RAM stability: COMPATIBLE MB lazy worker already applied")
-
-
-# ---------------------------------------------------------------------------
-# AdminSensor Remote: avoid reserving 7,168 + 12,288 bytes of task stacks and
-# queue storage on installations where no Remote portal is configured. Existing
-# configured devices start the same runtime; saving a portal URL instantiates it
-# immediately. Runtime V2 already exposes both task high-water marks.
-# ---------------------------------------------------------------------------
-remote_path = "src/remote_access.cpp"
-remote = read(remote_path)
-remote_marker = "RAM_STABILITY_REMOTE_LAZY_V1"
-
-if remote_marker not in remote:
-    close_anchor = "} // namespace\n\nString remoteDefaultDeviceId()"
-    if close_anchor not in remote:
-        raise RuntimeError("RAM stability Remote: namespace close anchor missing")
-
-    helper = r'''bool ensureRemoteRuntime() { // RAM_STABILITY_REMOTE_LAZY_V1
-    if (!requestQueue) requestQueue=xQueueCreate(HTTP_QUEUE_LEN,sizeof(RemoteReq*));
-    if (!responseQueue) responseQueue=xQueueCreate(HTTP_QUEUE_LEN,sizeof(RemoteReply*));
-    if (!requestQueue || !responseQueue) {
-        setState("ERROR","Code Remote non allocate");
-        return false;
-    }
-    if (!workerHandle && xTaskCreate(httpWorker,"remote-http",7168,nullptr,1,&workerHandle)!=pdPASS) {
-        workerHandle=nullptr;
-        setState("ERROR","Worker HTTP remoto non avviato");
-        return false;
-    }
-    if (!taskHandle && xTaskCreate(task,"adminsensor",12288,nullptr,1,&taskHandle)!=pdPASS) {
-        taskHandle=nullptr;
-        setState("ERROR","Task remoto non avviato");
-        return false;
-    }
-    return true;
-}
-
-'''
-    remote = remote.replace(close_anchor, helper + close_anchor, 1)
-
-    init_sig = "void initRemoteAccess()"
-    s, e = function_bounds(remote, init_sig)
-    init_new = r'''void initRemoteAccess(){
-    if(!mux)mux=xSemaphoreCreateMutex();
-    load();
-    if(take()){
-        st=RemoteAccessStatus{};
-        st.initialized=true;
-        st.configured=!cfg.portalUrl.isEmpty();
-        st.deviceId=remoteDefaultDeviceId();
-        st.state=cfg.portalUrl.isEmpty()?"OFF":"WAIT_NETWORK";
-        st.lastWsEvent="INIT";
-        give();
-    }
-    ws.onEvent(wsEvent);
-    // RAM_STABILITY_REMOTE_LAZY_V1: an unconfigured gateway keeps no Remote
-    // worker/AdminSensor task stacks. Configured installations behave as RC6.
-    if(!cfg.portalUrl.isEmpty())ensureRemoteRuntime();
-    Serial.print(F("[REMOTE] Device ID: "));Serial.println(remoteDefaultDeviceId());
-    Serial.println(F("[REMOTE] Token in NVS (non mostrato)"));
-}'''
-    remote = remote[:s] + init_new + remote[e:]
-
-    save_sig = "bool saveRemoteAccessPortalUrl(const String&in)"
-    s, e = function_bounds(remote, save_sig)
-    block = remote[s:e]
-    if "ensureRemoteRuntime" not in block:
-        old = "generation++;return true;"
-        new = "generation++;if(!u.isEmpty())ensureRemoteRuntime();return true;"
-        if old not in block:
-            raise RuntimeError("RAM stability Remote: save generation anchor missing")
-        block = block.replace(old, new, 1)
-        remote = remote[:s] + block + remote[e:]
-
-    old_retry = "void retryRemoteAccessNow(){forceRetry=true;}"
-    if old_retry in remote:
-        remote = remote.replace(
-            old_retry,
-            "void retryRemoteAccessNow(){if(ensureRemoteRuntime())forceRetry=true;}",
-            1,
-        )
-
-    write(remote_path, remote)
-    print("RAM stability: AdminSensor Remote task stacks are lazy when unconfigured")
-else:
-    print("RAM stability: AdminSensor Remote lazy runtime already applied")
-
-
-# ---------------------------------------------------------------------------
-# Web diagnostics: halve the always-resident raw packet history and expose the
-# allocator metric that matters for TLS failures: largest contiguous 8-bit heap.
-# Keep a runtime minimum as well as an easy fragmentation percentage.
-# ---------------------------------------------------------------------------
 web_path = "src/web_manager.cpp"
 web = read(web_path)
-web_marker = "RAM_STABILITY_HEAP_METRICS_V1"
+marker = "RAM_STABILITY_SAFE_V2"
 
-if web_marker not in web:
+if marker not in web:
     if "#include <esp_heap_caps.h>" not in web:
         inc = "#include <Arduino.h>\n"
         if inc not in web:
-            raise RuntimeError("RAM stability Web: Arduino include anchor missing")
+            raise RuntimeError("RAM stability safe V2: Arduino include anchor missing")
         web = web.replace(inc, inc + "#include <esp_heap_caps.h>\n", 1)
 
     old = "constexpr uint8_t RAW_HISTORY_SIZE = 32;"
     if old not in web:
-        raise RuntimeError("RAM stability Web: raw history size anchor missing")
-    web = web.replace(old, "constexpr uint8_t RAW_HISTORY_SIZE = 16; // RAM_STABILITY_HEAP_METRICS_V1", 1)
-
-    web = web.replace("out.reserve(7000);", "out.reserve(4500);", 1)
-    web = web.replace("out.reserve(5500);", "out.reserve(3200);", 1)
+        raise RuntimeError("RAM stability safe V2: raw history anchor missing")
+    web = web.replace(old, "constexpr uint8_t RAW_HISTORY_SIZE = 16; // RAM_STABILITY_SAFE_V2", 1)
 
     heap_anchor = "    const uint32_t heapMin = ESP.getMinFreeHeap();\n"
     if heap_anchor not in web:
-        raise RuntimeError("RAM stability Web: heap metrics anchor missing")
+        raise RuntimeError("RAM stability safe V2: heap metrics anchor missing")
     heap_extra = r'''    const uint32_t heapLargest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
     static uint32_t heapLargestMin = 0xFFFFFFFFUL;
     if (heapLargest < heapLargestMin) heapLargestMin = heapLargest;
@@ -237,7 +52,7 @@ if web_marker not in web:
 
     json_anchor = '    out += ",\\\"heap_min_free\\\":" + String(heapMin);\n'
     if json_anchor not in web:
-        raise RuntimeError("RAM stability Web: heap JSON anchor missing")
+        raise RuntimeError("RAM stability safe V2: heap JSON anchor missing")
     json_extra = (
         json_anchor
         + '    out += ",\\\"heap_largest_free\\\":" + String(heapLargest);\n'
@@ -247,11 +62,6 @@ if web_marker not in web:
     web = web.replace(json_anchor, json_extra, 1)
 
     write(web_path, web)
-    print("RAM stability: raw Web history 32->16; contiguous heap telemetry enabled")
+    print("RAM stability SAFE V2: raw history 32->16; passive contiguous-heap telemetry enabled")
 else:
-    print("RAM stability: Web heap/history optimization already applied")
-
-# Keep the RC6 Runtime V2 dashboard scheduler unchanged. It already implements
-# adaptive remote polling and its repeat-build repair expects its canonical
-# timer anchors. The RAM gain from changing the local 2 s timer is marginal,
-# while preserving generator idempotence is more important for release safety.
+    print("RAM stability SAFE V2: already applied")
