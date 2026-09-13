@@ -251,29 +251,7 @@ if web_marker not in web:
 else:
     print("RAM stability: Web heap/history optimization already applied")
 
-
-# ---------------------------------------------------------------------------
-# Dashboard allocation churn: Runtime V2 leaves the local UI on a 2 s timer and
-# applies its own adaptive periods remotely. Increase only the local scheduler
-# tick to 3 s; the remote effective periods remain unchanged.
-# ---------------------------------------------------------------------------
-dash_path = "web/dashboard.html"
-dash = read(dash_path)
-poll_candidates = (
-    "setInterval(()=>safeRefresh(false),2000);",
-    "setInterval(safeRefresh,remoteUi?5000:2000);",
-)
-poll_new = "setInterval(()=>safeRefresh(false),3000); // RAM_STABILITY_WEB_POLL_V1"
-changed = False
-for old in poll_candidates:
-    if old in dash:
-        dash = dash.replace(old, poll_new, 1)
-        changed = True
-        break
-if changed:
-    write(dash_path, dash)
-    print("RAM stability: local dashboard state scheduler 2 s -> 3 s")
-elif "RAM_STABILITY_WEB_POLL_V1" in dash:
-    print("RAM stability: dashboard polling already optimized")
-else:
-    raise RuntimeError("RAM stability: dashboard safeRefresh timer anchor missing")
+# Keep the RC6 Runtime V2 dashboard scheduler unchanged. It already implements
+# adaptive remote polling and its repeat-build repair expects its canonical
+# timer anchors. The RAM gain from changing the local 2 s timer is marginal,
+# while preserving generator idempotence is more important for release safety.
