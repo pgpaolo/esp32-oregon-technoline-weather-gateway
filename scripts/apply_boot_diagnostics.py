@@ -21,11 +21,29 @@ def function_bounds(text, signature):
     brace = text.find("{", start)
     if brace < 0:
         raise RuntimeError(f"Boot diagnostics: opening brace missing: {signature}")
+
     depth = 0
     quote = None
     escape = False
-    for i in range(brace, len(text)):
+    line_comment = False
+    block_comment = False
+    i = brace
+    while i < len(text):
         ch = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+
+        if line_comment:
+            if ch == "\n":
+                line_comment = False
+            i += 1
+            continue
+        if block_comment:
+            if ch == "*" and nxt == "/":
+                block_comment = False
+                i += 2
+            else:
+                i += 1
+            continue
         if quote:
             if escape:
                 escape = False
@@ -33,9 +51,20 @@ def function_bounds(text, signature):
                 escape = True
             elif ch == quote:
                 quote = None
+            i += 1
+            continue
+
+        if ch == "/" and nxt == "/":
+            line_comment = True
+            i += 2
+            continue
+        if ch == "/" and nxt == "*":
+            block_comment = True
+            i += 2
             continue
         if ch in ('"', "'"):
             quote = ch
+            i += 1
             continue
         if ch == "{":
             depth += 1
@@ -43,6 +72,8 @@ def function_bounds(text, signature):
             depth -= 1
             if depth == 0:
                 return start, i + 1
+        i += 1
+
     raise RuntimeError(f"Boot diagnostics: unclosed function: {signature}")
 
 
