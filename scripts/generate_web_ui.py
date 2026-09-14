@@ -71,6 +71,19 @@ ram_scope = {
 }
 exec(compile(ram_stability.read_text(encoding="utf-8"), str(ram_stability), "exec"), ram_scope, ram_scope)
 
+# Runtime Memory V3 is deliberately last among the source transforms. It keeps
+# the proven task sizes unchanged while making their real high-water marks
+# self-describing, and removes recurring heap churn from MB payload formatting
+# and MQTT topic construction. RF/Wi-Fi/provisioning behaviour is untouched.
+runtime_memory_v3 = project_dir / "scripts" / "apply_runtime_memory_v3.py"
+memory_v3_scope = {
+    "__file__": str(runtime_memory_v3),
+    "__name__": "__main__",
+    "env": env,
+    "Import": lambda *args: None,
+}
+exec(compile(runtime_memory_v3.read_text(encoding="utf-8"), str(runtime_memory_v3), "exec"), memory_v3_scope, memory_v3_scope)
+
 source_path = project_dir / "web" / "dashboard.html"
 source_bytes = source_path.read_bytes()
 source_text = source_bytes.decode("utf-8")
