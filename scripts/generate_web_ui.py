@@ -61,8 +61,7 @@ exec(compile(transport_metrics.read_text(encoding="utf-8"), str(transport_metric
 
 # Final RAM-stability pass. It runs after every source/UI generator so the
 # shipped binary gets the low-risk memory changes rather than only the source
-# templates: lazy optional workers, smaller raw history, contiguous-heap
-# telemetry and lower local /api/state polling churn.
+# templates.
 ram_stability = project_dir / "scripts" / "apply_ram_stability.py"
 ram_scope = {
     "__file__": str(ram_stability),
@@ -73,7 +72,24 @@ ram_scope = {
 exec(compile(ram_stability.read_text(encoding="utf-8"), str(ram_stability), "exec"), ram_scope, ram_scope)
 
 source_path = project_dir / "web" / "dashboard.html"
-payload = gzip.compress(source_path.read_bytes(), compresslevel=9, mtime=0)
+source_bytes = source_path.read_bytes()
+source_text = source_bytes.decode("utf-8")
+
+# Compact only the copy embedded in firmware.  The canonical dashboard source is
+# deliberately not rewritten: earlier PlatformIO generators depend on stable
+# HTML anchors, especially during the second build in the same workspace.
+compact_helper = project_dir / "scripts" / "compact_config_ui.py"
+compact_scope = {
+    "__file__": str(compact_helper),
+    "__name__": "compact_config_ui",
+}
+exec(compile(compact_helper.read_text(encoding="utf-8"), str(compact_helper), "exec"), compact_scope, compact_scope)
+embedded_text = compact_scope["compact_config_ui"](source_text)
+embedded_bytes = embedded_text.encode("utf-8")
+raw_saved = len(source_bytes) - len(embedded_bytes)
+print(f"Compact config UI: source {len(source_bytes)} -> embedded {len(embedded_bytes)} bytes (saved {raw_saved})")
+
+payload = gzip.compress(embedded_bytes, compresslevel=9, mtime=0)
 
 rows = []
 for offset in range(0, len(payload), 16):
@@ -94,4 +110,4 @@ if not header_path.exists() or header_path.read_text(encoding="ascii") != header
     header_path.write_text(header_content, encoding="ascii", newline="\n")
 
 env.Append(CPPPATH=[str(generated_dir)])
-print(f"Compressed Web UI: {source_path.stat().st_size} -> {len(payload)} bytes")
+print(f"Compressed Web UI: {len(embedded_bytes)} -> {len(payload)} bytes")
