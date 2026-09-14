@@ -88,6 +88,9 @@ jobs:
         if: matrix.environment == 't3-v161-433'
         run: pio run -e "${{ matrix.environment }}"
 
+      - name: Validate runtime memory V3 transformations
+        run: python scripts/test_runtime_memory_v3.py
+
       - name: Validate generated I2C/HW integration
         run: python scripts/test_generated_i2c_hardware_diagnostics.py
 
