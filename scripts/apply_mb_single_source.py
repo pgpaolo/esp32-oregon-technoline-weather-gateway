@@ -23,9 +23,21 @@ def write(path, text):
 # ---------------------------------------------------------------------------
 cpp = read("src/mb_compatible_publisher.cpp")
 start = cpp.find("LiveSelection selectLive(")
-end = cpp.find("\nString floatField(", start)
-if start < 0 or end < 0:
-    raise RuntimeError("MB single-source: selectLive anchors missing")
+if start < 0:
+    raise RuntimeError("MB single-source: selectLive function missing")
+
+# Historical builds place String floatField() immediately after selectLive().
+# Runtime Memory V3 intentionally replaces that allocating helper with
+# appendFloatField(). Accept either boundary so a second PlatformIO build can
+# re-validate/rewrite selectLive without reverting the V3 allocation cleanup.
+end_candidates = [
+    cpp.find("\nString floatField(", start),
+    cpp.find("\nbool appendFloatField(", start),
+]
+end_candidates = [pos for pos in end_candidates if pos >= 0]
+if not end_candidates:
+    raise RuntimeError("MB single-source: selectLive end anchor missing (legacy/V3)")
+end = min(end_candidates)
 
 strict_select = r'''LiveSelection selectLive(const StationState &s, const MbCompatibleConfig &cfg, uint32_t now, uint32_t dayKey) {
     LiveSelection v;
@@ -93,6 +105,19 @@ strict_select = r'''LiveSelection selectLive(const StationState &s, const MbComp
 '''
 cpp = cpp[:start] + strict_select + cpp[end:]
 
+# Strong semantic guard: accepting the V3 boundary must never weaken the
+# exclusive-source invariant. These markers cover both station branches and the
+# intentional local-BME exception.
+strict_markers = [
+    "const bool useTechnoline = cfg.sourcePriority == 1U;",
+    "// Oregon source: no Technoline fallback is allowed.",
+    "// Technoline source: no Oregon fallback is allowed.",
+    "// BME280 is local gateway hardware, not a fallback weather station.",
+]
+for marker in strict_markers:
+    if marker not in cpp:
+        raise RuntimeError(f"MB single-source semantic guard missing: {marker}")
+
 # Add a human-readable source name to the status JSON while preserving the
 # historical source_priority numeric field for config/backup compatibility.
 status_anchor = '    out += ",\\\"source_priority\\\":" + String(cfg.sourcePriority);\n'
@@ -141,4 +166,5 @@ else:
     raise RuntimeError("MB single-source: dashboard note anchor missing")
 write("web/dashboard.html", dash)
 
-print("MB-compatible single-source: Oregon/Technoline mixing disabled")
+mode = "V3" if "RUNTIME_MEMORY_V3_MB" in cpp else "legacy"
+print(f"MB-compatible single-source: Oregon/Technoline mixing disabled ({mode})")
