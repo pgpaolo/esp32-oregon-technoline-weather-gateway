@@ -84,6 +84,18 @@ memory_v3_scope = {
 }
 exec(compile(runtime_memory_v3.read_text(encoding="utf-8"), str(runtime_memory_v3), "exec"), memory_v3_scope, memory_v3_scope)
 
+# Arduino's Print.h exports HEX as a macro. The V3 URL encoder uses a named
+# hexadecimal digit table, so normalize that generated identifier before C++
+# preprocessing. Kept as a tiny separate pass to preserve repeat-build repair.
+runtime_memory_v3_fix = project_dir / "scripts" / "apply_runtime_memory_v3_compile_fix.py"
+memory_v3_fix_scope = {
+    "__file__": str(runtime_memory_v3_fix),
+    "__name__": "__main__",
+    "env": env,
+    "Import": lambda *args: None,
+}
+exec(compile(runtime_memory_v3_fix.read_text(encoding="utf-8"), str(runtime_memory_v3_fix), "exec"), memory_v3_fix_scope, memory_v3_fix_scope)
+
 source_path = project_dir / "web" / "dashboard.html"
 source_bytes = source_path.read_bytes()
 source_text = source_bytes.decode("utf-8")
