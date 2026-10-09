@@ -15,6 +15,9 @@ Project author and maintainer: **Gianpaolo P.** (`pgpaolo`) · Copyright © 2026
 
 ## Current source release
 
+**Security maintenance candidate:** `6.4.0-rc6-stab2` is under review on `release/6.4.0-rc6-stab2-hardening`. It replaces predictable bootstrap/recovery AP credentials, preserves custom administrator passwords across NVS schema migrations, and consolidates the main BME280/I2C lineage. It is not yet a stable hardware-tested release; the immutable rain1 tag remains available.
+
+
 **`6.4.0-rc6-stab1-rain1` (9 October 2026)** is the current source candidate for LILYGO T3 V1.6.1 / SX1278 433 MHz. It incorporates the RC6 RF/Web features, RAM and TLS stability work, COMPATIBLE MB diagnostics and separate Oregon/Technoline rainfall accumulation with optional microSD checkpoints.
 
 The existing `release/6.4.0-rc6` is the historical RC6 baseline; older RC3/RC4 notes remain available for traceability. The `main` branch may lag until CI and board verification are complete. **Source availability does not imply physical-hardware validation.**

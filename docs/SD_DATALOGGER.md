@@ -1,10 +1,6 @@
 # microSD datalogger
 
-Release candidate:
-
-```text
-release/6.4.0-rc3
-```
+Linea storica: `release/6.4.0-rc3`. Le funzioni SD della linea rain1/stab2 richiedono la verifica fisica dei checkpoint, dei reset e della concorrenza con SX1278.
 
 The microSD path is an output layer only and does not change the RF decoder architecture. Mount and explicit FAT format have been confirmed on the physical T3 V1.6.1 setup.
 

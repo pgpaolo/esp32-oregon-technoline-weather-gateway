@@ -7,6 +7,7 @@ on:
       - 'develop'
       - 'release/6.4.0-rc4'
       - 'release/6.4.0-rc6'
+      - 'release/6.4.0-rc6-stab2-hardening'
   pull_request:
     branches:
       - 'main'

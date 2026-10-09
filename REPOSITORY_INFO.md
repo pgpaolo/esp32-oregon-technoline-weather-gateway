@@ -24,7 +24,9 @@
 
 - `main` — stable/production line; now includes the selective BME280/I2C reliability backport merged through PR #23.
 - `release/6.4.0-rc3` — frozen historical RC/hardware-validation line.
-- `release/6.4.0-rc4` — current complete release candidate, firmware identity `6.4.0-rc4`, fully refreshed from validated `develop` commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`.
+- `release/6.4.0-rc6-stab2-hardening` — security/integration review of rain1, pending main PR and hardware validation.
+- `release/6.4.0-rc6-stab1-rain1` — source prerelease with SD rainfall accumulation and LILYGO stability changes.
+- `release/6.4.0-rc4` — historical complete release candidate, firmware identity `6.4.0-rc4`, fully refreshed from validated `develop` commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`.
 - `develop` — next-development line, firmware identity `6.4.0-dev2`.
 
 ## RC4 feature set

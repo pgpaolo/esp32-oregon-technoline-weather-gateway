@@ -1,19 +1,19 @@
-# Web provisioning, autenticazione e OTA — 6.4.0-rc3
+# Web provisioning, autenticazione e OTA — 6.4.0-rc6-stab2
 
-Questo documento descrive il comportamento della release candidate `release/6.4.0-rc3` per configurazione Wi-Fi, recovery di rete, autenticazione Web, OTA e interazione con il datalogger microSD.
+Questa guida documenta anche la migrazione sicurezza del ramo `release/6.4.0-rc6-stab2-hardening`. Vedi [SECURITY_MIGRATION_STAB2.md](SECURITY_MIGRATION_STAB2.md) per la nuova inizializzazione e l'AP di recupero.
 
 ## Credenziali Web iniziali
 
 Basic Authentication è abilitata di default.
 
-Credenziali iniziali della release candidate:
+Credenziali iniziali della revisione stab2 (disponibili localmente):
 
 ```text
 utente: admin
-password: admin
+password: <generata su OLED/Serial, non predefinita>
 ```
 
-La password `admin` è ammessa esclusivamente come credenziale iniziale/migrazione. Dopo il primo accesso va sostituita da **Configurazione > SISTEMA**; le nuove password normali devono essere lunghe da 8 a 63 caratteri.
+Nelle vecchie RC la password `admin` era il default iniziale. Stab2 la ruota automaticamente in una password casuale quando ancora presente; conserva invece le password personalizzate. Dopo il primo accesso va sostituita da **Configurazione > SISTEMA**; le nuove password normali devono essere lunghe da 8 a 63 caratteri.
 
 Le installazioni che avevano già memorizzato in NVS la precedente password casuale vengono migrate una sola volta allo schema corrente. Una volta completata la migrazione, le password impostate successivamente dall'utente non vengono più sovrascritte dai default firmware.
 
@@ -157,7 +157,7 @@ La password MQTT segue le regole specifiche del backup e va comunque trattata co
 
 1. Installare il `firmware.bin` corretto per la board.
 2. Aprire la Web UI.
-3. Accedere con `admin / admin`.
+3. Accedere usando la password casuale visibile sulla console locale/OLED (o la password personale già configurata).
 4. Cambiare subito la password Web da **SISTEMA**.
 5. Verificare la rete corrente.
 6. Provare **Scansiona reti Wi-Fi**.
@@ -170,7 +170,7 @@ La password MQTT segue le regole specifiche del backup e va comunque trattata co
 
 - non esporre direttamente la porta HTTP dell'ESP32 a Internet;
 - preferire LAN/VPN o reverse proxy HTTPS fidato;
-- cambiare `admin / admin` al primo accesso;
+- la precedente password `admin/admin` viene ruotata automaticamente in stab2; usare la nuova password mostrata localmente;
 - non pubblicare `src/config_private.h`;
 - usare MQTT TLS con CA verificata quando il broker non è su una LAN fidata;
 - usare `TLS insecure` solo per diagnostica temporanea.

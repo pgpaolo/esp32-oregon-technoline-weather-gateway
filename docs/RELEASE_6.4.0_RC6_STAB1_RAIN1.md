@@ -28,7 +28,7 @@ Primary target: LILYGO T3 V1.6.1 (ESP32 + SX1278 433.92 MHz), OLED SSD1306, opti
 
 ## Verification status / Stato verifiche
 
-Source-level and host arithmetic/pre-build tests were carried out for the supplied source archive. CI `t3-v161-433`/`t3-s3-433`, OTA on board, recovery after sudden power loss, sensor and SX1278 receiving, long-running stability and SD SPI operation **must be confirmed separately**; no binary is represented as hardware-certified.
+Source-level and host arithmetic/pre-build tests were carried out. [GitHub Actions run 37922875911](https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway/actions/runs/37922875911) passed builds for both `t3-v161-433` and `t3-s3-433`. OTA on the board, recovery after sudden power loss, SX1278 RF reception, endurance and SD SPI operation **must still be tested on hardware**. No binary is claimed hardware-certified.
 
 ## Documents / Documenti
 

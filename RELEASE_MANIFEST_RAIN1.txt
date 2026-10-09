@@ -5,5 +5,5 @@ Optional board: T3-S3 433
 PlatformIO: t3-v161-433 / t3-s3-433
 Major change: independent Oregon/Technoline rain accumulation and optional microSD checkpointing
 Docs: README.md, README_IT.md, CHANGELOG.md, docs/RAIN_ACCUMULATION*.md, docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md, docs/STABILITY_LILYGO_T3.md, PUBLISHING_RAIN1.md
-Tests: host arithmetic and generation guards, pending GitHub CI / physical hardware
+Tests: host arithmetic and generation guards; both PlatformIO builds passed on GitHub Actions 37922875911; physical hardware validation pending
 License: GPL-3.0-or-later (see LICENSE)

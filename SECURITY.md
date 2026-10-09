@@ -13,11 +13,17 @@ The repository contains only `src/config_private.example.h`.
 
 Wi-Fi passwords and Web administrator passwords are stored locally in NVS and are not exported by the normal configuration backup. The primary Wi-Fi password is not returned by the HTTP configuration API.
 
+## Initial credentials and recovery AP (stab2)
+
+New installations and upgrades still using the legacy factory `admin/admin` Web password receive a random 24-character initial password. It is shown on the local OLED for approximately 60 seconds and on the physical Serial console. Existing user-chosen passwords remain unchanged when NVS schema changes. **Have physical access to the device or Serial before applying the upgrade if the current password is `admin`.** A failing NVS write keeps authentication enabled, but may require re-provisioning after a reboot.
+
+The Wi-Fi recovery AP password is now a random 20-character secret, persisted in NVS. Its SSID still identifies the device, but the password cannot be reconstructed from that SSID or MAC suffix. The password is available over the local Serial console when the AP starts and through the authenticated network UI if reachable. Keep this secret private.
+
 ## Web interface
 
 The embedded Web UI uses HTTP Basic Authentication and authentication is enabled by default.
 
-Factory credentials for release candidate `6.4.0-rc3` are:
+**Historical versions through rain1** used these insecure initial credentials (automatically rotated in stab2):
 
 ```text
 user: admin

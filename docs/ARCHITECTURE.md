@@ -1,10 +1,8 @@
 # Architecture
 
-Current consolidated development branch:
+Current integration review branch: `release/6.4.0-rc6-stab2-hardening` (previous source prerelease: `release/6.4.0-rc6-stab1-rain1`).
 
-```text
-codex/sdfat-write-status
-```
+After RF decoding, `rain_accumulator.*` keeps Oregon/Technoline UTC counters independently; deferred SdFat checkpoints use rotating CRC/integrity-checked snapshots. The main loop handles SD writes rather than the RF callback. The MB-compatible publisher selects one complete station; it never fabricates invalid measurements to satisfy an HTTP backend.
 
 ## Data flow
 

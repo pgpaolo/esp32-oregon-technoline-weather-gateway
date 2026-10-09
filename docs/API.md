@@ -2,7 +2,7 @@
 
 The embedded Web UI communicates with the main HTTP server on port 80.
 
-On the current development line, HTTP Basic Authentication is enabled by default and normal Dashboard/API routes are protected while authentication is enabled. Factory first-access credentials are `admin / admin` and should be changed immediately from `SISTEMA`. The current release-candidate line is `release/6.4.0-rc4`.
+On the current development line, HTTP Basic Authentication is enabled by default and normal Dashboard/API routes are protected while authentication is enabled. New stab2 installations (and insecure `admin/admin` upgrades) receive a random initial password shown on local OLED/Serial. Existing custom credentials survive the NVS schema migration. Previous rain1 used the historical default `admin/admin`. See [security migration](SECURITY_MIGRATION_STAB2.md). The current security-review candidate is `release/6.4.0-rc6-stab2-hardening`; the published source prerelease is `v6.4.0-rc6-stab1-rain1`.
 
 ## Endpoints
 

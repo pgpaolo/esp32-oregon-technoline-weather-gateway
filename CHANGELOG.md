@@ -2,6 +2,13 @@
 
 All notable project changes are documented here.
 
+## 6.4.0-rc6-stab2 — 2026-10-09 (security/integration review)
+
+- Rotated the legacy `admin/admin` onboarding password to a random 24-character credential, shown on the local OLED and Serial output at first boot or insecure-credential upgrade. Existing custom Web credentials survive schema migration.
+- Generated a random 20-character recovery AP passphrase with NVS persistence, rather than deriving it from the public SSID/MAC suffix. Recovery AP provisioning requires local Serial access to the password when STA is unavailable.
+- Preserved main-only BME280/I2C hotfix scripts in merge ancestry; the RC6 shared-I2C runtime path remains authoritative and is not double-patched.
+- Updated release-facing documentation, citation metadata and security notes; added CI security invariant tests. Hardware endurance/OTA/power-loss recovery still require bench validation.
+
 ## 6.4.0-rc6-stab1-rain1 — 2026-10-09 (source candidate)
 
 - Independent Oregon and Technoline rain accumulators: UTC day/month/year/lifetime counters.

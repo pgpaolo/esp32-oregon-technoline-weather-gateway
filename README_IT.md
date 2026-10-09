@@ -8,6 +8,9 @@ Autore e maintainer del progetto: **Gianpaolo P.** (`pgpaolo`) · Copyright © 2
 
 ## Release sorgente attuale
 
+**Revisione di sicurezza in valutazione:** `6.4.0-rc6-stab2`, sul ramo `release/6.4.0-rc6-stab2-hardening`, introduce credenziali Web iniziali casuali, password AP di recupero casuale memorizzata in NVS e migrazione che conserva le password personali. La release rain1 rimane immutata. La revisione non è ancora un firmware stabile collaudato fisicamente.
+
+
 **`6.4.0-rc6-stab1-rain1` (9 ottobre 2026)** è la versione sorgente più recente per LILYGO T3 V1.6.1 / SX1278 433 MHz. Integra la base RC6, gli interventi per heap/TLS e stabilità dei task, i diagnostici COMPATIBLE MB e gli accumulatori pioggia separati Oregon/Technoline con checkpoint microSD opzionali.
 
 Il ramo `release/6.4.0-rc6` rimane il riferimento storico RC6; RC3 e RC4 restano consultabili. `main` può essere meno aggiornato fino alla verifica CI e hardware. **Il codice sorgente non equivale a firmware validato fisicamente.**

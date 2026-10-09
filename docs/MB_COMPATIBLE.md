@@ -1,6 +1,6 @@
 # COMPATIBLE MB realtime publisher
 
-Status: **development / hardware test** (`develop`, firmware `6.4.0-dev2`).
+Status: **RC6/rain1 integrated, hardware endurance test pending**; maintained in security-review branch `release/6.4.0-rc6-stab2-hardening`.
 
 This feature is disabled by default and does not change the Oregon/Technoline RF decoder path. It adds an optional HTTP/HTTPS realtime publisher compatible with the whitespace-separated Meteobridge/Aurora data layout used by `mb.php`-style receivers.
 
@@ -155,7 +155,7 @@ No new username/password credential is introduced by this publisher.
 
 ## Test sequence
 
-1. Flash a `develop` / `6.4.0-dev2` firmware build.
+1. Flash a board-appropriate `6.4.0-rc6-stab2` candidate build (or validated `rain1` source build) after checking the release's hardware limitations.
 2. Open **CONFIGURAZIONE > COMPATIBLE MB**.
 3. Enter the complete `mb.php`-compatible URL.
 4. For a first test with an `http://` URL, leave the CA field empty.

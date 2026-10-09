@@ -3,12 +3,13 @@
 #include <Preferences.h>
 #include <WebServer.h>
 #include <mbedtls/base64.h>
+#include <esp_system.h>
 
 namespace {
 constexpr const char *NVS_NS = "webauth";
 constexpr const char *DEFAULT_USER = "admin";
 constexpr const char *DEFAULT_PASSWORD = "admin";
-constexpr uint8_t AUTH_SCHEMA_VERSION = 2U;
+constexpr uint8_t AUTH_SCHEMA_VERSION = 3U;
 constexpr uint8_t MAX_FAILED_ATTEMPTS = 10U;
 constexpr uint32_t LOCKOUT_MS = 30000UL;
 
@@ -40,6 +41,21 @@ bool factoryBootstrapPassword(const String &value) {
 
 bool validStoredPassword(const String &value) {
     return validPassword(value) || factoryBootstrapPassword(value);
+}
+
+// Random onboarding password, never derived from MAC/SSID or a fixed firmware constant.
+// When Wi-Fi is active the ESP32 hardware RNG has a live RF entropy source.
+String generateBootstrapPassword() {
+    static constexpr char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    uint8_t randomBytes[24];
+    esp_fill_random(randomBytes, sizeof(randomBytes));
+    String out;
+    out.reserve(sizeof(randomBytes) + 1U);
+    for (const uint8_t value : randomBytes) {
+        out += alphabet[value % (sizeof(alphabet) - 1U)];
+    }
+    memset(randomBytes, 0, sizeof(randomBytes));
+    return out;
 }
 
 bool lockoutActive() {
@@ -101,23 +117,28 @@ void initWebSecurity() {
 
     if (!validUsername(cfg.username)) cfg.username = DEFAULT_USER;
 
-    const bool migrateLegacyCredentials = storedSchema < AUTH_SCHEMA_VERSION;
-    if (migrateLegacyCredentials || !haveStoredPassword) {
+    // Preserve valid custom credentials during schema upgrades. Rotate only
+    // an absent/invalid credential or the legacy factory 'admin' password.
+    const bool insecureFactoryPassword = haveStoredPassword && password == DEFAULT_PASSWORD;
+    if (!haveStoredPassword || insecureFactoryPassword) {
         cfg.enabled = true;
-        cfg.username = DEFAULT_USER;
-        password = DEFAULT_PASSWORD;
+        password = generateBootstrapPassword();
         bootstrapPassword = password;
         if (!persistConfig(cfg, password)) {
-            Serial.println(F("[AUTH] ERRORE: impossibile salvare le credenziali iniziali in NVS"));
+            // Fail closed: keep a fresh, authenticated in-RAM credential.
+            // If NVS is broken the device will generate a new password next boot.
+            Serial.println(F("[AUTH] ERRORE: credenziali temporanee, salvataggio NVS fallito"));
         }
-        if (migrateLegacyCredentials) {
-            Serial.println(F("[AUTH] migrazione credenziali legacy -> admin/admin completata"));
-        } else {
-            Serial.println(F("[AUTH] credenziali Web iniziali impostate"));
-        }
+        Serial.println(F("[AUTH] credenziali iniziali casuali generate: solo OLED/Serial locale"));
         Serial.print(F("[AUTH] utente: ")); Serial.println(cfg.username);
-        Serial.print(F("[AUTH] password iniziale: ")); Serial.println(bootstrapPassword);
-        Serial.println(F("[AUTH] cambiare la password dalla sezione SISTEMA dopo il primo accesso"));
+        Serial.print(F("[AUTH] password temporanea: ")); Serial.println(bootstrapPassword);
+        Serial.println(F("[AUTH] conservare la password e modificarla da SISTEMA"));
+    } else if (storedSchema < AUTH_SCHEMA_VERSION) {
+        if (!persistConfig(cfg, password)) {
+            Serial.println(F("[AUTH] ERRORE: migrazione NVS non riuscita; credenziali mantenute"));
+        } else {
+            Serial.println(F("[AUTH] migrazione NVS completata; password personale mantenuta"));
+        }
     }
 
     cfg.passwordSet = validStoredPassword(password);

@@ -8,4 +8,4 @@ authors:
     alias: "pgpaolo"
 repository-code: "https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway"
 license: "GPL-3.0-or-later"
-version: "6.4.0-rc4"
+version: "6.4.0-rc6-stab2"

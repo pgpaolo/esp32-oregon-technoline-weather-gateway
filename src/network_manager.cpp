@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
+#include <esp_system.h>
 #include "config.h"
 
 namespace {
@@ -104,7 +105,25 @@ void buildRecoveryCredentials() {
     char suffix[7];
     snprintf(suffix, sizeof(suffix), "%06lX", static_cast<unsigned long>(id));
     recoverySsid = String("OregonGateway-Setup-") + suffix;
-    recoveryPassword = String("Oregon-") + suffix;
+    // The SSID is public; never use its suffix to calculate the AP password.
+    Preferences p;
+    if (p.begin(NVS_NS, false)) {
+        recoveryPassword = p.getString("apsecret", "");
+        if (recoveryPassword.length() != 20U) recoveryPassword = "";
+    }
+    if (recoveryPassword.length() != 20U) {
+        static constexpr char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+        uint8_t bytes[20];
+        esp_fill_random(bytes, sizeof(bytes));
+        recoveryPassword = "";
+        recoveryPassword.reserve(sizeof(bytes) + 1U);
+        for (const uint8_t value : bytes) recoveryPassword += alphabet[value % (sizeof(alphabet) - 1U)];
+        memset(bytes, 0, sizeof(bytes));
+        if (p.isKey("apsecret") || p.putString("apsecret", recoveryPassword) != 20U) {
+            Serial.println(F("[WiFi] AP password NVS non verificabile: password locale temporanea"));
+        }
+    }
+    p.end();
 }
 
 void loadConfig() {
@@ -230,8 +249,12 @@ void stopRecoveryAp() {
 
 void startRecoveryAp() {
     if (recoveryApActive) return;
-    if (recoverySsid.length() == 0) buildRecoveryCredentials();
     WiFi.mode(WIFI_AP_STA);
+    if (recoverySsid.length() == 0 || recoveryPassword.length() != 20U) buildRecoveryCredentials();
+    if (recoveryPassword.length() != 20U) {
+        Serial.println(F("[WiFi] ERRORE: password AP non disponibile; AP non avviato"));
+        return;
+    }
     const bool ok = WiFi.softAP(recoverySsid.c_str(), recoveryPassword.c_str());
     if (!ok) {
         Serial.println(F("[WiFi] ERRORE avvio AP di recupero"));
@@ -282,7 +305,8 @@ bool restorePreviousCredentials() {
 
 void initNetwork() {
     loadConfig();
-    buildRecoveryCredentials();
+    // Generate/load recovery AP secret only when AP is actually needed,
+    // after Wi-Fi hardware is on (hardware RNG entropy).
 
     // Deve essere impostato prima di WiFi.mode()/WiFi.begin().
     if (!WiFi.setHostname(netCfg.hostname.c_str())) {

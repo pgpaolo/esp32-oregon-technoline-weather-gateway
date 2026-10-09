@@ -8,6 +8,7 @@ on:
       - release/6.4.0-rc3
       - release/6.4.0-rc4
       - release/6.4.0-rc6
+      - release/6.4.0-rc6-stab2-hardening
       - develop
   pull_request:
     branches:
@@ -73,6 +74,9 @@ jobs:
 
       - name: Validate MB-compatible realtime mapping
         run: python scripts/test_mb_compatible_mapping.py
+
+      - name: Validate security provisioning and recovery AP secrets
+        run: python scripts/test_security_hardening.py
 
       - name: Build firmware
         run: pio run -e "${{ matrix.environment }}"
