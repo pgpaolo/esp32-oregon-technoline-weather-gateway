@@ -78,6 +78,18 @@ jobs:
       - name: Validate security provisioning and recovery AP secrets
         run: python scripts/test_security_hardening.py
 
+      - name: Validate Meteobridge deployment dependencies
+        run: |
+          python scripts/test_meteobridge_dependency_guards.py
+          if command -v php >/dev/null 2>&1; then
+            php -l server/meteobridge/mbridge/mb.php
+            php -l server/meteobridge/mbridge/weather.php
+            php -l server/meteobridge/lib/weather_realtime.php
+          fi
+
+      - name: Validate backup import remains preflight-first
+        run: python scripts/test_backup_import_order.py
+
       - name: Build firmware
         run: pio run -e "${{ matrix.environment }}"
 
