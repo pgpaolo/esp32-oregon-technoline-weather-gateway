@@ -5,7 +5,8 @@
 3. Open PR against `main`, account for divergent history, and inspect GitHub Actions output (`validate`, both PlatformIO targets and same-workspace second T3 build). Never merge failing checks.
 4. Run host `tests/test_rain_accumulator_core.cpp`; smoke-test radio Oregon/Technoline and SdFat on LILYGO T3 V1.6.1. Record heap/stack and reset reason over extended operation.
 5. Verify MB publisher reports real valid measures rather than just 192 placeholders; test timeouts and TLS/WebSocket concurrent operation.
-6. Only after successful CI + board review, promote to `main`, create an annotated version tag and GitHub Release notes. GitHub Release may be marked **prerelease** while operational validation remains incomplete. Attach compiled binary only after verified.
-7. Back up SD and configuration before upgrade; do not reset accumulated rainfall without explicit operator intent.
+6. The branch workflow `.github/workflows/release-rain1-source.yml` runs host checks and builds both PlatformIO targets, then can create a **source-only prerelease** (no unverified firmware binary). CI and hardware validation are different gates; the prerelease does not certify the LILYGO board.
+7. Only after successful CI + board review, reconcile the divergent `main` history and promote with a reviewed merge. Attach compiled binaries to a production GitHub Release only after device verification.
+8. Back up SD and configuration before upgrade; do not reset accumulated rainfall without explicit operator intent.
 
-No claim is made here that hardware testing, release tag creation, or GitHub Releases publication has already occurred.
+Do not mark the prerelease as production ready without physical testing. GitHub Actions status and the Releases page determine whether the automated source-only publication actually completed.
