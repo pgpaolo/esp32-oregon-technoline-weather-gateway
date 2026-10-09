@@ -17,7 +17,10 @@ checks={
     'Remote Web enablement': 'if(!u.isEmpty())startRemoteTasks()' in r,
     'MB worker deferral': 'LILYGO_STABILITY_MB_LAZY_V1' in m,
     'MB worker on-demand': 'if(!gWorkerTask && (cfg.enabled || gForceTest))' in m,
-    'Low heap HTTPS guard': 'LILYGO_STABILITY_TLS_GUARD_V1' in m and 'gBusy=false;' in m,
+    'Low heap HTTPS guard': ('LILYGO_STABILITY_TLS_GUARD_V1' in m and
+                            'blockAfterPause < MB_TLS_HEAP_PAUSE_THRESHOLD' in m and
+                            'remoteAccessResumeAfterExternalTls();' in m and
+                            'gBusy = false;' in m),
     'Web heap/stack metrics': 'heap_largest_block' in w and 'loop_stack_min_free_bytes' in w,
     'Boot reset reason': 'LILYGO_STABILITY_BOOT_DIAG_V1' in main,
     'V2 pre script registered': 'pre:scripts/apply_remote_runtime_v2.py' in conf,
