@@ -2,6 +2,15 @@
 
 All notable project changes are documented here.
 
+## 6.4.0-rc6-stab1-rain1-mbfix1 — 2026-10-09 (source-only follow-up)
+
+- COMPATIBLE MB **field 9** reads the same selected Oregon/Technoline **UTC daily** accumulator as `/api/rain/accumulation`; the independent MB NVS day baselines are not used. The sensor total remains field 151.
+- The daily total is retained across temporary radio gaps; instantaneous rate/rolling rainfall values still require fresh sensor readings. Uninitialized/disabled accumulator or unavailable UTC yields `--`, not misleading zero.
+- The selected source's rain accumulation must be enabled in **CONFIGURAZIONE > microSD**. For persistence over reboot/power loss, optional SD checkpoints must also be enabled and operational.
+- CI passed at implementation commit `4b58c68b6ad78a0a9be841be38a7e470f428e44e`: rainfall host tests, MB mapping, PlatformIO for both LILYGO board targets. A new follow-up source prerelease is built again before publication. **No physical board/endurance/OTA certification**.
+- Original `v6.4.0-rc6-stab1-rain1` tag and published release are retained unchanged. Not yet merged into RC6-stab2 Hardening or `main`.
+- Full correction notes: [docs/RELEASE_6.4.0_RC6_STAB1_RAIN1_MBFIX1.md](docs/RELEASE_6.4.0_RC6_STAB1_RAIN1_MBFIX1.md).
+
 ## 6.4.0-rc6-stab1-rain1 — 2026-10-09 (source candidate)
 
 - Independent Oregon and Technoline rain accumulators: UTC day/month/year/lifetime counters.

@@ -10,3 +10,11 @@
 8. Back up SD and configuration before upgrade; do not reset accumulated rainfall without explicit operator intent.
 
 Do not mark the prerelease as production ready without physical testing. GitHub Actions status and the Releases page determine whether the automated source-only publication actually completed.
+
+## Follow-up publication / Pubblicazione MBFIX1
+
+- Source-only follow-up tag: `v6.4.0-rc6-stab1-rain1-mbfix1`. Its immutable historical predecessor `v6.4.0-rc6-stab1-rain1` must not be moved, overwritten or deleted.
+- The branch-only workflow runs the rainfall arithmetic host test, COMPATIBLE MB mapping guard and PlatformIO builds for **both** board environments **before** it creates the new GitHub prerelease from its exact successful checkout commit.
+- The release notes are [docs/RELEASE_6.4.0_RC6_STAB1_RAIN1_MBFIX1.md](docs/RELEASE_6.4.0_RC6_STAB1_RAIN1_MBFIX1.md). No firmware `.bin` is attached; physical device verification is still required.
+- This correction is restricted to the rain1 line. Leave `main`, `develop`, RC6 original and the separate RC6-stab2 Hardening branch unchanged; decide on integration only after rain1 field checks.
+- After publication check the tag/ref actually points at the release commit, both PlatformIO jobs, release asset list and the unchanged original release.

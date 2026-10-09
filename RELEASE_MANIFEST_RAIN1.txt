@@ -7,3 +7,10 @@ Major change: independent Oregon/Technoline rain accumulation and optional micro
 Docs: README.md, README_IT.md, CHANGELOG.md, docs/RAIN_ACCUMULATION*.md, docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md, docs/STABILITY_LILYGO_T3.md, PUBLISHING_RAIN1.md
 Tests: host arithmetic and generation guards, pending GitHub CI / physical hardware
 License: GPL-3.0-or-later (see LICENSE)
+
+Follow-up source prerelease: v6.4.0-rc6-stab1-rain1-mbfix1
+Follow-up fix: MB field 9 consumes shared UTC rain-today accumulator for the selected Oregon/Technoline source; sensor total field 151 unchanged.
+Implementation commit: 4b58c68b6ad78a0a9be841be38a7e470f428e44e
+Tag policy: create a separate prerelease tag after CI; keep v6.4.0-rc6-stab1-rain1 immutable.
+Validation: host rainfall and MB mapping, both PlatformIO targets passed on implementation commit; physical board tests pending.
+Hardening integration: deferred; neither develop nor RC6-stab2 modified for MBFIX1.

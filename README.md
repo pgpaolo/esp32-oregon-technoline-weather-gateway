@@ -15,6 +15,9 @@ Project author and maintainer: **Gianpaolo P.** (`pgpaolo`) · Copyright © 2026
 
 ## Current source release
 
+**Rain1 MB rainfall correction (9 October 2026):** [`v6.4.0-rc6-stab1-rain1-mbfix1`](https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway/releases/tag/v6.4.0-rc6-stab1-rain1-mbfix1) is the new source-only follow-up to the original rain1 prerelease. MB field 9 now uses the same selected-station UTC daily accumulator as `/api/rain/accumulation`. The original tag `v6.4.0-rc6-stab1-rain1` stays unchanged, and this patch is **not** yet merged into RC6-stab2 Hardening. [Correction notes](docs/RELEASE_6.4.0_RC6_STAB1_RAIN1_MBFIX1.md). Physical testing is still pending.
+
+
 **`6.4.0-rc6-stab1-rain1` (9 October 2026)** is the current source candidate for LILYGO T3 V1.6.1 / SX1278 433 MHz. It incorporates the RC6 RF/Web features, RAM and TLS stability work, COMPATIBLE MB diagnostics and separate Oregon/Technoline rainfall accumulation with optional microSD checkpoints.
 
 The existing `release/6.4.0-rc6` is the historical RC6 baseline; older RC3/RC4 notes remain available for traceability. The `main` branch may lag until CI and board verification are complete. **Source availability does not imply physical-hardware validation.**

@@ -12,6 +12,7 @@ on:
       - 'web/**'
       - 'platformio.ini'
       - 'docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md'
+      - 'docs/RELEASE_6.4.0_RC6_STAB1_RAIN1_MBFIX1.md'
   workflow_dispatch:
 
 permissions:
@@ -47,13 +48,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG='v6.4.0-rc6-stab1-rain1'
+          TAG='v6.4.0-rc6-stab1-rain1-mbfix1'
+          # Preserve the published original rain1 release. Never retarget an existing tag.
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists; skipping creation."
           else
+            if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+              echo "::error::Tag $TAG already exists without the expected release; refusing to retarget it."
+              exit 1
+            fi
             gh release create "$TAG" \
               --target "$GITHUB_SHA" \
-              --title 'ESP32 Oregon/Technoline Gateway 6.4.0-rc6-stab1-rain1 (source prerelease)' \
-              --notes-file docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md \
+              --title 'ESP32 Oregon/Technoline Gateway 6.4.0-rc6-stab1-rain1-mbfix1 (source prerelease)' \
+              --notes-file docs/RELEASE_6.4.0_RC6_STAB1_RAIN1_MBFIX1.md \
               --prerelease
           fi
