@@ -4,6 +4,7 @@ Questa cartella documenta l'obiettivo futuro di una possibile edizione **non com
 
 1. [Audit tecnico di provenienza e dipendenze](LICENSE_AUDIT_2026-10-09.md)
 2. [Piano di migrazione con gate e condizioni](NONCOMMERCIAL_MIGRATION_PLAN.md)
+3. [Licenze separate dei decoder e proposta PolyForm per il lavoro originale](MIXED_LICENSE_ARCHITECTURE.md)
 
 **Stato rilascio PolyForm:** NO-GO, in attesa di verifica del decoder GPL, degli altri contributi/dipendenze e del titolo giuridico del software.
 

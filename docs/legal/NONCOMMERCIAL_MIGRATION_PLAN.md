@@ -2,6 +2,8 @@
 
 **Destinazione desiderata:** una eventuale **nuova edizione**, tecnicamente e giuridicamente verificata, del firmware ESP32 Oregon/Technoline con **PolyForm Noncommercial 1.0.0** per il codice di cui il titolare detiene diritti sufficienti e licenze commerciali separate per gli impieghi non permessi.
 
+**Richiesta operativa chiarita:** i decoder e le librerie di terzi conservano le rispettive licenze, mentre si desidera PolyForm Noncommercial per la parte originale e, se compatibile, l'edizione completa. Poiché il decoder Technoline è integrato nella stessa immagine eseguibile, l'attuale compilato resta GPL e l'etichetta PolyForm sull'insieme è subordinata a permessi aggiuntivi o sostituzione della parte derivata. Vedere [schema di licenza differenziata](MIXED_LICENSE_ARCHITECTURE.md).
+
 **Stato:** PIANO NON ATTUATO / NO-GO AL CAMBIO GLOBALE. Gli attuali file `LICENSE`, `NOTICE`, `AUTHORS.md` e le release rimangono GPL-3.0-or-later. Nessun contenuto di questa cartella costituisce una nuova offerta di licenza del firmware distribuito.
 
 ## Criteri di uscita (gate obbligatori)
