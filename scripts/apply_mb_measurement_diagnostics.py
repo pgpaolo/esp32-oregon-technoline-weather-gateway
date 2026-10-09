@@ -60,7 +60,7 @@ substitute_once(
         static_cast<uint8_t>(finiteValue(live.gustKmh)) +
         static_cast<uint8_t>(finiteValue(live.dirDeg)) +
         static_cast<uint8_t>(finiteValue(live.rainRateMmH)) +
-        // Retained daily total is not a fresh RF reading.
+        static_cast<uint8_t>(finiteValue(live.rainTodayMm)) +
         static_cast<uint8_t>(finiteValue(live.rainTotalMm)) +
         static_cast<uint8_t>(finiteValue(live.pressureHpa)) +
         static_cast<uint8_t>(finiteValue(live.indoorTempC)) +

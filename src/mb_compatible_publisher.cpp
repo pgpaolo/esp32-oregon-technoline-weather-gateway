@@ -235,7 +235,7 @@ bool lcRainFresh(const StationState &s, uint32_t now) {
 LiveSelection selectLive(const StationState &s, const MbCompatibleConfig &cfg, uint32_t now, uint32_t dayKey) {
     LiveSelection v;
     const bool useTechnoline = cfg.sourcePriority == 1U;
-    // MBFIX2_STABLEBASE: use existing daily UTC bucket even across brief RF gaps.
+    // MBFIX2_STABLEBASE: shared RAM rain accumulator, no new MB/NVS baseline.
     v.rainTodayMm = rainAccumulatorTodayMm(!useTechnoline, dayKey);
 
     if (!useTechnoline) {
@@ -702,7 +702,6 @@ void serviceMbCompatiblePublisher() {
     if (!force && gLastScheduleMs != 0U && static_cast<uint32_t>(now - gLastScheduleMs) < static_cast<uint32_t>(cfg.intervalSec) * 1000UL) return;
     if (!validUrl(cfg.url)) {
         setStatusError("endpoint URL missing or invalid");
-        gLastScheduleMs = now; // MBFIX2_STABLEBASE retry backoff
         gForceTest = false;
         return;
     }
@@ -711,8 +710,6 @@ void serviceMbCompatiblePublisher() {
     String payload, error;
     if (!buildPayload(snapshot, cfg, payload, error)) {
         setStatusError(error);
-        gLastScheduleMs = now; // MBFIX2_STABLEBASE: no hot-loop on UTC errors
-        gForceTest = false;
         if (error.startsWith("no fresh meteorological measurements")) {
             // No network attempt occurred: throttle until the next interval.
             gLastScheduleMs = now;
