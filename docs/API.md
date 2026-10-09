@@ -71,11 +71,9 @@ Wi-Fi scanning is manual and asynchronous. `POST /api/network/scan` starts the s
 
 The security API returns only non-secret state, including whether authentication is enabled, administrator username, whether a password is set and temporary lockout state. The actual password is never returned.
 
-Factory first-access credentials are:
+In the stab2 maintenance candidate, the initial username is `admin` and the password is randomly generated on first provisioning or legacy-default rotation. Obtain it from the physical OLED/Serial console. The insecure `admin/admin` combination applies only to older releases.
 
-```text
-admin / admin
-```
+See [security migration](SECURITY_MIGRATION_STAB2.md) before upgrading devices with factory credentials.
 
 After 10 failed authentication attempts the Web layer temporarily locks authentication for 30 seconds.
 

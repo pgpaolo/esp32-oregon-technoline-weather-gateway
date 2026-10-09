@@ -16,7 +16,7 @@ All notable project changes are documented here.
 - Baseline and deduplication guards for repeated RF packets, sensor counter resets and changed RF identity.
 - Web UI microSD toggles and authenticated `GET /api/rain/accumulation`; no additional background polling.
 - Preceding `stab1` heap/TLS protections and `buildfix1` idempotent pre-build scripts; `buildfix2` fixes Technoline validity to 300 seconds and reports real MB weather measurements.
-- Tests: host-side rain arithmetic and repeated pre-script generation; **no physical board validation or successful release CI build claimed yet**.
+- Tests: host-side rainfall arithmetic and repeated pre-script generation; [GitHub Actions run 37922875911](https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway/actions/runs/37922875911) successfully compiled both board targets. Physical board validation remains outstanding.
 
 ## 6.4.0-rc4 - refreshed from reviewed develop
 

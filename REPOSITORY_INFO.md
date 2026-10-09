@@ -27,7 +27,7 @@
 - `release/6.4.0-rc6-stab2-hardening` — security/integration review of rain1, pending main PR and hardware validation.
 - `release/6.4.0-rc6-stab1-rain1` — source prerelease with SD rainfall accumulation and LILYGO stability changes.
 - `release/6.4.0-rc4` — historical complete release candidate, firmware identity `6.4.0-rc4`, fully refreshed from validated `develop` commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`.
-- `develop` — next-development line, firmware identity `6.4.0-dev2`.
+- `develop` — historical next-development line (not the current stab2 review branch).
 
 ## RC4 feature set
 
@@ -48,10 +48,12 @@
 - [`docs/BAROMETER_BME280.md`](docs/BAROMETER_BME280.md) — BME280, altitude, units, trend and forecast.
 - [`docs/I2C_HARDWARE_DIAGNOSTICS.md`](docs/I2C_HARDWARE_DIAGNOSTICS.md) — shared-bus scanner, cable-margin diagnosis and MCU temperature.
 - [`docs/API.md`](docs/API.md) — embedded HTTP API.
-- [`docs/RELEASE_6.4.0_RC4.md`](docs/RELEASE_6.4.0_RC4.md) — current RC4 release scope and validation reference.
+- [`docs/RELEASE_6.4.0_RC4.md`](docs/RELEASE_6.4.0_RC4.md) — historical RC4 release scope and validation reference.
+- [`docs/SECURITY_MIGRATION_STAB2.md`](docs/SECURITY_MIGRATION_STAB2.md) — secure bootstrap and AP migration.
+- [`docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md`](docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md) — published rain1 source prerelease.
 - [`docs/DEVELOP_6.4.0_RC4_NOTES.md`](docs/DEVELOP_6.4.0_RC4_NOTES.md) — reviewed develop delta now applied to RC4.
 - [`AUTHORS.md`](AUTHORS.md) / [`CITATION.cff`](CITATION.cff) / [`NOTICE`](NOTICE) — authorship, citation and upstream acknowledgements.
 
 ## Promotion policy
 
-RC4 remains unmerged into `main` until final physical validation and an explicit release decision. The frozen RC3 line is not modified. The selective BME280/I2C backport already present in `main` does not replace or supersede the complete RC4 feature set. Future development continues on `develop` and is not implicitly promoted to RC4.
+The full rain1 feature line and stab2 security fixes are proposed to `main` through PR #26; the production branch remains unchanged until CI review and physical T3 validation. The existing main-only BME280/I2C backport lineage is preserved; historical RC3/RC4/RC6 branches and the rain1 release tag are not rewritten.
