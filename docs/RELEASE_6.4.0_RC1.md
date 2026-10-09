@@ -1,3 +1,5 @@
+> **HISTORICAL RC1 / DOCUMENTO STORICO.** Preserved for traceability. For current development guidance, see [RC6-stab2 notes](RELEASE_6.4.0_RC6_STAB2.md) and [repository structure](../REPOSITORY_INFO.md).
+
 # ESP32 Oregon/Technoline Weather Gateway v6.4.0-rc1
 
 Release candidate for the V6.4 firmware line.

@@ -1,3 +1,5 @@
+> **Scope / Ambito:** this guide covers functionality originating in earlier RC builds and carried into RC6-stab2. Historical mount/format evidence does not validate RC6-stab2 SD/rain checkpoint persistence or long-duration RF/SD concurrency. See [physical validation](VALIDATION_RC6_STAB2.md).
+
 # microSD datalogger
 
 Linea storica: `release/6.4.0-rc3`. Le funzioni SD della linea rain1/stab2 richiedono la verifica fisica dei checkpoint, dei reset e della concorrenza con SX1278.

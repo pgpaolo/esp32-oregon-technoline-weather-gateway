@@ -1,3 +1,5 @@
+> **HISTORICAL RC4 / DOCUMENTO STORICO.** The branch was archived as `archive/2026-10-09/rc4`. References below to "current", the older `develop` line and PR #22 describe the **past RC4 snapshot**, not current release instructions. For the present candidate see [RC6-stab2 release notes](RELEASE_6.4.0_RC6_STAB2.md).
+
 # 6.4.0-rc4
 
 Release candidate branch:

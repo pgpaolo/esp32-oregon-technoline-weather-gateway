@@ -1,6 +1,6 @@
 # BME280 barometer, altitude calibration and WMR200-style forecast
 
-Status: **release/6.4.0-rc4 / 6.4.0-rc4**. The BME280 recovery and shared-bus hardening were fully promoted from the reviewed `develop` solution at commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`.
+**Current source applicability:** RC6-stab2 Hardening on `develop` and its independent release branch. The BME280/shared-I2C improvements described here originated in historical RC4. The BME280 recovery and shared-bus hardening were fully promoted from the reviewed `develop` solution at commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`.
 
 ## Scope
 

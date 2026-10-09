@@ -1,3 +1,5 @@
+> **HISTORICAL RC1 PUBLICATION CHECKLIST.** Branches and release states below were correct for the old RC1 snapshot only. The RC6-stab2 source remains a separate unpromoted hardware-test candidate; see [RC6-stab2 release notes](docs/RELEASE_6.4.0_RC6_STAB2.md).
+
 # Publishing checklist — v6.4.0-rc1
 
 Documentation/storage update note: the hardware-validated microSD work is published on `codex/sdfat-write-status`. Before promoting a later V6.4 candidate, carry forward `docs/SD_DATALOGGER.md`, the `/api/sd` reference, `min_spiffs.csv`, both PlatformIO build results and the Edition 3 PDF. Do not claim full/read-only-card or long-duration concurrency validation unless those checklist items have been completed.

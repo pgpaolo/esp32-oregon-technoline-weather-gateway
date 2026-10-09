@@ -1,3 +1,5 @@
+> **HISTORICAL DEVELOPMENT NOTES.** These decisions refer to the old RC4 development cycle and its then-current `develop` branch. The current `develop` points to the RC6-stab2 source candidate. See [current release notes](RELEASE_6.4.0_RC6_STAB2.md).
+
 # Develop review notes applied to 6.4.0-rc4
 
 The reviewed `develop` delta has now been fully applied to `release/6.4.0-rc4` from commit:
