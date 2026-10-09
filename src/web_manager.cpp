@@ -1533,13 +1533,6 @@ void handleConfigImport() {
         thermoCfg.primaryChannel = static_cast<uint8_t>(tmpUInt);
     }
     if (jsonGetBool(body, "thermo_auto_discover", tmpBool)) thermoCfg.autoDiscover = tmpBool;
-    if (!saveThermoChannelConfig(thermoCfg)) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid thermo channel backup values\"}");
-        return;
-    }
-    if (station) syncPrimaryThermoState(*station);
-    reconcileThermoMqttRetained(previousThermoVisibleMask, previousThermoPrimaryChannel);
-
     LightningConfig lightningCfg = getLightningConfig();
     if (jsonGetBool(body, "as3935_enabled", tmpBool)) lightningCfg.enabled = tmpBool;
     if (jsonGetBool(body, "as3935_indoor", tmpBool)) lightningCfg.indoor = tmpBool;
@@ -1580,6 +1573,15 @@ void handleConfigImport() {
         server.send(400, "application/json", "{\"ok\":false,\"error\":\"backup contains invalid network or MQTT values\"}");
         return;
     }
+
+    // Commit thermo only after ALL imported sections have passed validation.
+    // This avoids partial NVS changes on invalid AS3935, RF, MB or network data.
+    if (!saveThermoChannelConfig(thermoCfg)) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid thermo channel backup values\"}");
+        return;
+    }
+    if (station) syncPrimaryThermoState(*station);
+    reconcileThermoMqttRetained(previousThermoVisibleMask, previousThermoPrimaryChannel);
 
     bool netChanged = false;
     if (!saveMqttConfig(m, replacePassword, replaceCa) || !saveMbCompatibleConfig(mbImport, replaceMbCa) || !saveNetworkConfig(n, netChanged)) {
