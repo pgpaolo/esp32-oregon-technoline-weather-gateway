@@ -22,6 +22,11 @@ def write(path, text):
 # either source. Oregon UV is exported only when Oregon is selected.
 # ---------------------------------------------------------------------------
 cpp = read("src/mb_compatible_publisher.cpp")
+if '#include "rain_accumulator.h"' not in cpp:
+    anchor = '#include "remote_trust.h"\n'
+    if anchor not in cpp:
+        raise RuntimeError("MBFIX2 stablebase include anchor missing")
+    cpp = cpp.replace(anchor, anchor + '#include "rain_accumulator.h"\n', 1)
 start = cpp.find("LiveSelection selectLive(")
 end = cpp.find("\nString floatField(", start)
 if start < 0 or end < 0:
@@ -30,6 +35,8 @@ if start < 0 or end < 0:
 strict_select = r'''LiveSelection selectLive(const StationState &s, const MbCompatibleConfig &cfg, uint32_t now, uint32_t dayKey) {
     LiveSelection v;
     const bool useTechnoline = cfg.sourcePriority == 1U;
+    // MBFIX2_STABLEBASE: constant-time daily UTC rain view, no second NVS baseline.
+    v.rainTodayMm = rainAccumulatorTodayMm(!useTechnoline, dayKey);
 
     if (!useTechnoline) {
         // Oregon source: no Technoline fallback is allowed.
@@ -52,7 +59,6 @@ strict_select = r'''LiveSelection selectLive(const StationState &s, const MbComp
             if (finiteValue(s.rainRateMmH)) v.rainRateMmH = s.rainRateMmH;
             if (s.rainLastHourValid) v.rain1hMm = s.rainLastHourMm;
             if (s.rainLast24hValid) v.rain24hMm = s.rainLast24hMm;
-            v.rainTodayMm = dailyRain(true, dayKey, s.rainTotalMm);
             v.rainFromOregon = true;
         }
         if (s.uvValid && sensorFresh(s.uvUpdatedMs, now) && s.uvIndex >= 0)
@@ -75,7 +81,6 @@ strict_select = r'''LiveSelection selectLive(const StationState &s, const MbComp
             if (s.lacrosse.rainRate5mValid) v.rainRateMmH = s.lacrosse.rainRate5mMmH;
             if (s.lacrosse.rainLastHourValid) v.rain1hMm = s.lacrosse.rainLastHourMm;
             if (s.lacrosse.rainLast24hValid) v.rain24hMm = s.lacrosse.rainLast24hMm;
-            v.rainTodayMm = dailyRain(false, dayKey, s.lacrosse.rainTotalMm);
         }
         // UV belongs to the Oregon station and must remain unavailable here.
     }

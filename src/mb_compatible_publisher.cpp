@@ -15,6 +15,7 @@
 #include "network_manager.h"
 #include "remote_access.h"
 #include "remote_trust.h"
+#include "rain_accumulator.h"
 
 namespace {
 constexpr char NVS_NS[] = "mbcompat";
@@ -234,6 +235,8 @@ bool lcRainFresh(const StationState &s, uint32_t now) {
 LiveSelection selectLive(const StationState &s, const MbCompatibleConfig &cfg, uint32_t now, uint32_t dayKey) {
     LiveSelection v;
     const bool useTechnoline = cfg.sourcePriority == 1U;
+    // MBFIX2_STABLEBASE: use existing daily UTC bucket even across brief RF gaps.
+    v.rainTodayMm = rainAccumulatorTodayMm(!useTechnoline, dayKey);
 
     if (!useTechnoline) {
         // Oregon source: no Technoline fallback is allowed.
@@ -256,7 +259,6 @@ LiveSelection selectLive(const StationState &s, const MbCompatibleConfig &cfg, u
             if (finiteValue(s.rainRateMmH)) v.rainRateMmH = s.rainRateMmH;
             if (s.rainLastHourValid) v.rain1hMm = s.rainLastHourMm;
             if (s.rainLast24hValid) v.rain24hMm = s.rainLast24hMm;
-            v.rainTodayMm = dailyRain(true, dayKey, s.rainTotalMm);
             v.rainFromOregon = true;
         }
         if (s.uvValid && sensorFresh(s.uvUpdatedMs, now) && s.uvIndex >= 0)
@@ -279,7 +281,6 @@ LiveSelection selectLive(const StationState &s, const MbCompatibleConfig &cfg, u
             if (s.lacrosse.rainRate5mValid) v.rainRateMmH = s.lacrosse.rainRate5mMmH;
             if (s.lacrosse.rainLastHourValid) v.rain1hMm = s.lacrosse.rainLastHourMm;
             if (s.lacrosse.rainLast24hValid) v.rain24hMm = s.lacrosse.rainLast24hMm;
-            v.rainTodayMm = dailyRain(false, dayKey, s.lacrosse.rainTotalMm);
         }
         // UV belongs to the Oregon station and must remain unavailable here.
     }
@@ -701,6 +702,7 @@ void serviceMbCompatiblePublisher() {
     if (!force && gLastScheduleMs != 0U && static_cast<uint32_t>(now - gLastScheduleMs) < static_cast<uint32_t>(cfg.intervalSec) * 1000UL) return;
     if (!validUrl(cfg.url)) {
         setStatusError("endpoint URL missing or invalid");
+        gLastScheduleMs = now; // MBFIX2_STABLEBASE retry backoff
         gForceTest = false;
         return;
     }
@@ -709,6 +711,8 @@ void serviceMbCompatiblePublisher() {
     String payload, error;
     if (!buildPayload(snapshot, cfg, payload, error)) {
         setStatusError(error);
+        gLastScheduleMs = now; // MBFIX2_STABLEBASE: no hot-loop on UTC errors
+        gForceTest = false;
         if (error.startsWith("no fresh meteorological measurements")) {
             // No network attempt occurred: throttle until the next interval.
             gLastScheduleMs = now;

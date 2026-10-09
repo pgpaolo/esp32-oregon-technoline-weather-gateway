@@ -121,6 +121,17 @@ String bucketJson(const RainBucket &b) {
 }
 } // namespace
 
+// MBFIX2_STABLEBASE_RAIN_GETTER_V1: no JSON, NVS writes, SD IO or heap allocation.
+// Caller: Arduino main loop, which also owns and updates the rain buckets.
+float rainAccumulatorTodayMm(bool oregon, uint32_t utcDayKey) {
+    if (utcDayKey == 0U) return NAN;
+    const SdLoggerConfig cfg = getSdLoggerConfig(); // fixed-size POD only
+    if (oregon ? !cfg.rainOregon : !cfg.rainTechnoline) return NAN;
+    const RainBucket &bucket = oregon ? state.oregon : state.technoline;
+    if (!bucket.baselineValid || bucket.dayKey != utcDayKey) return NAN;
+    return static_cast<float>(bucket.dayMilli) / 1000.0f;
+}
+
 void initRainAccumulator() {
     state = {};
     state.magic = MAGIC;

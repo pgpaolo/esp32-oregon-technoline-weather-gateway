@@ -11,3 +11,5 @@ void flushRainAccumulator();
 void rainAccumulatorSdFormatted();
 void rainAccumulatorConfigChanged(bool oregonChanged, bool technolineChanged);
 String rainAccumulatorJson();
+// Main-task only, allocation-free daily rain view. NAN if day/source unavailable.
+float rainAccumulatorTodayMm(bool oregon, uint32_t utcDayKey);
