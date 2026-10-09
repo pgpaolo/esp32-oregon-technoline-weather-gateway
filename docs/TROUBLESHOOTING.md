@@ -1,6 +1,6 @@
 # Troubleshooting
 
-This guide refers to the hardware-validated storage branch `codex/sdfat-write-status`.
+**Applicability:** current `develop` / RC6-stab2 Hardening candidate. Some subsystems have historical hardware evidence, but the complete stab2 firmware still needs the [physical acceptance tests](VALIDATION_RC6_STAB2.md).
 
 ## No Wi-Fi connection
 
@@ -8,6 +8,13 @@ This guide refers to the hardware-validated storage branch `codex/sdfat-write-st
 - Check static IP, gateway and DNS values.
 - Use the serial monitor at 115200 baud.
 - If a restored backup changed hostname/IP, verify the new values after reboot.
+
+## RC6-stab2 password or recovery AP unavailable
+
+- If the previous Web password was `admin/admin`, stab2 rotates it to a random 24-character password. Obtain it from the physical OLED or local Serial (115200 baud).
+- Previously configured valid custom Web credentials must be preserved on migration.
+- Wi-Fi recovery AP uses a separate randomly generated 20-character password, available on the physical Serial output when recovery starts.
+- Basic Authentication on unencrypted HTTP should not be exposed to the public Internet. See [security](../SECURITY.md) and [migration](SECURITY_MIGRATION_STAB2.md).
 
 ## Web UI not reachable
 
@@ -46,7 +53,7 @@ Secondary CH2/CH3 values are intentionally kept independent and should not overw
 
 ## UVN800 works but UVR128 does not
 
-- Confirm the firmware is built from `codex/sdfat-write-status`, not an older intermediate branch.
+- Confirm the firmware reports `6.4.0-rc6-stab2`; old release notes and old build measurements do not identify the installed image.
 - Keep Oregon reception active (`OREGON` or `DUAL`).
 - The EC70 recovery does **not** require optional Burst Extra to be ON.
 - Check V2.1 candidate/checksum/pair/recovery counters in Diagnostics/API state.
@@ -211,11 +218,11 @@ Formatting erases the entire card. Copy any needed data first.
 
 ## Firmware size
 
-Current `codex/sdfat-write-status` reference for T3 V1.6.1:
+**Historical SdFat-branch measurements only** (not the current RC6-stab2 binary) for T3 V1.6.1:
 
 - real firmware.bin: 1,283,584 B;
 - app partition: 1,966,080 B;
 - application ELF: 1,276,881 B;
 - margin: 689,199 B.
 
-Both targets intentionally use `min_spiffs.csv`: the project embeds its Web UI and does not use SPIFFS, while NVS and two OTA slots remain. Do not change the layout again merely to hide a size regression; first inspect generated Web assets and linked code.
+Do not use the historical sizes above for an RC6-stab2 OTA decision: consult the latest successful GitHub Actions run and the actual target image. Both targets intentionally use `min_spiffs.csv`: the project embeds its Web UI and does not use SPIFFS, while NVS and two OTA slots remain. Do not change the layout again merely to hide a size regression; first inspect generated Web assets and linked code.

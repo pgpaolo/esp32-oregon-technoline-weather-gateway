@@ -1,6 +1,6 @@
 # Weather Realtime API v1 integration
 
-Status: **development / hardware test** (`develop`, firmware `6.4.0-dev2`).
+Status: **integrated into RC6-stab2 source; real gateway/server field validation still pending**. The feature originated in the historical `6.4.0-dev2` development phase.
 
 The `COMPATIBLE MB` publisher can be connected to a receiver that normalizes Meteobridge/Aurora-compatible packets into a station-specific JSON model. This lets a real Meteobridge and the ESP32 use the same receiver without mixing their live data.
 
@@ -12,7 +12,7 @@ Keep the primary Meteobridge / Weather34 endpoint unchanged when it must continu
 https://weather.example.net/path/mb.php
 ```
 
-For a secondary ESP32 station, add a station identifier and optional source label:
+For a secondary ESP32 station, add a station identifier and optional source label (illustrative name, not a production deployment):
 
 ```text
 http://weather.example.net/path/mb.php?station=castel-giorgio-2&source=esp32
@@ -52,7 +52,7 @@ Typical fields include temperature, humidity, dew point, wind speed/gust/directi
 
 ## Source selection inside the ESP32
 
-This receiver-side station identifier is independent from the firmware's **Stazione sorgente** selector. `6.4.0-dev2` still sends weather measurements from exactly one selected RF station:
+This receiver-side station identifier is independent from the firmware's **Stazione sorgente** selector. The RC6-stab2 candidate sends weather measurements from exactly one selected RF station:
 
 - Oregon Scientific only; or
 - Technoline / La Crosse only.

@@ -1,6 +1,6 @@
 # UVR128 / EC70 V2.1 recovery
 
-This document describes the UVR128 work carried forward into `codex/sdfat-write-status`, derived from the SD datalogger and V2.1 quality branches. The SdFat change is output-only and does not alter these RF recovery gates.
+This document describes UVR128 work originating in historical SdFat/V2.1 development and now included in RC6-stab2 (`develop` and the separate Hardening branch). The SdFat change is output-only and does not alter these RF recovery gates.
 
 ## Why UVR128 is special
 
@@ -56,4 +56,4 @@ After flashing, verify for at least 30 minutes:
 5. parser/checksum drops do not materially increase.
 6. With `BURST DEBUG` ON, burst history remains useful for Oregon V2.1/OSV3 and Technoline without changing accepted-frame counts.
 
-Keep the branch/PR in Draft until real UVR128 hardware validates the no-gap double-copy correction.
+Historical isolated UVR128 tests are not evidence that the entire RC6-stab2 firmware has passed. Keep [PR #26](https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway/pull/26) in Draft until the current candidate passes the [combined RF and stability acceptance plan](VALIDATION_RC6_STAB2.md).

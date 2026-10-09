@@ -6,7 +6,7 @@ The runtime network configuration supports a persistent hostname (1-32 character
 
 ## HTTPS roadmap
 
-The current V6.3 web stack uses Arduino `WebServer` on TCP/80. Direct HTTPS requires a web-server stack with TLS support. The recommended implementation for a future V6.4 branch is:
+The current RC6-stab2 Web service still uses Arduino `WebServer` on TCP/80. **Native browser-facing HTTPS on the ESP32 is not implemented in this candidate**; restrict Web Basic Authentication to a trusted LAN/VPN or use an HTTPS reverse proxy. Direct HTTPS requires a web-server stack with TLS support. The recommended implementation for a future V6.4 branch is:
 
 - HTTP only / HTTPS self-signed / HTTPS custom certificate modes;
 - TCP/443 for TLS; optional TCP/80 redirect;
@@ -27,7 +27,7 @@ The board exposes an onboard microSD interface on a separate SPI pin set from th
 - SD SCLK: GPIO14
 - SD CS: GPIO13
 
-The current `codex/sdfat-write-status` branch implements the microSD datalogger with Greiman SdFat on dedicated HSPI. It writes valid RF/local-sensor records to UTC daily CSV files, supports explicit FAT formatting and exposes mount/write/error state through the Configuration page and top header badge.
+The current RC6-stab2 source candidate implements the microSD datalogger with Greiman SdFat on dedicated HSPI. It writes valid RF/local-sensor records to UTC daily CSV files, supports explicit FAT formatting and exposes mount/write/error state through the Configuration page and top header badge.
 
 The card path is output-only and serviced outside the RF-critical decoder path. Missing or failed storage does not stop Oregon/Technoline reception, MQTT, OLED or the Web server.
 

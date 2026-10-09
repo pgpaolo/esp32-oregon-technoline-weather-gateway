@@ -1,6 +1,8 @@
 # Configuration backup and restore
 
-Release candidate `6.4.0-rc3` can export and restore persistent runtime configuration from **Configuration → Backup / Restore**.
+Originally introduced in historical RC3, backup/restore is available in RC6-stab2 and can export and restore persistent runtime configuration from **Configuration → Backup / Restore**.
+
+**RC6-stab2 warning:** all imported configuration sections are checked before thermo-channel NVS data is persisted. This reduces partial changes on **validation** errors, but does not guarantee rollback if a later NVS write fails. Re-read and verify restored settings after import and reboot. See [release notes](RELEASE_6.4.0_RC6_STAB2.md).
 
 ## Schema
 

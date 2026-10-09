@@ -1,6 +1,6 @@
 # Oregon Scientific protocol V2.1
 
-The consolidated development branch `codex/sdfat-write-status` runs a bounded Oregon V2.1 decoder alongside the existing OSV3 path. It does not replace or relax OSV3 validation; the SdFat storage layer consumes only already accepted frames.
+The RC6-stab2 candidate on `develop` and the independent Hardening branch runs a bounded Oregon V2.1 decoder alongside the existing OSV3 path. It does not replace or relax OSV3 validation; the SdFat storage layer consumes only already accepted frames.
 
 ## Supported V2.1 sensors
 
@@ -67,7 +67,7 @@ OSV3, Technoline and the normal V2.1 streaming decoder remain separate from this
 
 A real UVR128 has been successfully received on the consolidated branch together with the existing Oregon and Technoline sensors. The EC70 recovery is therefore no longer only a host-side hypothesis; it has field evidence on the target T3/SX1278 setup.
 
-The branch still remains a hardware-validation line until the full combined Web/MQTT/OLED behavior is accepted before merge to `main`.
+The RC6-stab2 release candidate remains a hardware-validation line until the full combined Web/MQTT/OLED behavior is accepted before merge to `main`.
 
 ## Build-time recovery patch
 
@@ -99,7 +99,7 @@ Run:
 python scripts/test_oregon_v21.py
 ```
 
-The current SdFat branch rerun reported:
+A historical SdFat-branch host suite reported (not a fresh RC6-stab2 bench result):
 
 ```text
 6 valid, 6 corrupt rejected, UVR128 clipped-preamble + phase-scan recovery OK

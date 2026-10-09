@@ -1,6 +1,6 @@
 # AdminSensor Remote
 
-> Development status: introduced on `develop` after the validated `6.4.0-rc4` baseline. Firmware identity: `6.4.0-dev3`.
+> **Current source scope:** `develop` / RC6-stab2 Hardening, firmware identity `6.4.0-rc6-stab2`. AdminSensor Remote originated in the historical `6.4.0-dev3` phase; WSS, remote authorization and remote OTA still require current real-board validation.
 
 AdminSensor Remote provides remote administration without opening an inbound TCP port on the gateway or configuring router port forwarding. The ESP32 establishes the connection itself:
 

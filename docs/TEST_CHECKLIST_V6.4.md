@@ -1,12 +1,6 @@
 # V6.4 development line - consolidated hardware validation checklist
 
-Questa checklist valida il branch corrente:
-
-```text
-codex/sdfat-write-status
-```
-
-Il macro firmware è `6.4.0-rc2`; il branch contiene ulteriori funzioni non ancora integrate in `main`.
+**Ambito attuale:** checklist dettagliata per `develop` e `release/6.4.0-rc6-stab2-hardening` (identità firmware `6.4.0-rc6-stab2`). Il ramo `main` resta invariato. Le spunte già presenti comprendono evidenze CI e **test storici su versioni precedenti**: non certificano automaticamente l'integrazione stab2. Il documento ufficiale che determina la prontezza al rilascio è [VALIDATION_RC6_STAB2.md](VALIDATION_RC6_STAB2.md).
 
 ## Build / CI
 
@@ -18,7 +12,7 @@ Il macro firmware è `6.4.0-rc2`; il branch contiene ulteriori funzioni non anco
 - [x] Controllo dimensione reale `firmware.bin`
 - [ ] Build locale pulita prima del merge finale: `pio run -t clean -e t3-v161-433 && pio run -e t3-v161-433`
 
-Riferimento storage corrente: T3 64,9% Flash / 30,7% RAM; T3-S3 62,1% Flash / 30,4% RAM.
+**Misure storiche, NON RC6-stab2:** T3 64,9% Flash / 30,7% RAM; T3-S3 62,1% Flash / 30,4% RAM. Per le dimensioni correnti fare riferimento alla build CI del commit installato.
 
 ## microSD / SdFat
 
@@ -199,6 +193,15 @@ Verificare:
 - [ ] AS3935 ripristinato
 - [ ] RF persistente ripristinato
 
+## Sicurezza e migrazione specifiche RC6-stab2
+
+- [ ] Installazione pulita: credenziale Web casuale visibile su OLED/Serial.
+- [ ] Upgrade da `admin/admin`: password precedente non accettata; nuova credenziale valida e persistente.
+- [ ] Upgrade con password personale: credenziali conservate dopo cold reboot.
+- [ ] Recovery AP: password non derivabile da SSID/MAC, stabile quando NVS funziona.
+- [ ] Backup non valido: configurazione termo invariata durante fase di validazione.
+- [ ] Web Basic confinato a LAN fidata/VPN o reverse proxy HTTPS.
+
 ## Stabilità finale
 
 - [ ] Test continuo >= 24 ore
@@ -210,4 +213,4 @@ Verificare:
 
 ## Criterio di merge
 
-Il branch `codex/sdfat-write-status` può essere considerato pronto per merge solo dopo le verifiche hardware di lunga durata ancora aperte. Mount e formattazione sono confermati; non vengono presentati come prova automatica dei casi scheda piena, read-only o deep sleep con coda pendente.
+La RC6-stab2 e la PR #26 possono essere considerate pronte per un eventuale merge in `main` **solo** dopo le prove hardware documentate in [VALIDATION_RC6_STAB2.md](VALIDATION_RC6_STAB2.md). Mount e formattazione sono confermati; non vengono presentati come prova automatica dei casi scheda piena, read-only o deep sleep con coda pendente.
