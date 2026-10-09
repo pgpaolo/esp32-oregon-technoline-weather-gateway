@@ -119,7 +119,8 @@ void buildRecoveryCredentials() {
         recoveryPassword.reserve(sizeof(bytes) + 1U);
         for (const uint8_t value : bytes) recoveryPassword += alphabet[value % (sizeof(alphabet) - 1U)];
         memset(bytes, 0, sizeof(bytes));
-        if (p.isKey("apsecret") || p.putString("apsecret", recoveryPassword) != 20U) {
+        if (p.putString("apsecret", recoveryPassword) != 20U ||
+            p.getString("apsecret", "") != recoveryPassword) {
             Serial.println(F("[WiFi] AP password NVS non verificabile: password locale temporanea"));
         }
     }
