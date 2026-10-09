@@ -1,0 +1,64 @@
+name: MBFIX2 stablebase CI and reboot regression checks
+
+on:
+  push:
+    branches:
+      - release/6.4.0-rc6-stab1-rain1-mbfix2-stablebase
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: MBFIX2 compile and safety (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [t3-v161-433, t3-s3-433]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Rain accumulation host arithmetic
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/test_rain_accumulator_core.cpp -o /tmp/raincore
+          /tmp/raincore
+      - name: MB source invariants before generated build
+        run: |
+          python scripts/test_mb_compatible_mapping.py
+          python scripts/test_mb_stablebase.py
+      - name: Install PlatformIO
+        run: python -m pip install --upgrade platformio
+      - name: Build matching LILYGO target
+        run: pio run -e "${{ matrix.target }}"
+      - name: Recheck after source generators
+        run: |
+          python scripts/test_mb_compatible_mapping.py
+          python scripts/test_mb_stablebase.py
+          python scripts/test_gateway_stability.py
+          python scripts/test_mb_public_tls.py
+      - name: Repeat T3 build in identical workspace (idempotence)
+        if: matrix.target == 't3-v161-433'
+        run: |
+          pio run -e t3-v161-433
+          python scripts/test_mb_stablebase.py
+      - name: Bound firmware size to app slot
+        shell: bash
+        run: |
+          f=".pio/build/${{ matrix.target }}/firmware.bin"
+          test -s "$f"
+          size=$(stat -c%s "$f")
+          echo "Firmware: $size bytes"
+          test "$size" -le 1966080
+      - name: Attach clearly labeled untested diagnostic artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mbfix2-not-hardware-tested-${{ matrix.target }}
+          path: |
+            .pio/build/${{ matrix.target }}/firmware.bin
+            .pio/build/${{ matrix.target }}/firmware.elf
+          retention-days: 14
+          if-no-files-found: error
