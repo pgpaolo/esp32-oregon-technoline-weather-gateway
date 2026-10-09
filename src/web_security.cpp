@@ -1,0 +1,252 @@
+#include "web_security.h"
+
+#include <Preferences.h>
+#include <WebServer.h>
+#include <mbedtls/base64.h>
+#include <esp_system.h>
+
+namespace {
+constexpr const char *NVS_NS = "webauth";
+constexpr const char *DEFAULT_USER = "admin";
+constexpr const char *DEFAULT_PASSWORD = "admin";
+constexpr uint8_t AUTH_SCHEMA_VERSION = 3U;
+constexpr uint8_t MAX_FAILED_ATTEMPTS = 10U;
+constexpr uint32_t LOCKOUT_MS = 30000UL;
+
+Preferences prefs;
+WebSecurityConfig cfg;
+String password;
+String bootstrapPassword;
+uint8_t failedAttempts = 0;
+uint32_t lockedUntilMs = 0;
+
+bool validUsername(const String &value) {
+    if (value.length() < 1U || value.length() > 24U) return false;
+    for (size_t i = 0; i < value.length(); ++i) {
+        const char c = value[i];
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+bool validPassword(const String &value) {
+    return value.length() >= 8U && value.length() <= 63U;
+}
+
+bool factoryBootstrapPassword(const String &value) {
+    return value == DEFAULT_PASSWORD;
+}
+
+bool validStoredPassword(const String &value) {
+    return validPassword(value) || factoryBootstrapPassword(value);
+}
+
+// Random onboarding password, never derived from MAC/SSID or a fixed firmware constant.
+// When Wi-Fi is active the ESP32 hardware RNG has a live RF entropy source.
+String generateBootstrapPassword() {
+    static constexpr char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    uint8_t randomBytes[24];
+    esp_fill_random(randomBytes, sizeof(randomBytes));
+    String out;
+    out.reserve(sizeof(randomBytes) + 1U);
+    for (const uint8_t value : randomBytes) {
+        out += alphabet[value % (sizeof(alphabet) - 1U)];
+    }
+    memset(randomBytes, 0, sizeof(randomBytes));
+    return out;
+}
+
+bool lockoutActive() {
+    if (lockedUntilMs == 0U) return false;
+    if (static_cast<int32_t>(millis() - lockedUntilMs) >= 0) {
+        lockedUntilMs = 0;
+        failedAttempts = 0;
+        return false;
+    }
+    return true;
+}
+
+uint32_t lockoutRemainingMs() {
+    if (!lockoutActive()) return 0U;
+    return static_cast<uint32_t>(lockedUntilMs - millis());
+}
+
+void noteFailure() {
+    if (failedAttempts < 255U) failedAttempts++;
+    if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
+        failedAttempts = 0;
+        lockedUntilMs = millis() + LOCKOUT_MS;
+        Serial.println(F("[AUTH] troppi tentativi errati: blocco temporaneo 30 s"));
+    }
+}
+
+bool persistConfig(const WebSecurityConfig &next, const String &nextPassword) {
+    if (!prefs.begin(NVS_NS, false)) return false;
+    prefs.putUChar("schema", AUTH_SCHEMA_VERSION);
+    prefs.putBool("enabled", next.enabled);
+    prefs.putString("user", next.username);
+    prefs.putString("pass", nextPassword);
+    const bool ok = prefs.getUChar("schema", 0U) == AUTH_SCHEMA_VERSION &&
+                    prefs.getBool("enabled", !next.enabled) == next.enabled &&
+                    prefs.getString("user", "") == next.username &&
+                    prefs.getString("pass", "") == nextPassword;
+    prefs.end();
+    return ok;
+}
+} // namespace
+
+void initWebSecurity() {
+    cfg = WebSecurityConfig{};
+    password = "";
+    bootstrapPassword = "";
+
+    bool haveStoredPassword = false;
+    uint8_t storedSchema = 0U;
+    if (prefs.begin(NVS_NS, true)) {
+        storedSchema = prefs.getUChar("schema", 0U);
+        cfg.enabled = prefs.getBool("enabled", true);
+        cfg.username = prefs.getString("user", DEFAULT_USER);
+        if (prefs.isKey("pass")) {
+            password = prefs.getString("pass", "");
+            haveStoredPassword = validStoredPassword(password);
+        }
+        prefs.end();
+    }
+
+    if (!validUsername(cfg.username)) cfg.username = DEFAULT_USER;
+
+    // Preserve valid custom credentials during schema upgrades. Rotate only
+    // an absent/invalid credential or the legacy factory 'admin' password.
+    const bool insecureFactoryPassword = haveStoredPassword && password == DEFAULT_PASSWORD;
+    if (!haveStoredPassword || insecureFactoryPassword) {
+        cfg.enabled = true;
+        password = generateBootstrapPassword();
+        bootstrapPassword = password;
+        if (!persistConfig(cfg, password)) {
+            // Fail closed: keep a fresh, authenticated in-RAM credential.
+            // If NVS is broken the device will generate a new password next boot.
+            Serial.println(F("[AUTH] ERRORE: credenziali temporanee, salvataggio NVS fallito"));
+        }
+        Serial.println(F("[AUTH] credenziali iniziali casuali generate: solo OLED/Serial locale"));
+        Serial.print(F("[AUTH] utente: ")); Serial.println(cfg.username);
+        Serial.print(F("[AUTH] password temporanea: ")); Serial.println(bootstrapPassword);
+        Serial.println(F("[AUTH] conservare la password e modificarla da SISTEMA"));
+    } else if (storedSchema < AUTH_SCHEMA_VERSION) {
+        if (!persistConfig(cfg, password)) {
+            Serial.println(F("[AUTH] ERRORE: migrazione NVS non riuscita; credenziali mantenute"));
+        } else {
+            Serial.println(F("[AUTH] migrazione NVS completata; password personale mantenuta"));
+        }
+    }
+
+    cfg.passwordSet = validStoredPassword(password);
+    failedAttempts = 0;
+    lockedUntilMs = 0;
+}
+
+WebSecurityConfig getWebSecurityConfig() {
+    WebSecurityConfig out = cfg;
+    out.passwordSet = validStoredPassword(password);
+    return out;
+}
+
+bool webSecurityEnabled() { return cfg.enabled; }
+
+bool webSecurityAuthorized(WebServer &server) {
+    if (!cfg.enabled) return true;
+    if (lockoutActive()) return false;
+
+    if (server.authenticate(cfg.username.c_str(), password.c_str())) {
+        failedAttempts = 0;
+        return true;
+    }
+    noteFailure();
+    return false;
+}
+
+void requestWebAuthentication(WebServer &server) {
+    if (lockoutActive()) {
+        server.sendHeader("Retry-After", String((lockoutRemainingMs() + 999U) / 1000U));
+        server.send(429, "text/plain; charset=utf-8", "Troppi tentativi di autenticazione. Riprovare tra poco.");
+        return;
+    }
+    server.requestAuthentication();
+}
+
+bool saveWebSecurityConfig(bool enabled, const String &username,
+                           const String &newPassword, bool replacePassword,
+                           bool &changed, String &error) {
+    String nextUser = username;
+    nextUser.trim();
+    if (!validUsername(nextUser)) {
+        error = "username must be 1..24 chars: letters, digits, . _ -";
+        return false;
+    }
+
+    String nextPassword = password;
+    if (replacePassword) {
+        if (!validPassword(newPassword)) {
+            error = "password must be 8..63 characters";
+            return false;
+        }
+        nextPassword = newPassword;
+    }
+    if (enabled && !validStoredPassword(nextPassword)) {
+        error = "authentication cannot be enabled without a valid password";
+        return false;
+    }
+
+    WebSecurityConfig next = cfg;
+    next.enabled = enabled;
+    next.username = nextUser;
+    next.passwordSet = validStoredPassword(nextPassword);
+    changed = next.enabled != cfg.enabled || next.username != cfg.username || nextPassword != password;
+    if (!changed) return true;
+
+    if (!persistConfig(next, nextPassword)) {
+        error = "NVS verification failed";
+        return false;
+    }
+
+    cfg = next;
+    password = nextPassword;
+    failedAttempts = 0;
+    lockedUntilMs = 0;
+    bootstrapPassword = "";
+    return true;
+}
+
+String webSecurityConfigJson() {
+    String out;
+    out.reserve(180);
+    out = "{\"enabled\":";
+    out += cfg.enabled ? "true" : "false";
+    out += ",\"username\":\"" + cfg.username + "\"";
+    out += ",\"password_set\":";
+    out += validStoredPassword(password) ? "true" : "false";
+    out += ",\"locked\":";
+    out += lockoutActive() ? "true" : "false";
+    out += ",\"lock_remaining_ms\":" + String(lockoutRemainingMs());
+    out += "}";
+    return out;
+}
+
+String webSecurityInternalAuthorizationHeader() {
+    if (!cfg.enabled || !validStoredPassword(password)) return String();
+    const String plain = cfg.username + ":" + password;
+    const size_t capacity = ((plain.length() + 2U) / 3U) * 4U + 1U;
+    std::unique_ptr<unsigned char[]> encoded(new (std::nothrow) unsigned char[capacity]);
+    if (!encoded) return String();
+    size_t written = 0;
+    if (mbedtls_base64_encode(encoded.get(), capacity, &written,
+                              reinterpret_cast<const unsigned char *>(plain.c_str()),
+                              plain.length()) != 0) return String();
+    String out = "Basic ";
+    out.reserve(6U + written);
+    out.concat(reinterpret_cast<const char *>(encoded.get()), written);
+    return out;
+}
+
+String webSecurityBootstrapPassword() { return bootstrapPassword; }

@@ -23,7 +23,7 @@ struct OregonPacket {
 struct WeatherReading {
     SensorType type{SensorType::Unknown};
     uint8_t sensorId{0};              // header legacy A1/A2/AD/AF
-    uint16_t sensorCode{0};           // ID OSV3 reale, es. F824/D874/2914/1984/1994
+    uint16_t sensorCode{0};           // ID Oregon V2.1/V3, es. EC40/1D20/F824/D874/2914/1984
     uint8_t channelRaw{0};
     uint8_t channel{0};               // 1..3 quando decodificabile
     uint8_t rollingCode{0};

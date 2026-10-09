@@ -7,6 +7,7 @@
 #include "network_manager.h"
 #include "weather_parser.h"
 #include "lacrosse_ws23xx.h"
+#include "thermo_channel_manager.h"
 
 namespace {
 uint32_t lastAttemptMs = 0;
@@ -15,6 +16,8 @@ PubSubClient *mqttClientRef = nullptr;
 Client *mqttPlainClientRef = nullptr;
 WiFiClientSecure mqttSecureClient;
 MqttRuntimeConfig mqttCfg;
+uint8_t pendingRemovedThermoMask = 0;
+bool pendingPrimaryThermoRefresh = false;
 
 String trimTopic(String value) {
     value.trim();
@@ -150,6 +153,39 @@ void publishInt(PubSubClient &client, const char *suffix, int value) {
     client.publish(topic(suffix).c_str(), buf, true);
 }
 
+void clearRetained(PubSubClient &client, const char *suffix) {
+    client.publish(topic(suffix).c_str(), "", true);
+}
+
+void flushThermoRetainedReconciliation(PubSubClient &client) {
+    if (!mqttCfg.enabled || !client.connected()) return;
+
+    char suffix[48];
+    for (uint8_t channel = 1; channel <= 3; ++channel) {
+        const uint8_t bit = static_cast<uint8_t>(1U << (channel - 1U));
+        if ((pendingRemovedThermoMask & bit) == 0U) continue;
+        const char *fields[] = {"temperature", "humidity", "battery", "rssi"};
+        for (const char *field : fields) {
+            snprintf(suffix, sizeof(suffix), "oregon/thermo/ch%u/%s", channel, field);
+            clearRetained(client, suffix);
+        }
+    }
+    pendingRemovedThermoMask = 0;
+
+    if (!pendingPrimaryThermoRefresh) return;
+    clearRetained(client, "oregon/temperature");
+    clearRetained(client, "oregon/humidity");
+    const ThermoChannelConfig c = getThermoChannelConfig();
+    const ThermoChannelState s = getThermoChannelState(c.primaryChannel);
+    if (s.valid && !isnan(s.temperatureC) && fieldEnabled(MQTT_F_OR_TEMP)) {
+        publishFloat(client, "oregon/temperature", s.temperatureC, 1);
+    }
+    if (s.valid && !isnan(s.humidityPct) && fieldEnabled(MQTT_F_OR_HUM)) {
+        publishFloat(client, "oregon/humidity", s.humidityPct, 0);
+    }
+    pendingPrimaryThermoRefresh = false;
+}
+
 String effectiveClientId() {
     String id = mqttCfg.clientId;
     const uint64_t mac = ESP.getEfuseMac();
@@ -273,7 +309,11 @@ void serviceMQTT(PubSubClient &client) {
         return;
     }
     if (!wifiConnected() || mqttCfg.broker.length() == 0) return;
-    if (client.connected()) { client.loop(); return; }
+    if (client.connected()) {
+        flushThermoRetainedReconciliation(client);
+        client.loop();
+        return;
+    }
 
     const uint32_t now = millis();
     if (static_cast<uint32_t>(now - lastAttemptMs) < MQTT_RETRY_MS) return;
@@ -295,7 +335,8 @@ void serviceMQTT(PubSubClient &client) {
         Serial.println(F("OK"));
         client.publish(statusTopic.c_str(), "online", true);
         client.publish(topic("ip").c_str(), wifiIpAddress().c_str(), true);
-        client.publish(topic("rf/protocol").c_str(), "Oregon-OSV3+Technoline-WS23xx", true);
+        client.publish(topic("rf/protocol").c_str(), "Oregon-OSV2.1+OSV3+Technoline-WS23xx", true);
+        flushThermoRetainedReconciliation(client);
     } else {
         Serial.print(F("fallita rc=")); Serial.println(client.state());
     }
@@ -316,11 +357,50 @@ void prepareMqttForDeepSleep() {
 
 bool mqttConnected(PubSubClient &client) { return mqttCfg.enabled && client.connected(); }
 
+void reconcileThermoMqttRetained(uint8_t previousVisibleMask, uint8_t previousPrimaryChannel) {
+    const ThermoChannelConfig current = getThermoChannelConfig();
+    const uint8_t currentVisibleMask = thermoEffectiveMask();
+    pendingRemovedThermoMask |= static_cast<uint8_t>((previousVisibleMask & ~currentVisibleMask) & 0x07U);
+    if (previousPrimaryChannel != current.primaryChannel || pendingRemovedThermoMask != 0U) {
+        pendingPrimaryThermoRefresh = true;
+    }
+    if (mqttClientRef) flushThermoRetainedReconciliation(*mqttClientRef);
+}
+
 void publishWeatherReading(PubSubClient &client, const WeatherReading &reading, const OregonPacket &packet) {
     if (!mqttCfg.enabled || !client.connected()) return;
 
-    if (reading.temperatureValid && fieldEnabled(MQTT_F_OR_TEMP)) publishFloat(client, "oregon/temperature", reading.temperatureC, 1);
-    if (reading.humidityValid && fieldEnabled(MQTT_F_OR_HUM)) publishFloat(client, "oregon/humidity", reading.humidityPct, 0);
+    const bool thermo = reading.type == SensorType::ThermoHygro;
+    const bool primaryThermo = !thermo || thermoChannelIsPrimary(reading.channel);
+    if (reading.temperatureValid && primaryThermo && fieldEnabled(MQTT_F_OR_TEMP)) publishFloat(client, "oregon/temperature", reading.temperatureC, 1);
+    if (reading.humidityValid && primaryThermo && fieldEnabled(MQTT_F_OR_HUM)) publishFloat(client, "oregon/humidity", reading.humidityPct, 0);
+
+    if (thermo && reading.channel >= 1U && reading.channel <= 3U && thermoChannelVisible(reading.channel)) {
+        char suffix[48];
+        if (reading.temperatureValid && fieldEnabled(MQTT_F_OR_TEMP)) {
+            snprintf(suffix, sizeof(suffix), "oregon/thermo/ch%u/temperature", reading.channel);
+            publishFloat(client, suffix, reading.temperatureC, 1);
+        }
+        if (reading.humidityValid && fieldEnabled(MQTT_F_OR_HUM)) {
+            snprintf(suffix, sizeof(suffix), "oregon/thermo/ch%u/humidity", reading.channel);
+            publishFloat(client, suffix, reading.humidityPct, 0);
+        } else if (fieldEnabled(MQTT_F_OR_HUM)) {
+            // I sensori V2.1 EC40 sono temperature-only: elimina un eventuale
+            // retained lasciato da un precedente sensore con umidita' sul CH.
+            snprintf(suffix, sizeof(suffix), "oregon/thermo/ch%u/humidity", reading.channel);
+            clearRetained(client, suffix);
+        }
+        if (fieldEnabled(MQTT_F_RF_META)) {
+        if (reading.batteryStatusValid) {
+            snprintf(suffix, sizeof(suffix), "oregon/thermo/ch%u/battery", reading.channel);
+            client.publish(topic(suffix).c_str(), reading.batteryLow ? "LOW" : "OK", true);
+        }
+        if (!isnan(reading.rssi)) {
+            snprintf(suffix, sizeof(suffix), "oregon/thermo/ch%u/rssi", reading.channel);
+            publishFloat(client, suffix, reading.rssi, 1);
+        }
+    }
+    }
     if (reading.windAverageValid && fieldEnabled(MQTT_F_OR_WIND_AVG)) publishFloat(client, "oregon/wind/average", reading.windAverageKmh, 1);
     if (reading.windGustValid && fieldEnabled(MQTT_F_OR_WIND_GUST)) {
         // Il campo Oregon viene mantenuto come "gust/current" per compatibilita' storica.
@@ -333,7 +413,94 @@ void publishWeatherReading(PubSubClient &client, const WeatherReading &reading, 
     }
     if (reading.rainTotalValid && fieldEnabled(MQTT_F_OR_RAIN_TOTAL)) publishFloat(client, "oregon/rain/total", reading.rainTotalMm, 2);
     if (reading.rainRateValid && fieldEnabled(MQTT_F_OR_RAIN_RATE)) publishFloat(client, "oregon/rain/rate", reading.rainRateMmH, 2);
-    if (reading.uvValid && fieldEnabled(MQTT_F_OR_UV)) publishInt(client, "oregon/uv", reading.uvIndex);
+    if (reading.uvValid && fieldEnabled(MQTT_F_OR_UV)) {
+        // Legacy aggregate topic remains for existing consumers. Every UV
+        // transmitter also receives its own retained namespace keyed by the
+        // stable Oregon sensor code (D874=UVN800, EC70=UVR128).
+        publishInt(client, "oregon/uv", reading.uvIndex);
+        char uvSuffix[56];
+        snprintf(uvSuffix, sizeof(uvSuffix), "oregon/uv/%04X/index", reading.sensorCode);
+        publishInt(client, uvSuffix, reading.uvIndex);
+        if (fieldEnabled(MQTT_F_RF_META)) {
+            snprintf(uvSuffix, sizeof(uvSuffix), "oregon/uv/%04X/model", reading.sensorCode);
+            client.publish(topic(uvSuffix).c_str(), sensorModelName(reading.sensorCode), true);
+            if (!isnan(reading.rssi)) {
+                snprintf(uvSuffix, sizeof(uvSuffix), "oregon/uv/%04X/rssi", reading.sensorCode);
+                publishFloat(client, uvSuffix, reading.rssi, 1);
+            }
+            if (reading.batteryStatusValid) {
+                snprintf(uvSuffix, sizeof(uvSuffix), "oregon/uv/%04X/battery", reading.sensorCode);
+                client.publish(topic(uvSuffix).c_str(), reading.batteryLow ? "LOW" : "OK", true);
+            }
+            if (reading.channel) {
+                snprintf(uvSuffix, sizeof(uvSuffix), "oregon/uv/%04X/channel", reading.sensorCode);
+                publishInt(client, uvSuffix, reading.channel);
+            }
+            snprintf(uvSuffix, sizeof(uvSuffix), "oregon/uv/%04X/rolling_code", reading.sensorCode);
+            publishInt(client, uvSuffix, reading.rollingCode);
+        }
+    }
+
+    // Generic per-transmitter namespace. Every accepted Oregon transmitter
+    // is kept separate by sensor code + channel + rolling code. Field selection
+    // still uses the existing 32-bit MQTT mask, so no extra NVS schema is needed.
+    char sensorBase[64];
+    snprintf(sensorBase, sizeof(sensorBase), "oregon/sensor/%04X/ch%u/id%u",
+             reading.sensorCode, reading.channel, reading.rollingCode);
+    char sensorSuffix[88];
+
+    if (reading.temperatureValid && fieldEnabled(MQTT_F_OR_TEMP)) {
+        snprintf(sensorSuffix, sizeof(sensorSuffix), "%s/temperature", sensorBase);
+        publishFloat(client, sensorSuffix, reading.temperatureC, 1);
+    }
+    if (reading.humidityValid && fieldEnabled(MQTT_F_OR_HUM)) {
+        snprintf(sensorSuffix, sizeof(sensorSuffix), "%s/humidity", sensorBase);
+        publishFloat(client, sensorSuffix, reading.humidityPct, 0);
+    }
+    if (reading.windAverageValid && fieldEnabled(MQTT_F_OR_WIND_AVG)) {
+        snprintf(sensorSuffix, sizeof(sensorSuffix), "%s/wind_average", sensorBase);
+        publishFloat(client, sensorSuffix, reading.windAverageKmh, 1);
+    }
+    if (reading.windGustValid && fieldEnabled(MQTT_F_OR_WIND_GUST)) {
+        snprintf(sensorSuffix, sizeof(sensorSuffix), "%s/wind_gust", sensorBase);
+        publishFloat(client, sensorSuffix, reading.windGustKmh, 1);
+    }
+    if (reading.windDirectionValid && fieldEnabled(MQTT_F_OR_WIND_DIR)) {
+        snprintf(sensorSuffix, sizeof(sensorSuffix), "%s/wind_direction_deg", sensorBase);
+        publishFloat(client, sensorSuffix, reading.windDirectionDeg, 1);
+        snprintf(sensorSuffix, sizeof(sensorSuffix), "%s/wind_direction", sensorBase);
+        client.publish(topic(sensorSuffix).c_str(), windDirectionName(reading.windDirectionIndex), true);
+    }
+    if (reading.rainTotalValid && fieldEnabled(MQTT_F_OR_RAIN_TOTAL)) {
+        snprintf(sensorSuffix, sizeof(sensorSuffix), "%s/rain_total", sensorBase);
+        publishFloat(client, sensorSuffix, reading.rainTotalMm, 2);
+    }
+    if (reading.rainRateValid && fieldEnabled(MQTT_F_OR_RAIN_RATE)) {
+        snprintf(sensorSuffix, sizeof(sensorSuffix), "%s/rain_rate", sensorBase);
+        publishFloat(client, sensorSuffix, reading.rainRateMmH, 2);
+    }
+    if (reading.uvValid && fieldEnabled(MQTT_F_OR_UV)) {
+        snprintf(sensorSuffix, sizeof(sensorSuffix), "%s/uv", sensorBase);
+        publishInt(client, sensorSuffix, reading.uvIndex);
+    }
+
+    if (fieldEnabled(MQTT_F_RF_META)) {
+        snprintf(sensorSuffix, sizeof(sensorSuffix), "%s/type", sensorBase);
+        client.publish(topic(sensorSuffix).c_str(), sensorTypeName(reading.type), true);
+        snprintf(sensorSuffix, sizeof(sensorSuffix), "%s/model", sensorBase);
+        client.publish(topic(sensorSuffix).c_str(), sensorModelName(reading.sensorCode), true);
+        snprintf(sensorSuffix, sizeof(sensorSuffix), "%s/protocol", sensorBase);
+        client.publish(topic(sensorSuffix).c_str(),
+                       packet.decodeSource == static_cast<uint8_t>(OregonDecodeSource::EdgeTimingV21) ? "V2.1" : "OSV3", true);
+        if (!isnan(reading.rssi)) {
+            snprintf(sensorSuffix, sizeof(sensorSuffix), "%s/rssi", sensorBase);
+            publishFloat(client, sensorSuffix, reading.rssi, 1);
+        }
+        if (reading.batteryStatusValid) {
+            snprintf(sensorSuffix, sizeof(sensorSuffix), "%s/battery", sensorBase);
+            client.publish(topic(sensorSuffix).c_str(), reading.batteryLow ? "LOW" : "OK", true);
+        }
+    }
 
     if (fieldEnabled(MQTT_F_RF_META)) {
         char sensorId[8]; snprintf(sensorId, sizeof(sensorId), "0x%02X", reading.sensorId);

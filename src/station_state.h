@@ -30,9 +30,15 @@ struct LaCrosseStationState {
 
     float rainTotalMm{NAN};
     float rainIncrementMm{NAN};
+    float rainRate5mMmH{NAN};
+    float rainLastHourMm{NAN};
+    float rainLast24hMm{NAN};
     uint32_t rainUpdatedMs{0};
     bool rainValid{false};
     bool rainIncrementValid{false};
+    bool rainRate5mValid{false};
+    bool rainLastHourValid{false};
+    bool rainLast24hValid{false};
 
     float windKmh{NAN};
     float gustKmh{NAN};
@@ -130,7 +136,7 @@ struct StationState {
     LaCrosseStationState lacrosse{};
 };
 
-void applyWeatherReading(StationState &state, const WeatherReading &reading);
+void applyWeatherReading(StationState &state, const WeatherReading &reading, bool applyThermoToPrimary = true);
 void applyLaCrosseReading(StationState &state, const LaCrosseReading &reading);
 void refreshDerivedWeather(StationState &state);
 bool sensorFresh(uint32_t updatedAtMs, uint32_t nowMs);

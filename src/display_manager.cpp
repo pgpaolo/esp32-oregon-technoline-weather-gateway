@@ -9,6 +9,7 @@
 #include "barometer_manager.h"
 #include "lacrosse_ws23xx.h"
 #include "oregon_receiver.h"
+#include "lightning_manager.h"
 
 namespace {
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
@@ -19,6 +20,48 @@ bool displayOn = true;
 bool displayPrefsReady = false;
 Preferences displayPrefs;
 DisplayRuntimeConfig displayCfg{};
+uint32_t webSecurityBootstrapUntilMs = 0;
+String webSecurityBootstrapUser;
+String webSecurityBootstrapPasswordText;
+
+// Compact live registry for OLED only. It stores no history: ten slots mirror
+// the maximum Web session registry and cost only a few bytes per transmitter.
+struct OledOregonSlot {
+    uint32_t updatedMs{0};
+    uint16_t code{0};
+    uint8_t channel{0};
+    uint8_t rollingCode{0};
+    uint8_t type{0};
+    uint8_t batteryState{0}; // 0=N/D, 1=OK, 2=LOW
+    int8_t uvIndex{-1};
+    int8_t rssiDbm{-127};
+};
+OledOregonSlot oledOregonSlots[10]{};
+uint8_t oledSensorWindow{0};
+uint32_t oledSensorWindowEpoch{0};
+
+char oledRssiGrade(int8_t dbm) {
+    if (dbm <= -127) return '-';
+    if (dbm >= -100) return 'G';
+    if (dbm >= -115) return 'Y';
+    return 'R';
+}
+
+char oledBatteryGrade(uint8_t state) {
+    if (state == 1U) return '+';
+    if (state == 2U) return '!';
+    return '-';
+}
+
+char oledSensorTypeChar(uint8_t type) {
+    switch (static_cast<SensorType>(type)) {
+        case SensorType::ThermoHygro: return 'T';
+        case SensorType::Wind: return 'W';
+        case SensorType::Rain: return 'R';
+        case SensorType::UV: return 'U';
+        default: return '?';
+    }
+}
 
 #if OLED_BUTTON_ENABLE
 bool buttonRawPressed = false;
@@ -37,6 +80,7 @@ void normalize(DisplayRuntimeConfig &c) {
     c.technolineFields &= DISPLAY_TECH_ALL;
     c.pressureFields &= DISPLAY_PRESS_ALL;
     c.statusFields &= DISPLAY_STATUS_ALL;
+    c.lightningFields &= DISPLAY_AS_ALL;
     if (c.pageIntervalSec < 2U) c.pageIntervalSec = 2U;
     if (c.pageIntervalSec > 60U) c.pageIntervalSec = 60U;
     if (c.contrast < 8U) c.contrast = 8U;
@@ -49,6 +93,7 @@ bool sameConfig(const DisplayRuntimeConfig &a, const DisplayRuntimeConfig &b) {
            a.technolineFields == b.technolineFields &&
            a.pressureFields == b.pressureFields &&
            a.statusFields == b.statusFields &&
+           a.lightningFields == b.lightningFields &&
            a.pageIntervalSec == b.pageIntervalSec &&
            a.contrast == b.contrast;
 }
@@ -62,22 +107,23 @@ bool verifyStoredConfig(Preferences &p, const DisplayRuntimeConfig &c) {
            p.getUChar("tech", d.technolineFields) == c.technolineFields &&
            p.getUChar("press", d.pressureFields) == c.pressureFields &&
            p.getUChar("status", d.statusFields) == c.statusFields &&
+           p.getUChar("as3935", d.lightningFields) == c.lightningFields &&
            p.getUShort("page_s", d.pageIntervalSec) == c.pageIntervalSec &&
            p.getUChar("contrast", d.contrast) == c.contrast;
 }
 
 bool pageEnabled(uint8_t p) {
-    return p < 5U && (displayCfg.pageMask & static_cast<uint8_t>(1U << p)) != 0U;
+    return p < 7U && (displayCfg.pageMask & static_cast<uint8_t>(1U << p)) != 0U;
 }
 
 uint8_t firstEnabledPage() {
-    for (uint8_t p = 0; p < 5U; ++p) if (pageEnabled(p)) return p;
+    for (uint8_t p = 0; p < 7U; ++p) if (pageEnabled(p)) return p;
     return 0U;
 }
 
 uint8_t nextEnabledPage(uint8_t current) {
-    for (uint8_t step = 1; step <= 5U; ++step) {
-        const uint8_t p = static_cast<uint8_t>((current + step) % 5U);
+    for (uint8_t step = 1; step <= 7U; ++step) {
+        const uint8_t p = static_cast<uint8_t>((current + step) % 7U);
         if (pageEnabled(p)) return p;
     }
     return firstEnabledPage();
@@ -110,15 +156,32 @@ void renderEnvironment(const StationState &s, bool wifiOk, bool mqttOk) {
         else snprintf(line, sizeof(line), "T --.-C  H --%%");
         drawLine(line, y);
     }
+    const bool showHeatUv = (displayCfg.environmentFields & DISPLAY_ENV_HEAT_UV) != 0U;
     if (displayCfg.environmentFields & DISPLAY_ENV_DEW) {
-        if (s.dewPointValid) snprintf(line, sizeof(line), "Dew %.1fC", s.dewPointC);
+        if (s.dewPointValid && showHeatUv && s.heatIndexValid)
+            snprintf(line, sizeof(line), "Dew %.1f Heat %.1f", s.dewPointC, s.heatIndexC);
+        else if (s.dewPointValid) snprintf(line, sizeof(line), "Dew %.1fC", s.dewPointC);
         else snprintf(line, sizeof(line), "Dew --.-C");
         drawLine(line, y);
     }
-    if (displayCfg.environmentFields & DISPLAY_ENV_HEAT_UV) {
-        if (s.heatIndexValid) snprintf(line, sizeof(line), "Heat %.1fC  UV %d", s.heatIndexC, s.uvValid ? s.uvIndex : -1);
-        else if (s.uvValid) snprintf(line, sizeof(line), "Heat N/A  UV %d", s.uvIndex);
-        else snprintf(line, sizeof(line), "Heat N/A  UV --");
+    if (showHeatUv) {
+        if (!(displayCfg.environmentFields & DISPLAY_ENV_DEW)) {
+            if (s.heatIndexValid) snprintf(line, sizeof(line), "Heat %.1fC", s.heatIndexC);
+            else snprintf(line, sizeof(line), "Heat N/A");
+            drawLine(line, y);
+        }
+        int uvA = -1, uvB = -1;
+        uint16_t codeA = 0, codeB = 0;
+        for (uint8_t i = 0; i < 10U; ++i) {
+            const OledOregonSlot &u = oledOregonSlots[i];
+            if (static_cast<SensorType>(u.type) != SensorType::UV || u.uvIndex < 0 || !u.updatedMs ||
+                static_cast<uint32_t>(now - u.updatedMs) > 300000UL) continue;
+            if (uvA < 0) { uvA = u.uvIndex; codeA = u.code; }
+            else if (uvB < 0) { uvB = u.uvIndex; codeB = u.code; break; }
+        }
+        if (uvA >= 0 && uvB >= 0) snprintf(line, sizeof(line), "UV %04X:%d %04X:%d", codeA, uvA, codeB, uvB);
+        else if (uvA >= 0) snprintf(line, sizeof(line), "UV %04X:%d", codeA, uvA);
+        else snprintf(line, sizeof(line), "UV --");
         drawLine(line, y);
     }
     if (displayCfg.environmentFields & DISPLAY_ENV_BATTERY) {
@@ -193,7 +256,15 @@ void renderLaCrosse(const StationState &s, bool wifiOk, bool mqttOk) {
         drawLine(line, y);
     }
     if (displayCfg.technolineFields & DISPLAY_TECH_META) {
-        snprintf(line, sizeof(line), "ID %02X pkt %lu", lc.sensorId, static_cast<unsigned long>(lc.validPacketCount));
+        if (isfinite(lc.lastRssi)) {
+            int rssi = static_cast<int>(lroundf(lc.lastRssi));
+            if (rssi < -126) rssi = -126;
+            if (rssi > 0) rssi = 0;
+            snprintf(line, sizeof(line), "ID%02X %ddBm %c B-", lc.sensorId, rssi,
+                     oledRssiGrade(static_cast<int8_t>(rssi)));
+        } else {
+            snprintf(line, sizeof(line), "ID%02X RSSI-- B-", lc.sensorId);
+        }
         drawLine(line, y);
     }
     if (y == 23) drawLine("Nessun campo selezionato", y);
@@ -225,6 +296,46 @@ void renderPressure(const StationState &s, bool wifiOk, bool mqttOk) {
     }
     if (displayCfg.pressureFields & DISPLAY_PRESS_FORECAST) {
         snprintf(line, sizeof(line), "%s", barometerForecastName(s));
+        drawLine(line, y);
+    }
+    if (y == 23) drawLine("Nessun campo selezionato", y);
+}
+
+
+void renderLightning(bool wifiOk, bool mqttOk) {
+    header("AS3935 FULMINI", wifiOk, mqttOk);
+    char line[56];
+    oled.setFont(u8g2_font_5x8_tf);
+    uint8_t y = 23;
+    const LightningState s = getLightningState();
+    const LightningConfig c = getLightningConfig();
+
+    if (displayCfg.lightningFields & DISPLAY_AS_STATUS) {
+        if (!s.enabled) snprintf(line, sizeof(line), "Sensore DISABILITATO");
+        else snprintf(line, sizeof(line), "Sens %s IRQ %s CAL %s",
+                      s.detected ? "OK" : "KO", s.irqOk ? "OK" : "KO", s.calibrationOk ? "OK" : "KO");
+        drawLine(line, y);
+    }
+    if (displayCfg.lightningFields & DISPLAY_AS_LAST_STRIKE) {
+        if (!s.lastLightningMs) snprintf(line, sizeof(line), "Ultimo fulmine --");
+        else if (s.distanceOutOfRange) snprintf(line, sizeof(line), "Ult >40km E%lu", static_cast<unsigned long>(s.lastEnergy));
+        else snprintf(line, sizeof(line), "Ult %ukm E%lu", s.lastDistanceKm, static_cast<unsigned long>(s.lastEnergy));
+        drawLine(line, y);
+    }
+    if (displayCfg.lightningFields & DISPLAY_AS_COUNTERS) {
+        snprintf(line, sizeof(line), "L%lu N%lu D%lu IRQ%lu",
+                 static_cast<unsigned long>(s.lightningTotal), static_cast<unsigned long>(s.noiseTotal),
+                 static_cast<unsigned long>(s.disturberTotal), static_cast<unsigned long>(s.irqTotal));
+        drawLine(line, y);
+    }
+    if (displayCfg.lightningFields & DISPLAY_AS_FILTERS) {
+        snprintf(line, sizeof(line), "%s NF%u WD%u SP%u M%u",
+                 c.indoor ? "IN" : "OUT", c.noiseFloor, c.watchdogThreshold, c.spikeRejection, c.minStrikes);
+        drawLine(line, y);
+    }
+    if (displayCfg.lightningFields & DISPLAY_AS_BUS_TUNING) {
+        snprintf(line, sizeof(line), "I2C%02X GPIO%d %ldkHz",
+                 c.i2cAddress, static_cast<int>(c.irqPin), static_cast<long>(s.resonanceHz / 1000L));
         drawLine(line, y);
     }
     if (y == 23) drawLine("Nessun campo selezionato", y);
@@ -269,6 +380,51 @@ void renderStatus(const StationState &, const OregonRxStats &rx, const LaCrosseR
     if (y == 23) drawLine("Nessun campo selezionato", y);
 }
 
+void renderSensorHealth(bool wifiOk, bool mqttOk) {
+    const uint32_t now = millis();
+    uint8_t active[10];
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < 10U; ++i) {
+        if (!oledOregonSlots[i].updatedMs) continue;
+        if (static_cast<uint32_t>(now - oledOregonSlots[i].updatedMs) > 600000UL) continue;
+        active[count++] = i;
+    }
+
+    if (oledSensorWindowEpoch != pageEpochMs) {
+        oledSensorWindowEpoch = pageEpochMs;
+        if (count > 5U) oledSensorWindow = static_cast<uint8_t>((oledSensorWindow + 5U) % count);
+        else oledSensorWindow = 0;
+    }
+
+    char title[20];
+    if (count > 5U) snprintf(title, sizeof(title), "SENSORI RF %u/%u", oledSensorWindow / 5U + 1U, (count + 4U) / 5U);
+    else snprintf(title, sizeof(title), "SENSORI RF");
+    header(title, wifiOk, mqttOk);
+    oled.setFont(u8g2_font_5x8_tf);
+    uint8_t y = 23;
+    if (!count) {
+        drawLine("Nessun Oregon recente", y);
+        return;
+    }
+
+    const uint8_t rows = count < 5U ? count : 5U;
+    for (uint8_t n = 0; n < rows && y <= 63U; ++n) {
+        const uint8_t pos = static_cast<uint8_t>((oledSensorWindow + n) % count);
+        const OledOregonSlot &s = oledOregonSlots[active[pos]];
+        char line[30];
+        if (static_cast<SensorType>(s.type) == SensorType::UV && s.uvIndex >= 0) {
+            snprintf(line, sizeof(line), "%c%u %04X U%d %d%c B%c", oledSensorTypeChar(s.type), s.channel,
+                     s.code, static_cast<int>(s.uvIndex), static_cast<int>(s.rssiDbm),
+                     oledRssiGrade(s.rssiDbm), oledBatteryGrade(s.batteryState));
+        } else {
+            snprintf(line, sizeof(line), "%c%u %04X %d%c B%c", oledSensorTypeChar(s.type), s.channel,
+                     s.code, static_cast<int>(s.rssiDbm), oledRssiGrade(s.rssiDbm),
+                     oledBatteryGrade(s.batteryState));
+        }
+        drawLine(line, y);
+    }
+}
+
 void applyDisplayPower() {
     if (displayOn) {
         oled.setPowerSave(0);
@@ -284,10 +440,44 @@ void applyDisplayPower() {
 }
 } // namespace
 
+void noteDisplayOregonReading(const WeatherReading &reading) {
+    if (reading.type == SensorType::Unknown) return;
+    OledOregonSlot *slot = nullptr;
+    OledOregonSlot *oldest = &oledOregonSlots[0];
+    for (uint8_t i = 0; i < 10U; ++i) {
+        OledOregonSlot &candidate = oledOregonSlots[i];
+        if (candidate.updatedMs == 0) { slot = &candidate; break; }
+        if (candidate.code == reading.sensorCode && candidate.channel == reading.channel &&
+            candidate.rollingCode == reading.rollingCode) { slot = &candidate; break; }
+        if (static_cast<int32_t>(candidate.updatedMs - oldest->updatedMs) < 0) oldest = &candidate;
+    }
+    if (!slot) slot = oldest;
+    slot->updatedMs = reading.receivedAtMs ? reading.receivedAtMs : millis();
+    slot->code = reading.sensorCode;
+    slot->channel = reading.channel;
+    slot->rollingCode = reading.rollingCode;
+    slot->type = static_cast<uint8_t>(reading.type);
+    slot->batteryState = reading.batteryStatusValid ? (reading.batteryLow ? 2U : 1U) : 0U;
+    slot->uvIndex = (reading.type == SensorType::UV && reading.uvValid) ? static_cast<int8_t>(reading.uvIndex) : -1;
+    if (isfinite(reading.rssi)) {
+        int rssi = static_cast<int>(lroundf(reading.rssi));
+        if (rssi < -126) rssi = -126;
+        if (rssi > 0) rssi = 0;
+        slot->rssiDbm = static_cast<int8_t>(rssi);
+    }
+}
+
 void initDisplay() {
+    // I2C_SHARED_BUS_COMPAT_V2
+    // OLED + BME280 + AS3935 share one conservative bus. Hardware testing
+    // confirmed that cable capacitance, not the BME280 driver, was the source
+    // of intermittent/missing ACKs with long leads.
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-    oled.setBusClock(400000);
+    Wire.setTimeOut(80);
+    Wire.setClock(100000);
+    oled.setBusClock(100000);
     oled.begin();
+    Wire.setClock(100000);
 
     const DisplayRuntimeConfig d = defaults();
     displayCfg = d;
@@ -301,6 +491,7 @@ void initDisplay() {
         displayCfg.technolineFields = displayPrefs.getUChar("tech", d.technolineFields);
         displayCfg.pressureFields = displayPrefs.getUChar("press", d.pressureFields);
         displayCfg.statusFields = displayPrefs.getUChar("status", d.statusFields);
+        displayCfg.lightningFields = displayPrefs.getUChar("as3935", d.lightningFields);
         displayCfg.pageIntervalSec = displayPrefs.getUShort("page_s", d.pageIntervalSec);
         displayCfg.contrast = displayPrefs.getUChar("contrast", d.contrast);
     } else {
@@ -385,6 +576,28 @@ int displayButtonPin() {
 bool displayEnabled() { return displayOn; }
 bool displayPersistenceAvailable() { return displayPrefsReady; }
 
+void showWebSecurityBootstrap(const String &username, const String &password, uint32_t durationMs) {
+    if (!displayOn || password.length() == 0U) return;
+    webSecurityBootstrapUser = username;
+    webSecurityBootstrapPasswordText = password;
+    webSecurityBootstrapUntilMs = millis() + (durationMs < 5000UL ? 5000UL : durationMs);
+
+    oled.setPowerSave(0);
+    oled.clearBuffer();
+    oled.setFont(u8g2_font_6x10_tf);
+    oled.drawStr(0, 9, "WEB ADMIN - PRIMO AVVIO");
+    oled.drawHLine(0, 12, 128);
+    oled.setFont(u8g2_font_5x8_tf);
+    String u = String("USER: ") + webSecurityBootstrapUser;
+    String p = String("PASS: ") + webSecurityBootstrapPasswordText;
+    oled.drawStr(0, 27, u.c_str());
+    oled.drawStr(0, 40, p.c_str());
+    oled.drawStr(0, 53, "Salvala e cambiala da");
+    oled.drawStr(0, 63, "CONFIG > SISTEMA");
+    oled.sendBuffer();
+    Serial.println(F("[OLED] credenziali Web iniziali mostrate temporaneamente"));
+}
+
 void prepareDisplayForDeepSleep() {
     oled.clearBuffer();
     oled.sendBuffer();
@@ -419,6 +632,7 @@ bool validateDisplayConfig(const DisplayRuntimeConfig &cfg) {
     if ((cfg.technolineFields & ~DISPLAY_TECH_ALL) != 0U) return false;
     if ((cfg.pressureFields & ~DISPLAY_PRESS_ALL) != 0U) return false;
     if ((cfg.statusFields & ~DISPLAY_STATUS_ALL) != 0U) return false;
+    if ((cfg.lightningFields & ~DISPLAY_AS_ALL) != 0U) return false;
     if (cfg.pageIntervalSec < 2U || cfg.pageIntervalSec > 60U) return false;
     if (cfg.contrast < 8U) return false;
     return true;
@@ -441,6 +655,7 @@ bool saveDisplayConfig(const DisplayRuntimeConfig &cfg, bool &changed) {
     if (next.technolineFields != displayCfg.technolineFields) displayPrefs.putUChar("tech", next.technolineFields);
     if (next.pressureFields != displayCfg.pressureFields) displayPrefs.putUChar("press", next.pressureFields);
     if (next.statusFields != displayCfg.statusFields) displayPrefs.putUChar("status", next.statusFields);
+    if (next.lightningFields != displayCfg.lightningFields) displayPrefs.putUChar("as3935", next.lightningFields);
     if (next.pageIntervalSec != displayCfg.pageIntervalSec) displayPrefs.putUShort("page_s", next.pageIntervalSec);
     if (next.contrast != displayCfg.contrast) displayPrefs.putUChar("contrast", next.contrast);
 
@@ -470,6 +685,14 @@ uint8_t displayCurrentPage() { return page; }
 void updateDisplay(const StationState &state, const OregonRxStats &rxStats, const LaCrosseRxStats &lcStats, bool wifiOk, bool mqttOk) {
     if (!displayOn) return;
     const uint32_t now = millis();
+    if (webSecurityBootstrapUntilMs) {
+        if (static_cast<int32_t>(now - webSecurityBootstrapUntilMs) < 0) return;
+        webSecurityBootstrapUntilMs = 0;
+        webSecurityBootstrapUser = "";
+        webSecurityBootstrapPasswordText = "";
+        lastRefreshMs = 0;
+        pageEpochMs = now;
+    }
     if (static_cast<uint32_t>(now - lastRefreshMs) < DISPLAY_REFRESH_MS) return;
     lastRefreshMs = now;
 
@@ -488,6 +711,8 @@ void updateDisplay(const StationState &state, const OregonRxStats &rxStats, cons
     else if (page == 1) renderWindRain(state, wifiOk, mqttOk);
     else if (page == 2) renderLaCrosse(state, wifiOk, mqttOk);
     else if (page == 3) renderPressure(state, wifiOk, mqttOk);
-    else renderStatus(state, rxStats, lcStats, wifiOk, mqttOk);
+    else if (page == 4) renderStatus(state, rxStats, lcStats, wifiOk, mqttOk);
+    else if (page == 5) renderLightning(wifiOk, mqttOk);
+    else renderSensorHealth(wifiOk, mqttOk);
     oled.sendBuffer();
 }

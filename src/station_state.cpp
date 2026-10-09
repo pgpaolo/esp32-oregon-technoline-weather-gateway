@@ -15,6 +15,46 @@ RainHistorySample rainHistory[RAIN_HISTORY_SIZE];
 uint16_t rainHistoryHead = 0;
 uint16_t rainHistoryCount = 0;
 
+// Technoline/WS23xx does not transmit an instantaneous rain rate.  Keep a
+// compact 5-minute history and derive an average rate plus 1h/24h accumulations
+// from the cumulative rain counter.  The RF decoder never touches this buffer.
+constexpr uint16_t LC_RAIN_HISTORY_SIZE = 320;
+constexpr uint32_t LC_RAIN_HISTORY_SPACING_MS = 5UL * 60UL * 1000UL;
+RainHistorySample lcRainHistory[LC_RAIN_HISTORY_SIZE];
+uint16_t lcRainHistoryHead = 0;
+uint16_t lcRainHistoryCount = 0;
+
+void clearLcRainHistory() {
+    lcRainHistoryHead = 0;
+    lcRainHistoryCount = 0;
+}
+
+void addLcRainHistory(uint32_t nowMs, float totalMm) {
+    if (lcRainHistoryCount > 0) {
+        const int lastIdx = (static_cast<int>(lcRainHistoryHead) - 1 + LC_RAIN_HISTORY_SIZE) % LC_RAIN_HISTORY_SIZE;
+        const RainHistorySample &last = lcRainHistory[lastIdx];
+        if (static_cast<uint32_t>(nowMs - last.ms) < LC_RAIN_HISTORY_SPACING_MS) return;
+    }
+    lcRainHistory[lcRainHistoryHead].ms = nowMs;
+    lcRainHistory[lcRainHistoryHead].totalMm = totalMm;
+    lcRainHistoryHead = static_cast<uint16_t>((lcRainHistoryHead + 1U) % LC_RAIN_HISTORY_SIZE);
+    if (lcRainHistoryCount < LC_RAIN_HISTORY_SIZE) lcRainHistoryCount++;
+}
+
+bool lcRainBaseline(uint32_t nowMs, uint32_t targetAgeMs, float &baselineMm, uint32_t &baselineMs) {
+    if (lcRainHistoryCount < 2) return false;
+    for (uint16_t n = 1; n < lcRainHistoryCount; ++n) {
+        const int idx = (static_cast<int>(lcRainHistoryHead) - 1 - n + LC_RAIN_HISTORY_SIZE) % LC_RAIN_HISTORY_SIZE;
+        const RainHistorySample &s = lcRainHistory[idx];
+        if (static_cast<uint32_t>(nowMs - s.ms) >= targetAgeMs) {
+            baselineMm = s.totalMm;
+            baselineMs = s.ms;
+            return true;
+        }
+    }
+    return false;
+}
+
 void clearRainHistory() {
     rainHistoryHead = 0;
     rainHistoryCount = 0;
@@ -75,6 +115,47 @@ void updateRainDerived(StationState &state, float newTotalMm, uint32_t nowMs) {
     }
 }
 
+void updateLaCrosseRainDerived(LaCrosseStationState &lc, float newTotalMm, uint32_t nowMs) {
+    if (lc.rainValid && isfinite(lc.rainTotalMm)) {
+        const float delta = newTotalMm - lc.rainTotalMm;
+        if (delta >= -0.001f && delta < 500.0f) {
+            lc.rainIncrementMm = delta > 0.0f ? delta : 0.0f;
+            lc.rainIncrementValid = true;
+        } else {
+            clearLcRainHistory();
+            lc.rainIncrementMm = 0.0f;
+            lc.rainIncrementValid = true;
+            lc.rainRate5mValid = false;
+            lc.rainLastHourValid = false;
+            lc.rainLast24hValid = false;
+        }
+    } else {
+        lc.rainIncrementMm = 0.0f;
+        lc.rainIncrementValid = true;
+    }
+
+    addLcRainHistory(nowMs, newTotalMm);
+
+    float baseline = 0.0f;
+    uint32_t baselineMs = 0;
+    if (lcRainBaseline(nowMs, 5UL * 60UL * 1000UL, baseline, baselineMs)) {
+        const uint32_t elapsedMs = static_cast<uint32_t>(nowMs - baselineMs);
+        if (elapsedMs > 0) {
+            const float deltaMm = max(0.0f, newTotalMm - baseline);
+            lc.rainRate5mMmH = deltaMm * (3600000.0f / static_cast<float>(elapsedMs));
+            lc.rainRate5mValid = true;
+        }
+    }
+    if (lcRainBaseline(nowMs, 60UL * 60UL * 1000UL, baseline, baselineMs)) {
+        lc.rainLastHourMm = max(0.0f, newTotalMm - baseline);
+        lc.rainLastHourValid = true;
+    }
+    if (lcRainBaseline(nowMs, 24UL * 60UL * 60UL * 1000UL, baseline, baselineMs)) {
+        lc.rainLast24hMm = max(0.0f, newTotalMm - baseline);
+        lc.rainLast24hValid = true;
+    }
+}
+
 float calculateDewPoint(float tempC, float humidity) {
     if (!isfinite(tempC) || !isfinite(humidity) || humidity <= 0.0f || humidity > 100.0f) return NAN;
     // Magnus, adatto all'intervallo meteorologico del sensore.
@@ -127,7 +208,7 @@ void refreshDerivedWeather(StationState &state) {
     state.windChillValid = state.thermoValid && state.windValid && isfinite(state.windChillC);
 }
 
-void applyWeatherReading(StationState &state, const WeatherReading &reading) {
+void applyWeatherReading(StationState &state, const WeatherReading &reading, bool applyThermoToPrimary) {
     state.validPacketCount++;
     state.lastPacketMs = reading.receivedAtMs;
     state.lastSensorId = reading.sensorId;
@@ -137,7 +218,7 @@ void applyWeatherReading(StationState &state, const WeatherReading &reading) {
     switch (reading.type) {
         case SensorType::ThermoHygro:
             state.thermoPacketCount++;
-            updateSensorStatus(state.thermoSensor, reading);
+            if (applyThermoToPrimary) updateSensorStatus(state.thermoSensor, reading);
             break;
         case SensorType::Wind:
             state.windPacketCount++;
@@ -154,7 +235,7 @@ void applyWeatherReading(StationState &state, const WeatherReading &reading) {
         default: break;
     }
 
-    if (reading.temperatureValid || reading.humidityValid) {
+    if ((reading.type != SensorType::ThermoHygro || applyThermoToPrimary) && (reading.temperatureValid || reading.humidityValid)) {
         if (reading.temperatureValid) state.temperatureC = reading.temperatureC;
         if (reading.humidityValid) state.humidityPct = reading.humidityPct;
         state.thermoUpdatedMs = reading.receivedAtMs;
@@ -231,14 +312,7 @@ void applyLaCrosseReading(StationState &state, const LaCrosseReading &reading) {
         case LaCrosseType::Rain:
             lc.rainPacketCount++;
             if (reading.rainValid) {
-                if (lc.rainValid && isfinite(lc.rainTotalMm)) {
-                    const float delta = reading.rainTotalMm - lc.rainTotalMm;
-                    lc.rainIncrementMm = (delta >= 0.0f && delta < 500.0f) ? delta : 0.0f;
-                    lc.rainIncrementValid = delta >= 0.0f && delta < 500.0f;
-                } else {
-                    lc.rainIncrementMm = 0.0f;
-                    lc.rainIncrementValid = true;
-                }
+                updateLaCrosseRainDerived(lc, reading.rainTotalMm, reading.receivedAtMs);
                 lc.rainTotalMm = reading.rainTotalMm;
                 lc.rainValid = true;
                 lc.rainUpdatedMs = reading.receivedAtMs;

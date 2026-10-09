@@ -1,0 +1,59 @@
+name: Rain1 source prerelease
+
+on:
+  push:
+    branches:
+      - release/6.4.0-rc6-stab1-rain1
+    paths:
+      - '.github/workflows/release-rain1-source.yml'
+      - 'src/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'web/**'
+      - 'platformio.ini'
+      - 'docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rain1-source-release
+  cancel-in-progress: false
+
+jobs:
+  compile-and-release:
+    if: github.repository == 'pgpaolo/esp32-oregon-technoline-weather-gateway'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate rainfall arithmetic (host)
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror tests/test_rain_accumulator_core.cpp -o /tmp/test_rain
+          /tmp/test_rain
+      - name: Validate MB mapping
+        run: python scripts/test_mb_compatible_mapping.py
+      - name: Install PlatformIO
+        run: python -m pip install --upgrade platformio
+      - name: Build LILYGO T3 V1.6.1
+        run: pio run -e t3-v161-433
+      - name: Build optional LILYGO T3-S3
+        run: pio run -e t3-s3-433
+      - name: Publish source-only GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG='v6.4.0-rc6-stab1-rain1'
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; skipping creation."
+          else
+            gh release create "$TAG" \
+              --target "$GITHUB_SHA" \
+              --title 'ESP32 Oregon/Technoline Gateway 6.4.0-rc6-stab1-rain1 (source prerelease)' \
+              --notes-file docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md \
+              --prerelease
+          fi

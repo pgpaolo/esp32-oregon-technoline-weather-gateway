@@ -1,0 +1,41 @@
+#pragma once
+#include <Arduino.h>
+#include "oregon_types.h"
+#include "station_state.h"
+
+// Routing CH1/CH2/CH3 applicato dopo il parser Oregon V2.1/OSV3: il decoder RF resta
+// invariato salvo la normalizzazione compatibile del campo canale (1/2/3 o 1/2/4).
+// Solo primaryChannel alimenta i campi meteo/topic legacy.
+// enabledMask + autoDiscover determinano i tab Web e i topic MQTT CHx attivi.
+// Lo stato Web usa un payload compatto; la configurazione completa resta in /api/thermo/config.
+// Il manager e' opzionale rispetto al boot RF: default validi anche senza NVS.
+// Build classica T3: tenere il firmware.bin sotto la partizione applicativa reale.
+// Le modifiche al routing non devono alterare il timing del decoder Oregon.
+// La CI deve controllare anche la dimensione fisica del firmware.bin.
+struct ThermoChannelConfig {
+    uint8_t enabledMask{0x01};       // bit0=CH1, bit1=CH2, bit2=CH3
+    uint8_t primaryChannel{1};       // feeds legacy weather fields/topics
+    bool autoDiscover{true};         // detected channels join Web/MQTT automatically
+};
+
+struct ThermoChannelState {
+    bool detected{false};
+    bool valid{false};
+    float temperatureC{NAN};
+    float humidityPct{NAN};
+    uint32_t updatedMs{0};
+    float lastRssi{NAN};
+    OregonSensorStatus sensor{};
+};
+
+void initThermoChannels();
+void noteThermoChannelReading(const WeatherReading &reading);
+ThermoChannelConfig getThermoChannelConfig();
+ThermoChannelState getThermoChannelState(uint8_t channel);
+uint8_t thermoDetectedMask();
+uint8_t thermoEffectiveMask();
+bool thermoChannelVisible(uint8_t channel);
+bool thermoChannelIsPrimary(uint8_t channel);
+bool saveThermoChannelConfig(const ThermoChannelConfig &cfg);
+bool resetThermoChannelConfig();
+void syncPrimaryThermoState(StationState &station);
