@@ -10,6 +10,36 @@ I valori mancanti nello standard JSON sono `null`, mai `--` o entità HTML.
 
 > Gli URL e gli identificativi riportati sotto sono esclusivamente esempi. Hostname, percorso di pubblicazione e `station_id` devono essere configurati in base all'installazione reale e non sono codificati nel progetto.
 
+## Prerequisiti di installazione (obbligatori)
+
+**Questo adattatore non è standalone.** `mbridge/mb.php` si appoggia a due
+librerie **private dell'installazione Meteobridge/Weather34 preesistente**:
+`diga_security.php` (controlli di accesso/rate limiting e gestione errori) e
+`diga_storage.php` (validazione del payload e archiviazione legacy).
+Questi due file **non sono distribuiti in questo repository**. Non sostituirli con
+stub o implementazioni che disabilitino i controlli di sicurezza.
+
+Prima di utilizzare l'endpoint di ingestione, installa le librerie originali
+in una directory non pubblica e configura la variabile server `DIGA_LEGACY_LIB_DIR`
+a quella directory; senza variabile verranno cercate in `server/meteobridge/lib`.
+La directory deve contenere entrambi i file leggibili dall'utente PHP.
+Se mancano, `mb.php` restituisce intenzionalmente **HTTP 503** invece di un
+fatal error PHP o di accettare richieste non autenticate. Il file
+`mbridge/weather.php` (lettura JSON) utilizza invece solo il normalizzatore
+incluso nel repository.
+
+Esempio configurazione del virtual host (adattare al proprio sistema):
+
+```apache
+SetEnv DIGA_LEGACY_LIB_DIR /srv/private/meteobridge/lib
+```
+
+Per PHP-FPM occorre consentire la variabile nell'ambiente del pool. Non
+pubblicare le librerie private in un percorso servito direttamente dal Web.
+Verificare `php -l` sui tre file PHP e fare test HTTP 503 senza librerie,
+poi HTTP 200/422 con backend realmente installato. **Non distribuire la parte
+server come ricevitore funzionante finché questa integrazione non è configurata.**
+
 ## Struttura
 
 - `lib/weather_realtime.php`: normalizzatore e storage multi-stazione.

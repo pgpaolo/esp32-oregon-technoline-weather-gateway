@@ -1,8 +1,25 @@
 <?php
 declare(strict_types=1);
 
-require_once dirname(__DIR__) . '/lib/diga_security.php';
-require_once dirname(__DIR__) . '/lib/diga_storage.php';
+// This bridge deliberately reuses the private legacy Weather34/DIGA backend.
+// The two legacy libraries are deployment dependencies, not bundled SDK code.
+// Never continue with an unprotected public receiver if they are missing.
+$legacyRoot = getenv('DIGA_LEGACY_LIB_DIR');
+if (!is_string($legacyRoot) || $legacyRoot === '') {
+    $legacyRoot = dirname(__DIR__) . '/lib';
+}
+$securityLibrary = rtrim($legacyRoot, '/\\') . '/diga_security.php';
+$storageLibrary = rtrim($legacyRoot, '/\\') . '/diga_storage.php';
+if (!is_readable($securityLibrary) || !is_readable($storageLibrary)) {
+    error_log('Meteobridge mb.php disabled: legacy DIGA library dependencies unavailable');
+    http_response_code(503);
+    header('Content-Type: text/plain; charset=UTF-8');
+    header('Cache-Control: no-store');
+    echo 'Meteobridge backend dependencies not installed';
+    exit;
+}
+require_once $securityLibrary;
+require_once $storageLibrary;
 require_once dirname(__DIR__) . '/lib/weather_realtime.php';
 
 diga_require_public_realtime_request();
