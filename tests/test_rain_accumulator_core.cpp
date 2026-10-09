@@ -27,6 +27,17 @@ int main() {
  assert(t.lifetimeMilli == 50 && t.dayMilli == 0);
  accumulateRain(t, 22, 5100, 20270101, 202701, 2027);
  assert(t.dayMilli == 50 && t.lifetimeMilli == 100);
+ uint32_t daily = 999;
+ assert(rainDailyMilli(o, true, 20270101, daily) && daily == 600);
+ assert(rainDailyMilli(t, true, 20270101, daily) && daily == 50);
+ // No fresh RF message is needed to keep the accumulated day available.
+ assert(rainDailyMilli(t, true, 20270101, daily) && daily == 50);
+ assert(!rainDailyMilli(t, false, 20270101, daily));
+ assert(!rainDailyMilli(RainBucket{}, true, 20270101, daily));
+ assert(!rainDailyMilli(t, true, 0, daily));
+ assert(!rainDailyMilli(t, true, 20261231, daily));
+ assert(rainDailyMilli(t, true, 20270102, daily) && daily == 0);
+ assert(t.dayMilli == 50); // read does not mutate persistence state
  assert(sizeof(RainBucket) <= 64);
  std::cout << "PASS: rainfall core scenarios (duplicates/day/month/year/reset/replacement/outlier/no-NTP); bucket=" << sizeof(RainBucket) << " B\n";
 }

@@ -15,6 +15,7 @@
 #include "network_manager.h"
 #include "remote_access.h"
 #include "remote_trust.h"
+#include "rain_accumulator.h"
 
 namespace {
 constexpr char NVS_NS[] = "mbcompat";
@@ -48,14 +49,6 @@ String gLastError;
 size_t gLastPayloadBytes = 0;
 size_t gLastFieldCount = 0;
 volatile uint8_t gLastWeatherValues = 0; // excludes metadata/uptime
-
-struct DailyBaseline {
-    uint32_t dayKey{0};
-    float baseMm{NAN};
-    bool valid{false};
-};
-DailyBaseline gOregonDaily;
-DailyBaseline gTechnolineDaily;
 
 struct LiveSelection {
     float tempC{NAN};
@@ -167,44 +160,6 @@ uint32_t utcDayKey(const tm &utc) {
            static_cast<uint32_t>(utc.tm_mday);
 }
 
-void loadDailyBaselines() {
-    Preferences p;
-    if (!p.begin(NVS_NS, true)) return;
-    gOregonDaily.dayKey = p.getUInt("orDay", 0U);
-    gOregonDaily.baseMm = p.getFloat("orBase", NAN);
-    gOregonDaily.valid = gOregonDaily.dayKey != 0U && finiteValue(gOregonDaily.baseMm);
-    gTechnolineDaily.dayKey = p.getUInt("lcDay", 0U);
-    gTechnolineDaily.baseMm = p.getFloat("lcBase", NAN);
-    gTechnolineDaily.valid = gTechnolineDaily.dayKey != 0U && finiteValue(gTechnolineDaily.baseMm);
-    p.end();
-}
-
-void persistDailyBaseline(bool oregon, const DailyBaseline &baseline) {
-    Preferences p;
-    if (!p.begin(NVS_NS, false)) return;
-    if (oregon) {
-        p.putUInt("orDay", baseline.dayKey);
-        p.putFloat("orBase", baseline.baseMm);
-    } else {
-        p.putUInt("lcDay", baseline.dayKey);
-        p.putFloat("lcBase", baseline.baseMm);
-    }
-    p.end();
-}
-
-float dailyRain(bool oregon, uint32_t dayKey, float totalMm) {
-    if (!finiteValue(totalMm)) return NAN;
-    DailyBaseline &b = oregon ? gOregonDaily : gTechnolineDaily;
-    if (!b.valid || b.dayKey != dayKey || totalMm + 0.001f < b.baseMm) {
-        b.dayKey = dayKey;
-        b.baseMm = totalMm;
-        b.valid = true;
-        persistDailyBaseline(oregon, b); // at most daily, plus genuine counter reset
-        return 0.0f;
-    }
-    return max(0.0f, totalMm - b.baseMm);
-}
-
 bool oregonThermoFresh(const StationState &s, uint32_t now) {
     return s.thermoValid && sensorFresh(s.thermoUpdatedMs, now) && finiteValue(s.temperatureC) && finiteValue(s.humidityPct);
 }
@@ -234,6 +189,8 @@ bool lcRainFresh(const StationState &s, uint32_t now) {
 LiveSelection selectLive(const StationState &s, const MbCompatibleConfig &cfg, uint32_t now, uint32_t dayKey) {
     LiveSelection v;
     const bool useTechnoline = cfg.sourcePriority == 1U;
+    // Daily accumulation survives radio pauses; instantaneous rain remains freshness-gated.
+    v.rainTodayMm = rainAccumulatorTodayMm(!useTechnoline, dayKey);
 
     if (!useTechnoline) {
         // Oregon source: no Technoline fallback is allowed.
@@ -256,7 +213,6 @@ LiveSelection selectLive(const StationState &s, const MbCompatibleConfig &cfg, u
             if (finiteValue(s.rainRateMmH)) v.rainRateMmH = s.rainRateMmH;
             if (s.rainLastHourValid) v.rain1hMm = s.rainLastHourMm;
             if (s.rainLast24hValid) v.rain24hMm = s.rainLast24hMm;
-            v.rainTodayMm = dailyRain(true, dayKey, s.rainTotalMm);
             v.rainFromOregon = true;
         }
         if (s.uvValid && sensorFresh(s.uvUpdatedMs, now) && s.uvIndex >= 0)
@@ -279,7 +235,6 @@ LiveSelection selectLive(const StationState &s, const MbCompatibleConfig &cfg, u
             if (s.lacrosse.rainRate5mValid) v.rainRateMmH = s.lacrosse.rainRate5mMmH;
             if (s.lacrosse.rainLastHourValid) v.rain1hMm = s.lacrosse.rainLastHourMm;
             if (s.lacrosse.rainLast24hValid) v.rain24hMm = s.lacrosse.rainLast24hMm;
-            v.rainTodayMm = dailyRain(false, dayKey, s.lacrosse.rainTotalMm);
         }
         // UV belongs to the Oregon station and must remain unavailable here.
     }
@@ -355,7 +310,7 @@ bool buildPayload(const StationState &snapshot, const MbCompatibleConfig &cfg, S
         static_cast<uint8_t>(finiteValue(live.gustKmh)) +
         static_cast<uint8_t>(finiteValue(live.dirDeg)) +
         static_cast<uint8_t>(finiteValue(live.rainRateMmH)) +
-        static_cast<uint8_t>(finiteValue(live.rainTodayMm)) +
+        // A retained daily total alone does not prove fresh sensor reception.
         static_cast<uint8_t>(finiteValue(live.rainTotalMm)) +
         static_cast<uint8_t>(finiteValue(live.pressureHpa)) +
         static_cast<uint8_t>(finiteValue(live.indoorTempC)) +
@@ -675,7 +630,6 @@ void initMbCompatiblePublisher(StationState &state) {
     gState = &state;
     gMutex = xSemaphoreCreateMutex();
     loadConfig();
-    loadDailyBaselines();
     configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
 // LILYGO_STABILITY_MB_LAZY_V1: reserve stack only if publisher enabled.
     if(gConfig.enabled)ensureMbWorker();

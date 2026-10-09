@@ -11,3 +11,6 @@ void flushRainAccumulator();
 void rainAccumulatorSdFormatted();
 void rainAccumulatorConfigChanged(bool oregonChanged, bool technolineChanged);
 String rainAccumulatorJson();
+
+// Main-loop snapshot; NAN when source is disabled, uninitialized or UTC is invalid.
+float rainAccumulatorTodayMm(bool oregon, uint32_t utcDay);

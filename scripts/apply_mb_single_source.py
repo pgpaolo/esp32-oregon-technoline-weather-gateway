@@ -30,6 +30,8 @@ if start < 0 or end < 0:
 strict_select = r'''LiveSelection selectLive(const StationState &s, const MbCompatibleConfig &cfg, uint32_t now, uint32_t dayKey) {
     LiveSelection v;
     const bool useTechnoline = cfg.sourcePriority == 1U;
+    // Daily accumulation survives radio pauses; instantaneous rain remains freshness-gated.
+    v.rainTodayMm = rainAccumulatorTodayMm(!useTechnoline, dayKey);
 
     if (!useTechnoline) {
         // Oregon source: no Technoline fallback is allowed.
@@ -52,7 +54,6 @@ strict_select = r'''LiveSelection selectLive(const StationState &s, const MbComp
             if (finiteValue(s.rainRateMmH)) v.rainRateMmH = s.rainRateMmH;
             if (s.rainLastHourValid) v.rain1hMm = s.rainLastHourMm;
             if (s.rainLast24hValid) v.rain24hMm = s.rainLast24hMm;
-            v.rainTodayMm = dailyRain(true, dayKey, s.rainTotalMm);
             v.rainFromOregon = true;
         }
         if (s.uvValid && sensorFresh(s.uvUpdatedMs, now) && s.uvIndex >= 0)
@@ -75,7 +76,6 @@ strict_select = r'''LiveSelection selectLive(const StationState &s, const MbComp
             if (s.lacrosse.rainRate5mValid) v.rainRateMmH = s.lacrosse.rainRate5mMmH;
             if (s.lacrosse.rainLastHourValid) v.rain1hMm = s.lacrosse.rainLastHourMm;
             if (s.lacrosse.rainLast24hValid) v.rain24hMm = s.lacrosse.rainLast24hMm;
-            v.rainTodayMm = dailyRain(false, dayKey, s.lacrosse.rainTotalMm);
         }
         // UV belongs to the Oregon station and must remain unavailable here.
     }

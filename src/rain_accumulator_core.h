@@ -19,6 +19,14 @@ struct RainBucket {
 
 struct RainCoreResult { bool changed; bool incremented; bool rebased; };
 
+// Read without mutating/checkpointing: publishers can run before calendar service.
+// A known bucket on a new UTC day starts at zero; unavailable is not dry weather.
+inline bool rainDailyMilli(const RainBucket &b, bool enabled, uint32_t day, uint32_t &value) {
+    if (!enabled || !b.baselineValid || !day || b.dayKey > day) return false;
+    value = b.dayKey == day ? b.dayMilli : 0U;
+    return true;
+}
+
 inline bool rollRainCalendar(RainBucket &b, uint32_t day, uint32_t month, uint32_t year) {
     if (!day || !month || !year) return false;
     bool changed = false;

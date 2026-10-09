@@ -40,3 +40,17 @@ Source-level and host arithmetic/pre-build tests were carried out for the suppli
 - [Publishing checklist](../PUBLISHING_RAIN1.md)
 
 Historical documentation, authorship and GPL-3.0-or-later licensing remain in place.
+
+## COMPATIBLE MB daily rainfall correction / Correzione giornaliero
+
+MB field 9 now reads the selected Oregon/Technoline shared UTC daily accumulator,
+also used by `/api/rain/accumulation`. The independent MB NVS baselines are no
+longer read or updated; MB connection settings remain intact. Field 151 remains
+the sensor total. A radio pause preserves the accumulated daily value, while
+instantaneous rate and rolling rain fields retain their freshness checks.
+Disabled/uninitialized accumulation or invalid UTC produces `--`, not a false zero.
+Enable accumulation for the selected source in CONFIGURAZIONE > microSD.
+Without optional SD persistence the accumulation restarts after reboot; the first
+sample establishes a baseline and does not reconstruct earlier rainfall.
+The day boundary remains UTC. Install a build from the updated branch/commit;
+an existing release tag is not moved by this correction.

@@ -83,3 +83,18 @@ for path in (
     assert "diga" not in text, f"project-specific receiver name leaked into {path}"
 
 print("MB-compatible mapping regression OK: 192 fields, exclusive station source, worker HTTP")
+
+# Generated source must retain the shared daily accumulator across builds.
+import ast
+module = ast.parse(SINGLE)
+selector = next(ast.literal_eval(n.value) for n in module.body
+                if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "strict_select" for t in n.targets))
+start = CPP.index("LiveSelection selectLive(")
+end = CPP.index("\nString floatField(", start)
+assert CPP[start:end].strip() == selector.strip()
+assert "rainAccumulatorTodayMm(!useTechnoline, dayKey)" in selector
+assert selector.index("rainAccumulatorTodayMm") < selector.index("if (!useTechnoline)")
+assert "dailyRain(" not in CPP and "DailyBaseline" not in CPP
+print("Shared rain accumulator publisher/generator regression OK")
+
+assert "static_cast<uint8_t>(finiteValue(live.rainTodayMm))" not in CPP

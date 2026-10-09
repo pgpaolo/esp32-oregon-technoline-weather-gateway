@@ -145,6 +145,14 @@ void observeTechnolineRain(const LaCrosseReading &r) {
     observe(state.technoline, key ? key : 1U, r.rainTotalMm);
 }
 
+float rainAccumulatorTodayMm(bool oregon, uint32_t utcDay) {
+    const SdLoggerConfig cfg = getSdLoggerConfig();
+    const RainBucket &bucket = oregon ? state.oregon : state.technoline;
+    uint32_t milli = 0;
+    return rainDailyMilli(bucket, oregon ? cfg.rainOregon : cfg.rainTechnoline, utcDay, milli)
+        ? milli / 1000.0f : NAN;
+}
+
 void serviceRainAccumulator() {
     // Keep time conversions and SD status checks outside the hot RF loop.
     static uint32_t previousServiceMs = 0;
