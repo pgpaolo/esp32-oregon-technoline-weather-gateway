@@ -16,6 +16,15 @@ def substitute_once(old, new, name):
     global s
     if new in s:
         return
+    # MBFIX2_TLS_WDT_GUARD_V2 pre-existing source has the same empty-packet
+    # guard plus a bounded NTP/UTC retry, so it is semantically already
+    # patched. Do not replace the safe retry or reject a second build.
+    if name == 'scheduling empty packet guard':
+        if ('MBFIX2_TLS_WDT_GUARD_V2: bounded retry for NTP/UTC failures' in s
+            and 'if (error.startsWith("no fresh meteorological measurements")) {' in s
+            and 'gLastScheduleMs = now;' in s
+            and 'gLastHttpCode = 0;' in s):
+            return
     if old not in s:
         raise RuntimeError('MB measurement diagnostics: missing ' + name)
     s = s.replace(old, new, 1)
