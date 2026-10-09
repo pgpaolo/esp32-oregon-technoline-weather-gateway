@@ -3,8 +3,9 @@
 #include "station_state.h"
 
 enum class MbCompatibleTlsMode : uint8_t {
-    CaVerified = 0,
-    Insecure = 1
+    CaVerified = 0, // built-in public ISRG Root X1/X2 trust
+    Insecure = 1,   // diagnostics only; preserves legacy NVS value
+    CustomCa = 2    // explicit private/custom CA stored in NVS
 };
 
 struct MbCompatibleConfig {

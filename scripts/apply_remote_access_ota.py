@@ -10,6 +10,21 @@ import re
 # PlatformIO/SCons and normal Python inspection.
 root = Path(env.subst("$PROJECT_DIR"))
 
+
+def write_if_changed(path: Path, content: str) -> None:
+    """Keep PlatformIO pre-scripts from rewriting unchanged source files."""
+    if path.read_text(encoding="utf-8") == content:
+        return
+    try:
+        path.write_text(content, encoding="utf-8")
+    except PermissionError as exc:
+        raise PermissionError(
+            f"AdminSensor build: cannot update {path}. "
+            "Check read-only attribute, NTFS permissions, antivirus/Controlled Folder Access "
+            "and whether an editor or another build is holding the file. "
+            "See docs/BUILD_WINDOWS_PERMISSION_ERROR.md."
+        ) from exc
+
 # The classic ESP32 has limited contiguous 8-bit heap once RF, MQTT, SD, Web,
 # TLS and the AdminSensor task are all active. The Oregon dashboard is much
 # larger than the Davis UI, so buffering the full gzip body before chunking can
@@ -34,7 +49,7 @@ new_limits = (
 remote_text, replacements = limits_re.subn(new_limits, remote_text, count=1)
 if replacements != 1:
     raise RuntimeError("Remote memory limits: expected limits anchor missing")
-remote_path.write_text(remote_text, encoding="utf-8")
+write_if_changed(remote_path, remote_text)
 print(
     "AdminSensor Remote limits: "
     f"dashboard gzip {dashboard_gz_len} B, request {max_req // 1024} KiB, "
@@ -206,7 +221,7 @@ if "ADMIN_SENSOR_HTTP_CHUNK_V2" not in remote_text:
         sig = "void sendResp(const String&id,LocalResp&r)"
     start, end = function_bounds(remote_text, sig)
     remote_text = remote_text[:start] + chunked_send + remote_text[end:]
-    remote_path.write_text(remote_text, encoding="utf-8")
+    write_if_changed(remote_path, remote_text)
     print("AdminSensor Remote HTTP: dynamic responses split into 2 KiB WSS chunks")
 else:
     print("AdminSensor Remote HTTP: 2 KiB chunked response protocol already present")
@@ -260,7 +275,7 @@ if "webUiGzipData" not in webh_text:
         h_anchor + "const uint8_t *webUiGzipData();\nsize_t webUiGzipSize();\n",
         1,
     )
-    webh_path.write_text(webh_text, encoding="utf-8")
+    write_if_changed(webh_path, webh_text)
 
 webcpp_path = root / "src" / "web_manager.cpp"
 webcpp_text = webcpp_path.read_text(encoding="utf-8")
@@ -270,7 +285,7 @@ if "webUiGzipData()" not in webcpp_text:
         raise RuntimeError("Remote flash UI: webStarted implementation missing")
     accessors = "const uint8_t *webUiGzipData() { return WEB_UI_GZ; }\nsize_t webUiGzipSize() { return WEB_UI_GZ_LEN; }\n"
     webcpp_text = webcpp_text.replace(c_anchor, c_anchor + accessors, 1)
-    webcpp_path.write_text(webcpp_text, encoding="utf-8")
+    write_if_changed(webcpp_path, webcpp_text)
 
 flash_send = r'''void sendEmbeddedWebUi(const String&id){ // ADMIN_SENSOR_FLASH_UI_V2
   constexpr size_t FLASH_CHUNK_RAW=2048U;
@@ -405,7 +420,7 @@ for marker in required_flash:
     if marker not in remote_text:
         raise RuntimeError(f"Remote flash UI result missing: {marker}")
 
-remote_path.write_text(remote_text, encoding="utf-8")
+write_if_changed(remote_path, remote_text)
 print(
     "AdminSensor Remote Web UI: zero-copy flash stream in 2 KiB chunks; "
     "dynamic response cap 24 KiB; HTTP queue 2"
@@ -439,5 +454,5 @@ if old_first_chunk in ota_text:
 elif new_first_chunk not in ota_text:
     raise RuntimeError("Remote OTA image guard: first-chunk anchor missing")
 
-ota_path.write_text(ota_text, encoding="utf-8")
+write_if_changed(ota_path, ota_text)
 print("Remote OTA safety: application-image descriptor validation enabled")

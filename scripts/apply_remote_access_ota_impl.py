@@ -16,7 +16,19 @@ def read(path: str) -> str:
 
 
 def write(path: str, data: str) -> None:
-    (ROOT / path).write_text(data, encoding="utf-8")
+    """Avoid touching unchanged sources (important for Windows pre-build passes)."""
+    target = ROOT / path
+    if target.read_text(encoding="utf-8") == data:
+        return
+    try:
+        target.write_text(data, encoding="utf-8")
+    except PermissionError as exc:
+        raise PermissionError(
+            f"AdminSensor build: cannot update {target}. "
+            "Check read-only attribute, NTFS permissions, antivirus/Controlled Folder Access "
+            "and whether an editor or another build is holding the file. "
+            "See docs/BUILD_WINDOWS_PERMISSION_ERROR.md."
+        ) from exc
 
 
 def function_block(text: str, signature: str):

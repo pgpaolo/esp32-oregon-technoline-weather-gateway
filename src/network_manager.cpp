@@ -498,3 +498,55 @@ bool resetNetworkConfigToDefaults(bool &changed) {
     const NetworkRuntimeConfig d = defaults();
     return saveNetworkConfig(d, changed);
 }
+
+
+bool networkWifiScanStart() {
+    const int state = WiFi.scanComplete();
+    if (state == -1) return true;  // already running
+    if (state >= 0) WiFi.scanDelete();
+    const int rc = WiFi.scanNetworks(true, true);
+    return rc == -1 || rc >= 0;
+}
+
+String networkWifiScanJson() {
+    const int n = WiFi.scanComplete();
+    if (n == -1) return String("{\"status\":\"running\",\"networks\":[]}");
+    if (n < 0) return String("{\"status\":\"idle\",\"networks\":[]}");
+
+    auto escapeJson = [](const String &value) {
+        String out;
+        out.reserve(value.length() + 8U);
+        for (size_t i = 0; i < value.length(); ++i) {
+            const char c = value[i];
+            if (c == '\\' || c == '"') { out += '\\'; out += c; }
+            else if (static_cast<uint8_t>(c) >= 0x20U) out += c;
+        }
+        return out;
+    };
+
+    String out;
+    out.reserve(2200);
+    out = "{\"status\":\"done\",\"networks\":[";
+    String seen[20];
+    uint8_t used = 0;
+    for (int i = 0; i < n && used < 20U; ++i) {
+        const String ssid = WiFi.SSID(i);
+        if (ssid.length() == 0U) continue;
+        bool duplicate = false;
+        for (uint8_t j = 0; j < used; ++j) {
+            if (seen[j] == ssid) { duplicate = true; break; }
+        }
+        if (duplicate) continue;
+        seen[used] = ssid;
+        if (used) out += ',';
+        const bool open = WiFi.encryptionType(i) == WIFI_AUTH_OPEN;
+        out += "{\"ssid\":\"" + escapeJson(ssid) + "\"";
+        out += ",\"rssi\":" + String(WiFi.RSSI(i));
+        out += ",\"channel\":" + String(WiFi.channel(i));
+        out += ",\"security\":\"" + String(open ? "OPEN" : "PROTETTA") + "\"}";
+        used++;
+    }
+    out += "]}";
+    WiFi.scanDelete();
+    return out;
+}

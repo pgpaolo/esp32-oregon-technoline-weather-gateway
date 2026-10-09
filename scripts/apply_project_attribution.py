@@ -25,14 +25,14 @@ if ".projectAttribution{" not in html:
 # by one quiet attribution row, while preserving the forecast tile placement.
 old_grid = 'grid-template-areas:"title forecast" "sub forecast"'
 new_grid = 'grid-template-areas:"title forecast" "sub forecast" "attribution forecast"'
-if old_grid in html:
+if new_grid not in html and old_grid in html:
     html = html.replace(old_grid, new_grid, 1)
 elif new_grid not in html:
     raise RuntimeError("Project attribution: desktop title grid anchor missing")
 
 old_mobile = 'grid-template-areas:"title" "forecast" "sub"'
 new_mobile = 'grid-template-areas:"title" "forecast" "sub" "attribution"'
-if old_mobile in html:
+if new_mobile not in html and old_mobile in html:
     html = html.replace(old_mobile, new_mobile, 1)
 elif new_mobile not in html:
     raise RuntimeError("Project attribution: mobile title grid anchor missing")

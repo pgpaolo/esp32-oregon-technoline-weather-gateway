@@ -38,8 +38,8 @@ require(cpp, 'path.indexOf("..") < 0', "path traversal guard")
 require(cpp, "entry.openNext(&dir, O_RDONLY)", "recursive SdFat listing")
 
 require(web, "ADMIN_SENSOR_SD_BROWSER_V1", "Web SD browser handlers")
-require(web, 'server.on("/api/sd/files", HTTP_GET, handleSdFiles);', "file list route")
-require(web, 'server.on("/api/sd/read", HTTP_GET, handleSdRead);', "chunk read route")
+require(web, 'server.on("/api/sd/files", HTTP_GET, [](){ if (!requireWebAuth()) return; handleSdFiles(); });', "authenticated file list route")
+require(web, 'server.on("/api/sd/read", HTTP_GET, [](){ if (!requireWebAuth()) return; handleSdRead(); });', "authenticated chunk read route")
 require(web, "if (!requireWebAuth()) return;", "authenticated SD browser")
 require(web, "limit > 6144U", "Web chunk ceiling")
 

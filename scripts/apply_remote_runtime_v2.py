@@ -176,7 +176,7 @@ if "#include <esp_heap_caps.h>" not in m:
 
 mb_start, mb_end = function_bounds(m, "String mbCompatibleConfigStatusJson()")
 mb_seg = m[mb_start:mb_end]
-if '"worker_stack_hwm"' not in mb_seg:
+if r'\"worker_stack_hwm\"' not in mb_seg:
     anchor = '    out += ",\\\"payload_fields\\\":" + String(fieldCount);\n'
     if anchor not in mb_seg:
         raise RuntimeError("Remote runtime V2: MB status payload anchor missing")
@@ -234,7 +234,11 @@ if(remoteUi){setTimeout(()=>safeLightning(true),2500);setTimeout(()=>safeMqtt(tr
 if old_startup in d:
     d = d.replace(old_startup, new_startup, 1)
 elif new_startup not in d:
-    raise RuntimeError("Remote runtime V2: startup polling anchor missing")
+    # A later /api/state fastpath intentionally serializes the first dashboard
+    # load. On repeat PlatformIO builds this newer marker is already present.
+    # Do not downgrade it merely to satisfy an older polling-template anchor.
+    if "ADMIN_SENSOR_REMOTE_BOOT_SERIAL_V1" not in d or "safeRefresh(true).finally" not in d:
+        raise RuntimeError("Remote runtime V2: startup polling anchor missing")
 
 repls = {
     "setInterval(safeRefresh,remoteUi?5000:2000);": "setInterval(()=>safeRefresh(false),2000);",

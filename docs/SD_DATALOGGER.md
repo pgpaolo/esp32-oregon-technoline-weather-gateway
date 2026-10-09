@@ -235,3 +235,8 @@ Before deep sleep the logger attempts to drain the pending queue, closes the fil
 Mount and explicit format are hardware-confirmed on T3 V1.6.1. Both PlatformIO targets build in CI and Oregon V2.1/PCR800 host vectors are checked automatically. Long-duration RF + microSD concurrency, full/read-only-card handling and deep-sleep/OTA edge cases remain appropriate hardware-validation items rather than claimed proof.
 
 The project uses `min_spiffs.csv`, keeping NVS and two OTA application slots of `0x1E0000` bytes (`1,966,080` bytes) each. The Web UI is embedded and the project does not depend on SPIFFS.
+
+
+## Optional persistent rain accumulation — rain1
+
+Oregon and Technoline rainfall accumulation is distinct from raw CSV frame logging. The dashboard has separate per-family RAM toggles and a microSD persistence toggle. If enabled with an active SD logger and mounted card, state is checkpointed every ~60 seconds into alternating `/weather/rain_a.bin` and `/weather/rain_b.bin` (~112 B each, checksum protected). Files are neither raw-frame CSV nor a full event history. Interrupted writes may lose the last uncheckpointed rainfall. [Guide IT](RAIN_ACCUMULATION.md) / [Guide EN](RAIN_ACCUMULATION_EN.md).

@@ -9,7 +9,9 @@
 #include "barometer_manager.h"
 #include "oregon_receiver.h"
 #include "mqtt_publisher.h"
+#include "mb_compatible_publisher.h"
 #include "lightning_manager.h"
+#include "sd_logger.h"
 
 namespace {
 void configureWakeSource() {
@@ -83,10 +85,12 @@ String controllerWakeHint() {
     Serial.println(F("[POWER] arresto controllato -> DEEP SLEEP"));
 
     // Porta prima offline i servizi di rete, poi spegne le periferiche.
+    prepareMbCompatibleForDeepSleep();
     prepareMqttForDeepSleep();
     prepareDisplayForDeepSleep();
     prepareBarometerForDeepSleep();
     prepareLightningForDeepSleep();
+    prepareSdLoggerForDeepSleep();
     const bool radioOk = prepareRadioForDeepSleep();
     if (!radioOk) Serial.println(F("[POWER] ATTENZIONE: SX1278 non ha confermato sleep"));
 

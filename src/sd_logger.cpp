@@ -1,8 +1,8 @@
 #include "sd_logger.h"
+#include "rain_accumulator.h"
 
 #include <Arduino.h>
-#include <FS.h>
-#include <SD.h>
+#include <SdFat.h>
 #include <SPI.h>
 #include <Preferences.h>
 #include <time.h>
@@ -34,6 +34,7 @@ struct PendingLine {
 };
 
 SPIClass sdSpi(HSPI);
+SdFat32 sd;
 SdLoggerConfig cfg{};
 SdLoggerStatus status{};
 PendingLine queueBuf[QUEUE_SIZE];
@@ -43,6 +44,34 @@ uint32_t lastWriteServiceMs = 0;
 uint32_t lastCapacityRefreshMs = 0;
 uint32_t lastSnapshotMs = 0;
 bool spiStarted = false;
+constexpr uint32_t SD_MOUNT_RETRY_STEPS_MS[] = {5000UL, 15000UL, 60000UL, 300000UL};
+uint8_t mountRetryStage = 0;
+uint32_t nextMountRetryMs = 0;
+
+void resetMountRetry() {
+    mountRetryStage = 0;
+    nextMountRetryMs = 0;
+}
+
+void scheduleMountRetry() {
+    if (!cfg.enabled || !status.supported || status.mounted) {
+        nextMountRetryMs = 0;
+        return;
+    }
+    constexpr uint8_t stepCount = sizeof(SD_MOUNT_RETRY_STEPS_MS) / sizeof(SD_MOUNT_RETRY_STEPS_MS[0]);
+    const uint8_t idx = mountRetryStage < stepCount ? mountRetryStage : static_cast<uint8_t>(stepCount - 1U);
+    nextMountRetryMs = millis() + SD_MOUNT_RETRY_STEPS_MS[idx];
+    if (mountRetryStage + 1U < stepCount) mountRetryStage++;
+    Serial.print(F("[SD] nuovo tentativo mount tra "));
+    Serial.print(SD_MOUNT_RETRY_STEPS_MS[idx] / 1000UL);
+    Serial.println(F(" s"));
+}
+
+uint32_t mountRetryRemainingMs() {
+    if (!nextMountRetryMs) return 0;
+    const int32_t delta = static_cast<int32_t>(nextMountRetryMs - millis());
+    return delta > 0 ? static_cast<uint32_t>(delta) : 0U;
+}
 
 SdLoggerConfig defaults() {
     return SdLoggerConfig{};
@@ -84,6 +113,9 @@ void loadConfig() {
     cfg.logTechnoline = boolFromPrefs(p, "tech", cfg.logTechnoline);
     cfg.logBme280 = boolFromPrefs(p, "bme", cfg.logBme280);
     cfg.logAs3935 = boolFromPrefs(p, "as3935", cfg.logAs3935);
+    cfg.rainOregon = boolFromPrefs(p, "r_oreg", cfg.rainOregon);
+    cfg.rainTechnoline = boolFromPrefs(p, "r_tech", cfg.rainTechnoline);
+    cfg.rainPersist = boolFromPrefs(p, "r_sd", cfg.rainPersist);
     cfg.snapshotIntervalSec = p.getUShort("snap_s", cfg.snapshotIntervalSec);
     p.end();
     if (!validateSdLoggerConfig(cfg)) cfg = defaults();
@@ -95,6 +127,9 @@ bool sameConfig(const SdLoggerConfig &a, const SdLoggerConfig &b) {
            a.logTechnoline == b.logTechnoline &&
            a.logBme280 == b.logBme280 &&
            a.logAs3935 == b.logAs3935 &&
+           a.rainOregon == b.rainOregon &&
+           a.rainTechnoline == b.rainTechnoline &&
+           a.rainPersist == b.rainPersist &&
            a.snapshotIntervalSec == b.snapshotIntervalSec;
 }
 
@@ -105,14 +140,19 @@ bool verifyConfig(Preferences &p, const SdLoggerConfig &expected) {
            p.getBool("tech", d.logTechnoline) == expected.logTechnoline &&
            p.getBool("bme", d.logBme280) == expected.logBme280 &&
            p.getBool("as3935", d.logAs3935) == expected.logAs3935 &&
+           p.getBool("r_oreg", d.rainOregon) == expected.rainOregon &&
+           p.getBool("r_tech", d.rainTechnoline) == expected.rainTechnoline &&
+           p.getBool("r_sd", d.rainPersist) == expected.rainPersist &&
            p.getUShort("snap_s", d.snapshotIntervalSec) == expected.snapshotIntervalSec;
 }
 
 void refreshCapacity() {
-    if (!status.mounted) return;
-    status.cardSizeBytes = SD.cardSize();
-    status.totalBytes = SD.totalBytes();
-    status.usedBytes = SD.usedBytes();
+    if (!status.mounted || !sd.card()) return;
+    status.cardSizeBytes = static_cast<uint64_t>(sd.card()->sectorCount()) * 512ULL;
+    const uint64_t bytesPerCluster = sd.bytesPerCluster();
+    status.totalBytes = static_cast<uint64_t>(sd.clusterCount()) * bytesPerCluster;
+    const uint64_t freeBytes = static_cast<uint64_t>(sd.freeClusterCount()) * bytesPerCluster;
+    status.usedBytes = status.totalBytes >= freeBytes ? status.totalBytes - freeBytes : 0;
     lastCapacityRefreshMs = millis();
 }
 
@@ -134,8 +174,8 @@ void isoTimestamp(char *out, size_t outLen) {
 }
 
 void ensureDirectory(const char *path) {
-    if (!path || !path[0] || SD.exists(path)) return;
-    SD.mkdir(path);
+    if (!path || !path[0] || sd.exists(path)) return;
+    sd.mkdir(path);
 }
 
 bool buildLogPath(char *out, size_t outLen) {
@@ -164,8 +204,8 @@ bool appendBatch() {
 
     char path[72];
     if (!buildLogPath(path, sizeof(path))) return false;
-    const bool newFile = !SD.exists(path);
-    File f = SD.open(path, FILE_APPEND);
+    const bool newFile = !sd.exists(path);
+    File32 f = sd.open(path, O_WRONLY | O_CREAT | O_APPEND);
     if (!f) {
         status.writeErrors++;
         return false;
@@ -262,7 +302,7 @@ void queueLightningSnapshot() {
 }
 
 void unmount() {
-    if (status.mounted) SD.end();
+    sd.end();
     if (spiStarted) {
         sdSpi.end();
         spiStarted = false;
@@ -271,9 +311,102 @@ void unmount() {
     status.cardSizeBytes = 0;
     status.totalBytes = 0;
     status.usedBytes = 0;
+    status.spiFrequencyHz = 0;
     status.currentFile[0] = '\0';
     queueHead = queueTail = 0;
     status.queueDepth = 0;
+}
+
+bool mountSdFat(bool formatRequested) {
+    unmount();
+    status.mountAttempts++;
+    status.spiAttemptMask = 0;
+    status.spiBeginFailMask = 0;
+    status.initCode = 0;
+    status.sdErrorCode = 0;
+    status.sdErrorData = 0;
+
+    // Official LILYGO T3 V1.6.1 HSPI pin order. CS is kept high while the
+    // clock/data pins are configured, then SdFat owns it during transactions.
+    constexpr uint32_t frequencies[] = {SD_SCK_MHZ(4), 400000UL};
+    for (uint8_t i = 0; i < 2U; ++i) {
+        const uint8_t bit = static_cast<uint8_t>(1U << i);
+        status.spiAttemptMask |= bit;
+        pinMode(SDCARD_CS_PIN, OUTPUT);
+        digitalWrite(SDCARD_CS_PIN, HIGH);
+        delay(10);
+        sdSpi.begin(SDCARD_SCLK_PIN, SDCARD_MISO_PIN, SDCARD_MOSI_PIN);
+        spiStarted = true;
+
+        const SdSpiConfig spiConfig(SDCARD_CS_PIN, SHARED_SPI, frequencies[i], &sdSpi);
+        bool mounted = sd.begin(spiConfig);
+        status.sdErrorCode = sd.sdErrorCode();
+        status.sdErrorData = sd.sdErrorData();
+
+        // sdErrorCode()==0 with begin()==false means the card initialized but
+        // no supported FAT volume exists. That is precisely the state in which
+        // formatting must be allowed instead of aborting before the formatter.
+        const bool cardReady = mounted || status.sdErrorCode == 0;
+        if (formatRequested && cardReady) {
+            Serial.println(F("[SD] formattazione FAT tramite SdFat..."));
+            if (!sd.format(&Serial)) {
+                status.sdErrorCode = sd.sdErrorCode();
+                status.sdErrorData = sd.sdErrorData();
+                status.initCode = 4;
+                status.spiBeginFailMask |= bit;
+                unmount();
+                return false;
+            }
+
+            // Reinitialize from a clean bus after writing the partition/FAT.
+            sd.end();
+            sdSpi.end();
+            spiStarted = false;
+            delay(20);
+            pinMode(SDCARD_CS_PIN, OUTPUT);
+            digitalWrite(SDCARD_CS_PIN, HIGH);
+            sdSpi.begin(SDCARD_SCLK_PIN, SDCARD_MISO_PIN, SDCARD_MOSI_PIN);
+            spiStarted = true;
+            mounted = sd.begin(spiConfig);
+            status.sdErrorCode = sd.sdErrorCode();
+            status.sdErrorData = sd.sdErrorData();
+        }
+
+        if (mounted) {
+            status.mounted = true;
+            status.spiFrequencyHz = frequencies[i];
+            status.initCode = 1;
+            status.sdErrorCode = 0;
+            status.sdErrorData = 0;
+            refreshCapacity();
+            Serial.print(F("[SD] SdFat montata a "));
+            Serial.print(frequencies[i] / 1000UL);
+            Serial.print(F(" kHz: "));
+            Serial.print(static_cast<unsigned long>(status.cardSizeBytes / (1024ULL * 1024ULL)));
+            Serial.println(F(" MB"));
+            return true;
+        }
+
+        status.spiBeginFailMask |= bit;
+        status.initCode = cardReady ? 3 : 2;
+        Serial.print(F("[SD] SdFat init fallita a "));
+        Serial.print(frequencies[i] / 1000UL);
+        Serial.print(F(" kHz, error 0x"));
+        Serial.print(status.sdErrorCode, HEX);
+        Serial.print(F(" data 0x"));
+        Serial.println(status.sdErrorData, HEX);
+        sd.end();
+        sdSpi.end();
+        spiStarted = false;
+
+        // A valid card with an invalid FAT will not improve at a lower clock.
+        // Preserve that state so the explicit FORMATTA action can repair it.
+        if (cardReady) return false;
+        delay(25);
+    }
+
+    Serial.println(F("[SD] scheda non inizializzata; gateway continua senza logging"));
+    return false;
 }
 
 } // namespace
@@ -296,33 +429,162 @@ void initSdLogger() {
 bool remountSdLogger() {
 #if !SDCARD_SUPPORTED
     status.supported = false;
+    nextMountRetryMs = 0;
     return false;
 #else
-    unmount();
-    status.mountAttempts++;
-    pinMode(SDCARD_CS_PIN, OUTPUT);
-    digitalWrite(SDCARD_CS_PIN, HIGH);
-    sdSpi.begin(SDCARD_SCLK_PIN, SDCARD_MISO_PIN, SDCARD_MOSI_PIN, SDCARD_CS_PIN);
-    spiStarted = true;
-
-    if (!SD.begin(SDCARD_CS_PIN, sdSpi, 8000000U)) {
-        Serial.println(F("[SD] microSD non rilevata / mount fallito; gateway continua senza logging"));
-        unmount();
-        return false;
-    }
-    if (SD.cardType() == CARD_NONE) {
-        Serial.println(F("[SD] nessuna scheda presente"));
-        unmount();
-        return false;
-    }
-
-    status.mounted = true;
-    refreshCapacity();
-    Serial.print(F("[SD] montata: "));
-    Serial.print(static_cast<unsigned long>(status.cardSizeBytes / (1024ULL * 1024ULL)));
-    Serial.println(F(" MB"));
-    return true;
+    const bool ok = mountSdFat(false);
+    if (ok) resetMountRetry();
+    else scheduleMountRetry();
+    return ok;
 #endif
+}
+
+bool formatSdLogger() {
+#if !SDCARD_SUPPORTED
+    return false;
+#else
+    resetMountRetry();
+    const bool ok = mountSdFat(true);
+    if (ok) {
+        resetMountRetry();
+        Serial.println(F("[SD] formattazione e rimontaggio completati"));
+    } else {
+        scheduleMountRetry();
+    }
+    return ok;
+#endif
+}
+
+// ADMIN_SENSOR_SD_BROWSER_V1
+namespace {
+constexpr uint16_t SD_BROWSER_FILE_LIMIT = 48U;
+constexpr size_t SD_BROWSER_CHUNK_MAX = 6144U;
+
+bool validSdBrowserPath(const String &path) {
+    return path.length() > 13U && path.length() < 96U &&
+           path.startsWith("/weather/") && path.endsWith(".csv") &&
+           path.indexOf("..") < 0 && path.indexOf('\\') < 0;
+}
+
+void appendSdJsonString(String &out, const char *value) {
+    out += '"';
+    if (value) {
+        for (const char *p = value; *p; ++p) {
+            const unsigned char c = static_cast<unsigned char>(*p);
+            if (c == '"' || c == '\\') {
+                out += '\\';
+                out += static_cast<char>(c);
+            } else if (c >= 0x20U) {
+                out += static_cast<char>(c);
+            }
+        }
+    }
+    out += '"';
+}
+
+void appendSdDirectoryFiles(const String &dirPath, uint8_t depth, String &out,
+                            uint16_t &count, bool &first) {
+    if (!status.mounted || depth > 3U || count >= SD_BROWSER_FILE_LIMIT) return;
+
+    File32 dir = sd.open(dirPath.c_str(), O_RDONLY);
+    if (!dir || !dir.isDir()) {
+        dir.close();
+        return;
+    }
+
+    File32 entry;
+    while (count < SD_BROWSER_FILE_LIMIT && entry.openNext(&dir, O_RDONLY)) {
+        char name[64]{};
+        entry.getName(name, sizeof(name));
+        if (!name[0] || name[0] == '.') {
+            entry.close();
+            continue;
+        }
+
+        String full = dirPath;
+        if (!full.endsWith("/")) full += '/';
+        full += name;
+
+        if (entry.isDir()) {
+            entry.close();
+            appendSdDirectoryFiles(full, static_cast<uint8_t>(depth + 1U), out, count, first);
+            continue;
+        }
+
+        if (full.endsWith(".csv")) {
+            const uint32_t fileSize = static_cast<uint32_t>(entry.fileSize());
+            if (!first) out += ',';
+            first = false;
+            out += "{\"path\":";
+            appendSdJsonString(out, full.c_str());
+            out += ",\"size\":" + String(fileSize) + "}";
+            count++;
+        }
+        entry.close();
+    }
+    dir.close();
+}
+} // namespace
+
+String sdLoggerFilesJson() {
+    String out;
+    out.reserve(4096U);
+    out = "{\"status\":" + sdLoggerStatusJson() + ",\"files\":[";
+    uint16_t count = 0;
+    bool first = true;
+    appendSdDirectoryFiles("/weather", 0U, out, count, first);
+    out += "],\"count\":" + String(count);
+    out += ",\"truncated\":";
+    out += count >= SD_BROWSER_FILE_LIMIT ? "true" : "false";
+    out += "}";
+    return out;
+}
+
+bool sdLoggerReadFileChunk(const String &path, uint32_t offset, size_t maxBytes,
+                           String &data, uint32_t &totalBytes) {
+    data = "";
+    totalBytes = 0;
+    if (!status.mounted || !validSdBrowserPath(path)) return false;
+    if (maxBytes == 0U || maxBytes > SD_BROWSER_CHUNK_MAX) maxBytes = SD_BROWSER_CHUNK_MAX;
+
+    File32 file = sd.open(path.c_str(), O_RDONLY);
+    if (!file || file.isDir()) {
+        file.close();
+        return false;
+    }
+
+    totalBytes = static_cast<uint32_t>(file.fileSize());
+    if (offset > totalBytes) {
+        file.close();
+        return false;
+    }
+    if (offset == totalBytes) {
+        file.close();
+        return true;
+    }
+    if (!file.seekSet(offset)) {
+        file.close();
+        return false;
+    }
+
+    const size_t remaining = static_cast<size_t>(totalBytes - offset);
+    const size_t wanted = remaining < maxBytes ? remaining : maxBytes;
+    if (!data.reserve(wanted + 1U)) {
+        file.close();
+        return false;
+    }
+
+    uint8_t buf[512];
+    size_t done = 0;
+    while (done < wanted) {
+        const size_t ask = (wanted - done) < sizeof(buf) ? (wanted - done) : sizeof(buf);
+        const int got = file.read(buf, ask);
+        if (got <= 0) break;
+        data.concat(reinterpret_cast<const char *>(buf), static_cast<unsigned int>(got));
+        done += static_cast<size_t>(got);
+    }
+    file.close();
+    return done == wanted;
 }
 
 void enqueueSdOregon(const WeatherReading &r, const OregonPacket &packet) {
@@ -378,9 +640,14 @@ void enqueueSdTechnoline(const LaCrosseReading &r, const LaCrossePacket &packet)
 
 void serviceSdLogger(const StationState &station) {
     status.timeSynced = timeValid();
+    const uint32_t now = millis();
+
+    if (cfg.enabled && status.supported && !status.mounted && nextMountRetryMs &&
+        static_cast<int32_t>(now - nextMountRetryMs) >= 0) {
+        remountSdLogger();
+    }
     if (!cfg.enabled || !status.mounted) return;
 
-    const uint32_t now = millis();
     const uint32_t snapshotMs = static_cast<uint32_t>(cfg.snapshotIntervalSec) * 1000UL;
     if (snapshotMs && static_cast<uint32_t>(now - lastSnapshotMs) >= snapshotMs) {
         lastSnapshotMs = now;
@@ -400,6 +667,7 @@ void prepareSdLoggerForDeepSleep() {
         for (uint8_t i = 0; i < 4U && queueTail != queueHead; ++i) appendBatch();
     }
     unmount();
+    resetMountRetry();
 }
 
 SdLoggerConfig getSdLoggerConfig() { return cfg; }
@@ -426,13 +694,21 @@ bool saveSdLoggerConfig(const SdLoggerConfig &next, bool &changed) {
     if (next.logTechnoline != cfg.logTechnoline) p.putBool("tech", next.logTechnoline);
     if (next.logBme280 != cfg.logBme280) p.putBool("bme", next.logBme280);
     if (next.logAs3935 != cfg.logAs3935) p.putBool("as3935", next.logAs3935);
+    if (next.rainOregon != cfg.rainOregon) p.putBool("r_oreg", next.rainOregon);
+    if (next.rainTechnoline != cfg.rainTechnoline) p.putBool("r_tech", next.rainTechnoline);
+    if (next.rainPersist != cfg.rainPersist) p.putBool("r_sd", next.rainPersist);
     if (next.snapshotIntervalSec != cfg.snapshotIntervalSec) p.putUShort("snap_s", next.snapshotIntervalSec);
     const bool verified = verifyConfig(p, next);
     p.end();
     if (!verified) return false;
 
     const bool wasEnabled = cfg.enabled;
+    const bool oregonChanged = cfg.rainOregon != next.rainOregon;
+    const bool technolineChanged = cfg.rainTechnoline != next.rainTechnoline;
+    // Flush before disabling SD; otherwise pending totals could be lost.
+    if (cfg.rainPersist && (!next.rainPersist || !next.enabled)) flushRainAccumulator();
     cfg = next;
+    rainAccumulatorConfigChanged(oregonChanged, technolineChanged);
     if (wasEnabled && !cfg.enabled) prepareSdLoggerForDeepSleep();
     else if (!wasEnabled && cfg.enabled) remountSdLogger();
     return true;
@@ -450,6 +726,9 @@ String sdLoggerConfigJson() {
     out += ",\"technoline\":"; out += cfg.logTechnoline ? "true" : "false";
     out += ",\"bme280\":"; out += cfg.logBme280 ? "true" : "false";
     out += ",\"as3935\":"; out += cfg.logAs3935 ? "true" : "false";
+    out += ",\"rain_oregon\":"; out += cfg.rainOregon ? "true" : "false";
+    out += ",\"rain_technoline\":"; out += cfg.rainTechnoline ? "true" : "false";
+    out += ",\"rain_sd\":"; out += cfg.rainPersist ? "true" : "false";
     out += ",\"snapshot_interval_s\":" + String(cfg.snapshotIntervalSec);
     out += "}";
     return out;
@@ -466,13 +745,45 @@ String sdLoggerStatusJson() {
     out += ",\"total_bytes\":" + String(static_cast<unsigned long long>(s.totalBytes));
     out += ",\"used_bytes\":" + String(static_cast<unsigned long long>(s.usedBytes));
     out += ",\"mount_attempts\":" + String(s.mountAttempts);
+    out += ",\"spi_hz\":" + String(s.spiFrequencyHz);
+    out += ",\"spi_try\":" + String(s.spiAttemptMask);
+    out += ",\"spi_fail\":" + String(s.spiBeginFailMask);
+    out += ",\"init_code\":" + String(s.initCode);
+    out += ",\"sd_error\":" + String(s.sdErrorCode);
+    out += ",\"sd_error_data\":" + String(s.sdErrorData);
     out += ",\"queued_total\":" + String(s.recordsQueued);
     out += ",\"written\":" + String(s.recordsWritten);
     out += ",\"dropped\":" + String(s.recordsDropped);
     out += ",\"write_errors\":" + String(s.writeErrors);
     out += ",\"queue_depth\":" + String(s.queueDepth);
     out += ",\"last_write_ms\":" + String(s.lastWriteMs);
+    out += ",\"retry_pending\":"; out += (cfg.enabled && s.supported && !s.mounted && nextMountRetryMs) ? "true" : "false";
+    out += ",\"retry_in_ms\":" + String(mountRetryRemainingMs());
     out += ",\"file\":\"" + String(s.currentFile) + "\"";
     out += "}";
     return out;
+}
+
+// Two fixed-size checkpoint slots: an interrupted write cannot invalidate both.
+bool sdRainStorageReady() { return cfg.enabled && cfg.rainPersist && status.mounted; }
+namespace {
+const char *sdRainPath(uint8_t slot) { return slot == 0 ? "/weather/rain_a.bin" : "/weather/rain_b.bin"; }
+}
+bool sdRainReadSlot(uint8_t slot, void *buffer, size_t size) {
+    if (!status.mounted || slot > 1 || !buffer || !size || size > 256) return false;
+    File32 f = sd.open(sdRainPath(slot), O_RDONLY);
+    if (!f) return false;
+    const bool ok = !f.isDir() && f.fileSize() == size && f.read(buffer, size) == static_cast<int>(size);
+    f.close();
+    return ok;
+}
+bool sdRainWriteSlot(uint8_t slot, const void *buffer, size_t size) {
+    if (!status.mounted || slot > 1 || !buffer || !size || size > 256) return false;
+    if (!sd.exists("/weather") && !sd.mkdir("/weather")) return false;
+    File32 f = sd.open(sdRainPath(slot), O_WRONLY | O_CREAT | O_TRUNC);
+    if (!f) return false;
+    const bool wrote = f.write(reinterpret_cast<const uint8_t *>(buffer), size) == size;
+    const bool flushed = f.sync();
+    f.close();
+    return wrote && flushed;
 }

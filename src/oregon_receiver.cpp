@@ -58,8 +58,8 @@ float currentBandwidth = OREGON_RX_BW_KHZ;
 RfFrontendProfile currentFrontendProfile = RfFrontendProfile::Stable;
 bool radioReady = false;
 
-constexpr uint8_t BURST_HISTORY_SIZE = 24;
-constexpr uint16_t BURST_EDGE_BUFFER_SIZE = 384;
+constexpr uint8_t BURST_HISTORY_SIZE = 12;
+constexpr uint16_t BURST_EDGE_BUFFER_SIZE = 672;
 constexpr uint32_t BURST_GAP_US = 5000UL;
 constexpr uint16_t BURST_MIN_EDGES = 24;
 constexpr uint16_t BURST_OSV3_MIN_MS = 55;
@@ -105,7 +105,7 @@ BurstAccumulator burstCurrent{};
 // Non salva nulla in NVS, e' OFF al boot e quando e' OFF non esegue lavoro
 // aggiuntivo sul flusso RF.
 // -----------------------------------------------------------------------------
-constexpr uint8_t WGR_PROBE_HISTORY_SIZE = 24;
+constexpr uint8_t WGR_PROBE_HISTORY_SIZE = 8;
 constexpr uint32_t WGR_PROBE_GAP_US = 5000UL;
 constexpr uint16_t WGR_PROBE_MIN_EDGES = 24;
 constexpr uint16_t WGR_PROBE_OSV3_MIN_MS = 55;
@@ -270,8 +270,11 @@ void updateAverage(uint16_t &average, uint16_t value) {
 
 constexpr uint16_t EDGE_RING_SIZE = 4096; // power of two
 constexpr uint16_t EDGE_RING_MASK = EDGE_RING_SIZE - 1;
+// Lossless bitset: one logic level per edge, not one byte per edge.
+// Timing remains full uint16_t (0..65535 us); queue capacity is unchanged.
+static_assert((EDGE_RING_SIZE % 32U) == 0U, "edge ring must be multiple of 32");
 volatile uint16_t edgeDurationRing[EDGE_RING_SIZE];
-volatile uint8_t edgeLevelRing[EDGE_RING_SIZE];
+volatile uint32_t edgeLevelBits[EDGE_RING_SIZE / 32U];
 volatile uint16_t edgeHead = 0;
 volatile uint16_t edgeTail = 0;
 volatile uint32_t isrEdgeCount = 0;
@@ -652,6 +655,128 @@ bool tryAdaptiveBurstDecode(const RfBurstRecord &rec) {
     return false;
 }
 
+// -----------------------------------------------------------------------------
+// Oregon V2.1 targeted phase recovery: UVR128/EC70 + THGR122NX/1D20
+//
+// UVR128 repeats the complete V2.1 message without a pause. The bounded burst
+// buffer is therefore deliberately large enough to retain the second preamble
+// and second payload. This scanner may start at any edge and consequently can
+// recover either copy when the first preamble was clipped by the SX1278 slicer.
+// Only exact EC70/1D20 + checksum-valid frames can reach the packet queue.
+// -----------------------------------------------------------------------------
+bool decodeV21TargetBurstFromStart(const BurstAccumulator &burst,
+                                   uint16_t startIndex,
+                                   uint8_t initialPhysicalBit,
+                                   bool useStateTiming,
+                                   bool invertLevel) {
+    uint8_t frame[9]{};
+    uint8_t lastPhysicalBit = initialPhysicalBit & 1U;
+    bool havePairFirst = false;
+    uint8_t pairFirst = 0;
+    uint8_t decodedBits = 0;
+    uint8_t expectedBytes = 0;
+    uint16_t expectedBits = 0;
+    uint16_t sensorCode = 0;
+    uint16_t i = startIndex;
+
+    while (i < burst.storedEdges && decodedBits < 72U) {
+        IntervalKind kind;
+        if (useStateTiming) {
+            const uint8_t level = static_cast<uint8_t>(
+                (burst.levels[i] ^ (invertLevel ? 1U : 0U)) & 1U);
+            kind = classifyStateInterval(burst.durations[i], level);
+        } else {
+            kind = classifyInterval(burst.durations[i]);
+        }
+
+        uint8_t physicalBit = lastPhysicalBit;
+        if (kind == IntervalKind::Long) {
+            lastPhysicalBit ^= 1U;
+            physicalBit = lastPhysicalBit;
+            ++i;
+        } else if (kind == IntervalKind::Short) {
+            if (static_cast<uint16_t>(i + 1U) >= burst.storedEdges) return false;
+            IntervalKind kind2;
+            if (useStateTiming) {
+                const uint8_t level2 = static_cast<uint8_t>(
+                    (burst.levels[i + 1U] ^ (invertLevel ? 1U : 0U)) & 1U);
+                kind2 = classifyStateInterval(burst.durations[i + 1U], level2);
+            } else {
+                kind2 = classifyInterval(burst.durations[i + 1U]);
+            }
+            if (kind2 != IntervalKind::Short) return false;
+            physicalBit = lastPhysicalBit;
+            i = static_cast<uint16_t>(i + 2U);
+        } else {
+            return false;
+        }
+
+        if (!havePairFirst) {
+            pairFirst = physicalBit;
+            havePairFirst = true;
+            continue;
+        }
+        if (pairFirst == physicalBit) return false;
+        havePairFirst = false;
+
+        // V2.1 transmits [inverse, original], so the second physical bit is data.
+        if (physicalBit) {
+            const uint8_t byteIndex = static_cast<uint8_t>(decodedBits / 8U);
+            const uint8_t bitIndex = static_cast<uint8_t>(decodedBits % 8U);
+            frame[byteIndex] |= OREGON_BIT_MASK[bitIndex];
+        }
+        ++decodedBits;
+
+        if (decodedBits == 4U && (frame[0] & 0xF0U) != 0xA0U) return false;
+        if (decodedBits == 20U) {
+            sensorCode = rawSensorCode(frame);
+            if (sensorCode == 0xEC70U) expectedBytes = 8U;
+            else if (sensorCode == 0x1D20U) expectedBytes = 9U;
+            else return false;
+            expectedBits = static_cast<uint16_t>(expectedBytes) * 8U;
+        }
+        if (expectedBits != 0U && decodedBits >= expectedBits) break;
+    }
+
+    if (expectedBits == 0U || decodedBits != expectedBits) return false;
+    stats.v21Candidates++;
+    if (sensorCode == 0xEC70U) stats.v21UvCandidates++;
+    const uint8_t csPos = sensorCode == 0xEC70U ? 13U : 16U;
+    if (!validateFrameChecksumAt(frame, expectedBytes, csPos)) {
+        stats.v21ChecksumFail++;
+        return false;
+    }
+    return queuePacket(frame, expectedBytes, OregonDecodeSource::EdgeTimingV21);
+}
+
+bool tryV21TargetBurstRecovery() {
+    if (burstCurrent.storedEdges < 48U ||
+        burstCurrent.storedEdges > BURST_EDGE_BUFFER_SIZE) return false;
+
+    const uint16_t lastStart = burstCurrent.storedEdges > 20U
+        ? static_cast<uint16_t>(burstCurrent.storedEdges - 20U) : 0U;
+
+    // Duration-only pass first: smallest and historically successful path.
+    for (uint16_t start = 0; start < lastStart; ++start) {
+        for (uint8_t initial = 0; initial < 2U; ++initial) {
+            if (decodeV21TargetBurstFromStart(
+                    burstCurrent, start, initial, false, false)) return true;
+        }
+    }
+
+    // RF-level-aware fallback, both polarities. Because the complete UVR128
+    // double burst is now retained, this pass can reach the second preamble.
+    for (uint8_t inv = 0; inv < 2U; ++inv) {
+        for (uint16_t start = 0; start < lastStart; ++start) {
+            for (uint8_t initial = 0; initial < 2U; ++initial) {
+                if (decodeV21TargetBurstFromStart(
+                        burstCurrent, start, initial, true, inv != 0U)) return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool looksLikeTechnolineBurst(const RfBurstRecord &rec) {
     // Impronta osservata sul tuo impianto mentre Oregon e Technoline sono
     // entrambi in aria: burst ~110-120 ms, ~100 fronti, basso match OSV3.
@@ -692,6 +817,10 @@ void finalizeRfBurst() {
         rec.timingMatchPct >= BURST_OSV3_MIN_MATCH_PCT;
     rec.likelyTechnoline = looksLikeTechnolineBurst(rec);
     if (rec.likelyTechnoline) burstStats.technolineLikeBursts++;
+
+    // EC70/1D20 recovery is independent from BURST DEBUG. Technoline
+    // offline recovery below stays explicitly gated by the debug option.
+    if (rfMode != RfProtocolMode::LaCrosse) tryV21TargetBurstRecovery();
 
     // V6.3: Technoline viene gia' decodificata LIVE da ogni fronte con un
     // demodulatore PWM molto leggero (rtl_433-style). Questo recovery offline
@@ -1113,7 +1242,11 @@ void IRAM_ATTR onDirectDataEdge() {
     edgeDurationRing[head] = static_cast<uint16_t>(delta);
     const uint8_t newLevel = static_cast<uint8_t>(
         gpio_get_level(static_cast<gpio_num_t>(RADIO_DIO2_PIN)));
-    edgeLevelRing[head] = static_cast<uint8_t>(newLevel ^ 1U);
+    const uint16_t word = static_cast<uint16_t>(head >> 5U);
+    const uint32_t mask = static_cast<uint32_t>(1UL) << (head & 31U);
+    const uint32_t bits = edgeLevelBits[word];
+    // Store the level BEFORE publishing edgeHead to the consumer.
+    edgeLevelBits[word] = (bits & ~mask) | (newLevel ? 0U : mask);
     edgeHead = next;
     isrEdgeCount++;
 }
@@ -1122,7 +1255,8 @@ bool popEdge(uint16_t &durationUs, uint8_t &level) {
     const uint16_t tail = edgeTail;
     if (tail == edgeHead) return false;
     durationUs = edgeDurationRing[tail];
-    level = edgeLevelRing[tail];
+    level = static_cast<uint8_t>(
+        (edgeLevelBits[tail >> 5U] >> (tail & 31U)) & 1U);
     edgeTail = static_cast<uint16_t>((tail + 1U) & EDGE_RING_MASK);
     return true;
 }
@@ -2077,6 +2211,10 @@ void serviceOregonReceiver() {
     uint16_t durationUs = 0;
     uint8_t level = 0;
     uint16_t processed = 0;
+    // The same bounded burst capture serves EC70/1D20 recovery and, when
+    // enabled, the universal BURST DEBUG view. No second raw buffer is needed.
+    const bool v21TargetBurstCapture =
+        (rfMode == RfProtocolMode::Oregon || rfMode == RfProtocolMode::Dual);
     while (processed < 1536 && popEdge(durationUs, level)) {
         // Oregon ha priorita' nel DUAL. Il decoder Technoline stabile e' pulse-only
         // e costa poche operazioni per edge: puo' quindi lavorare sullo stesso
@@ -2091,9 +2229,9 @@ void serviceOregonReceiver() {
         if (rfMode == RfProtocolMode::LaCrosse || rfMode == RfProtocolMode::Dual) {
             processLaCrosseEdge(durationUs, level);
         }
-        // Il Burst Analyzer/recovery e' EXTRA e di default OFF. In AUTO SCAN
-        // resta forzato ON perche' serve a calcolare il punteggio dei profili.
-        if (burstExtraEnabled || burstStats.autoActive) {
+        // One shared raw burst accumulator: V2.1 support always gets the data it
+        // needs; BURST DEBUG/AUTO only add diagnostic or optional recovery work.
+        if (v21TargetBurstCapture || burstExtraEnabled || burstStats.autoActive) {
             processRfBurstEdge(durationUs, level);
         }
         processed++;
@@ -2115,7 +2253,7 @@ void serviceOregonReceiver() {
     // Finalizza il burst anche se dopo l'ultimo fronte il trasmettitore resta
     // silenzioso: senza questo controllo il record apparirebbe solo all'inizio
     // della trasmissione successiva.
-    if ((burstExtraEnabled || burstStats.autoActive) && burstCurrent.active) {
+    if ((v21TargetBurstCapture || burstExtraEnabled || burstStats.autoActive) && burstCurrent.active) {
         uint32_t lastUsCopy = 0;
         bool ringEmpty = false;
         noInterrupts();

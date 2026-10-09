@@ -163,3 +163,8 @@ Automatic mount retries follow approximately 5 s, 15 s, 60 s and then 300 s repe
 ## Stability note
 
 This API primarily supports the embedded UI and is not formally versioned. External integrations should pin the firmware release version and expect diagnostic JSON fields to evolve during release-candidate hardware validation.
+
+
+## Oregon / Technoline rainfall accumulation (rain1)
+
+`GET /api/rain/accumulation` — authenticated read-only status for independently accumulated Oregon and Technoline rainfall (UTC daily/monthly/yearly/lifetime), source baseline/rebase counters, SD persistence availability and saved checkpoint status. Data may be absent until a valid radio counter has established the baseline. [Italian guide](RAIN_ACCUMULATION.md) / [English guide](RAIN_ACCUMULATION_EN.md).

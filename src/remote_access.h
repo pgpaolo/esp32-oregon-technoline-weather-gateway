@@ -34,6 +34,8 @@ RemoteAccessStatus getRemoteAccessStatus();
 bool saveRemoteAccessPortalUrl(const String &portalUrl);
 bool resetRemoteAccessConfig();
 void retryRemoteAccessNow();
+bool remoteAccessPauseForExternalTls(uint32_t timeoutMs);
+void remoteAccessResumeAfterExternalTls();
 String remoteAccessConfigJson();
 String remoteAccessStatusJson();
 String remoteDefaultDeviceId();

@@ -403,5 +403,23 @@ elif new_poll not in d:
     else:
         raise RuntimeError("SD browser: SD header polling anchor missing")
 
+# Canonical SD note: avoid accumulating duplicate mount/format sentences across builds.
+import re as _sd_note_re
+_sd_note = ('<div class="cfgNote">CSV giornalieri UTC in '
+            '<code>/weather/YYYY/MM/YYYY-MM-DD.csv</code>. '
+            'Prima della sincronizzazione NTP usa <code>/weather/unsynced.csv</code>. '
+            'Mount SdFat su HSPI a 4 MHz con fallback 400 kHz. '
+            'Codice errore SD reale esposto in Web. '
+            'FORMATTA ricrea FAT se non valido oppure azzera il contenuto se gia FAT; '
+            'richiede comunque che la microSD risponda correttamente via SPI. '
+            'La scrittura e differita: il decoder RF non scrive mai direttamente sulla SD.</div>')
+_sd_note_marker = '<div class="cfgNote">CSV giornalieri UTC in '
+_sd_note_start = d.find(_sd_note_marker)
+if _sd_note_start >= 0:
+    _sd_note_end = d.find('</div>', _sd_note_start)
+    if _sd_note_end < 0:
+        raise RuntimeError('SD browser: canonical note closing tag missing')
+    d = d[:_sd_note_start] + _sd_note + d[_sd_note_end+len('</div>'):]
+
 write(d_path, d)
 print("SD browser: final MICROSD page repaired, archive browser enabled, remote SD poll reduced")

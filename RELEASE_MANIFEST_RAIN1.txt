@@ -1,0 +1,9 @@
+Release: 6.4.0-rc6-stab1-rain1
+Date: 2026-10-09
+Primary board: LILYGO T3 V1.6.1 ESP32/SX1278 433.92 MHz
+Optional board: T3-S3 433
+PlatformIO: t3-v161-433 / t3-s3-433
+Major change: independent Oregon/Technoline rain accumulation and optional microSD checkpointing
+Docs: README.md, README_IT.md, CHANGELOG.md, docs/RAIN_ACCUMULATION*.md, docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md, docs/STABILITY_LILYGO_T3.md, PUBLISHING_RAIN1.md
+Tests: host arithmetic and generation guards, pending GitHub CI / physical hardware
+License: GPL-3.0-or-later (see LICENSE)

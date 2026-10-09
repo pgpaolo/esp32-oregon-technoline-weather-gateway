@@ -258,7 +258,7 @@ String networkWifiScanJson() {
 # This script intentionally runs after apply_web_provisioning_ota_auth.py.
 # ---------------------------------------------------------------------------
 w = read("src/web_manager.cpp")
-if '\"rain_rate_5m_mmh\"' not in w:
+if r'\"rain_rate_5m_mmh\"' not in w:
     anchor = '    out += ",\\\"rain_increment_mm\\\":" + jsonFloat(lc.rainIncrementMm, 2);\n'
     extra = anchor + '''    out += ",\\\"rain_rate_5m_mmh\\\":" + jsonFloat(lc.rainRate5mValid ? lc.rainRate5mMmH : NAN, 2);
     out += ",\\\"rain_last_hour_mm\\\":" + jsonFloat(lc.rainLastHourValid ? lc.rainLastHourMm : NAN, 2);

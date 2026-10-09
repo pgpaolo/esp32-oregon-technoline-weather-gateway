@@ -2,6 +2,15 @@
 
 All notable project changes are documented here.
 
+## 6.4.0-rc6-stab1-rain1 — 2026-10-09 (source candidate)
+
+- Independent Oregon and Technoline rain accumulators: UTC day/month/year/lifetime counters.
+- Optional microSD persistence: rotating two-slot checkpoints with integrity checks; write deferred outside RF hot path and limited to approximately 60 seconds.
+- Baseline and deduplication guards for repeated RF packets, sensor counter resets and changed RF identity.
+- Web UI microSD toggles and authenticated `GET /api/rain/accumulation`; no additional background polling.
+- Preceding `stab1` heap/TLS protections and `buildfix1` idempotent pre-build scripts; `buildfix2` fixes Technoline validity to 300 seconds and reports real MB weather measurements.
+- Tests: host-side rain arithmetic and repeated pre-script generation; **no physical board validation or successful release CI build claimed yet**.
+
 ## 6.4.0-rc4 - refreshed from reviewed develop
 
 This RC4 line has been fully refreshed from validated `develop` commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`. `release/6.4.0-rc3` remains frozen. `main` now contains the selective BME280/I2C reliability backport merged through PR #23, while the complete RC4 feature set remains on this release branch.
@@ -121,3 +130,20 @@ This RC4 line has been fully refreshed from validated `develop` commit `68c1adc7
 - Added runtime RF mode/gain/profile controls, wind compasses, data freshness and OLED Web control.
 - Added initial hardware resource monitor and REST-style control endpoints.
 - Removed private local configuration from the distributable repository; `src/config_private.h` remains ignored by Git.
+
+## 6.4.0-rc6-mem1 — conservative SRAM optimization (source overlay)
+
+- Packed SX1278 edge logic levels into 1-bit-per-entry storage while preserving the 4096-entry FIFO and full 16-bit pulse duration.
+- Reconstructed the Oregon/Technoline RAW history protocol/source/type labels on demand instead of storing 44 bytes of duplicated text in each history entry.
+- Host regression shows 4,864 fewer bytes in these static buffers. New source-backed test and detailed rationale: `docs/MEMORY_OPTIMIZATION.md`.
+- Requires PlatformIO and hardware validation before installation; the original RC6 release is otherwise unchanged.
+
+## 6.4.0-rc6-stab1 — LILYGO T3 reboot containment
+
+- Includes all 6.4.0-rc6-mem1 savings (4,864 B static SRAM).
+- Activates the pre-existing remote runtime V2: direct WSS reconnect after scheduled HTTPS MB transmission, reduced remote-only Web UI polling, and task stack diagnostics.
+- Activates the existing segmented `/api/state` AdminSensor fastpath: 2 KiB independent buffers avoid another ~9 KiB contiguous allocation; serializes the first remote-dashboard refresh.
+- Delays creation of the AdminSensor (12 KiB + 7 KiB) and MB-compatible (8 KiB) FreeRTOS task stacks until the feature is actually enabled, while preserving enablement through the authenticated Web UI. These are stack reservation values, **not** claimed measured heap gains.
+- Defers MB HTTPS attempts when the largest 8-bit heap block is under 32 KiB and WSS cannot be safely paused. No watchdog/brownout bypass.
+- Exposes heap largest free block and loop task's stack high-water mark in `/api/state`; logs the ESP reset reason at boot.
+- Full PlatformIO build and LILYGO soak test remain required. See `docs/STABILITY_LILYGO_T3.md`.

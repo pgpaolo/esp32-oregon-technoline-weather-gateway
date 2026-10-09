@@ -48,6 +48,20 @@ bool validSha256(const String &s) {
     return true;
 }
 
+constexpr size_t OTA_APP_DESC_OFFSET = 32U;
+constexpr uint32_t OTA_APP_DESC_MAGIC = 0xABCD5432UL;
+
+bool looksLikeOtaApplication(const uint8_t *data, size_t len) {
+    if (!data || len < OTA_APP_DESC_OFFSET + sizeof(uint32_t)) return false;
+    if (data[0]!=0xE9U) return false;
+    const uint32_t magic =
+        static_cast<uint32_t>(data[OTA_APP_DESC_OFFSET]) |
+        (static_cast<uint32_t>(data[OTA_APP_DESC_OFFSET + 1U]) << 8) |
+        (static_cast<uint32_t>(data[OTA_APP_DESC_OFFSET + 2U]) << 16) |
+        (static_cast<uint32_t>(data[OTA_APP_DESC_OFFSET + 3U]) << 24);
+    return magic == OTA_APP_DESC_MAGIC;
+}
+
 String shaHex(const unsigned char digest[32]) {
     char out[65];
     for (size_t i=0;i<32U;i++) snprintf(out+i*2U,3,"%02x",digest[i]);
@@ -187,8 +201,8 @@ bool firmwareRemoteWrite(uint32_t sequence, uint8_t *data, size_t len, String &e
     }
     if (firstChunk) {
         firstChunk=false;
-        if (data[0]!=0xE9U) {
-            const bool r=failRemoteLocked("File non riconosciuto come immagine firmware ESP32",error);unlock();return r;
+        if (!looksLikeOtaApplication(data,len)) {
+            const bool r=failRemoteLocked("File OTA non valido: usare firmware.bin applicativo, non bootloader/partitions/merged",error);unlock();return r;
         }
     }
     const size_t written=Update.write(data,len);

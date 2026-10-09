@@ -277,17 +277,21 @@ bool parseWeatherPacket(const OregonPacket &packet, WeatherReading &reading) {
         case 0xA2: { // PCR800
             reading.type = SensorType::Rain;
             if (!sensorCodeMatchesType(reading.type, reading.sensorCode)) return false;
-            uint8_t n[11];
-            const uint8_t idx[] = {18,17,16,15,14,13,8,9,10,11,12};
-            for (uint8_t i = 0; i < 11; ++i) if (!decimalNybble(packet, idx[i], n[i])) return false;
+            // PCR800/2914: total rain is nibbles 17..12 and rain rate is
+            // nibbles 11..8 in the protocol payload. This legacy buffer has the
+            // sync nibble at index 0, therefore the corresponding indexes are
+            // 18..13 for total and 12..9 for rate. Both fields are BCD, LSD first.
+            uint8_t n[10];
+            const uint8_t idx[] = {18,17,16,15,14,13,12,11,10,9};
+            for (uint8_t i = 0; i < 10; ++i) if (!decimalNybble(packet, idx[i], n[i])) return false;
 
             const uint32_t totalRaw =
                 static_cast<uint32_t>(n[0]) * 100000UL + static_cast<uint32_t>(n[1]) * 10000UL +
                 static_cast<uint32_t>(n[2]) * 1000UL + static_cast<uint32_t>(n[3]) * 100UL +
                 static_cast<uint32_t>(n[4]) * 10UL + n[5];
             const uint32_t rateRaw =
-                static_cast<uint32_t>(n[6]) * 10000UL + static_cast<uint32_t>(n[7]) * 1000UL +
-                static_cast<uint32_t>(n[8]) * 100UL + static_cast<uint32_t>(n[9]) * 10UL + n[10];
+                static_cast<uint32_t>(n[6]) * 1000UL + static_cast<uint32_t>(n[7]) * 100UL +
+                static_cast<uint32_t>(n[8]) * 10UL + n[9];
 
             const float total = static_cast<float>(totalRaw) * OREGON_RAIN_MM_PER_RAW;
             // PCR800: rain rate ha LSD 0.01 in/h = 0.254 mm/h per count.

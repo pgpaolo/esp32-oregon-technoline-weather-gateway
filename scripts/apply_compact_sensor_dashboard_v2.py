@@ -63,7 +63,7 @@ for panel_id in ("bmePanel", "lightningPanel"):
         html = html[:m.start()] + f'<div class="{classes}" id="{panel_id}">' + html[m.end():]
 
     marker = f'id="{panel_id}"><div class="panelHead"'
-    if marker in html:
+    if marker in html and f"toggleSensorFold('{panel_id}')" not in html:
         html = html.replace(
             marker,
             f'id="{panel_id}"><div class="panelHead" onclick="toggleSensorFold(\'{panel_id}\')" title="Clic per mostrare/nascondere i dettagli"',

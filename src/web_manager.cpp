@@ -1,7 +1,11 @@
 #include "web_manager.h"
 #include <Arduino.h>
+#include <esp_heap_caps.h>
+#include <freertos/task.h>
 #include <WebServer.h>
+#include <Update.h>
 #include <WiFi.h>
+#include <Wire.h>
 #include <math.h>
 #include <ctype.h>
 #include "config.h"
@@ -12,20 +16,43 @@
 #include "oregon_receiver.h"
 #include "lacrosse_ws23xx.h"
 #include "mqtt_publisher.h"
+#include "mb_compatible_publisher.h"
 #include "display_manager.h"
 #include "firmware_info.h"
 #include "power_manager.h"
 #include "lightning_manager.h"
 #include "thermo_channel_manager.h"
+#include "web_security.h"
 #include "web_ui_generated.h"
+#include "remote_firmware_update.h"
+#include "remote_access.h"
+#include "sd_logger.h"
+#include "rain_accumulator.h"
 
 namespace {
 WebServer server(80);
 StationState *station = nullptr;
-bool webStarted = false;
+bool webStartedFlag = false;
 uint32_t rebootAtMs = 0;
 uint32_t powerOffAtMs = 0;
+bool otaUploadActive = false;
+bool otaUpdateBegun = false;
+bool otaUploadOk = false;
+bool otaAuthorized = false;
+bool otaFirstChunk = true;
+size_t otaBytes = 0;
+size_t otaMaxBytes = 0;
+String otaError;
+bool otaGuardHeld = false;
 String jsonEscapeString(const String &in);
+float hardwareTemperatureC();
+
+bool requireWebAuth() {
+    if (webSecurityAuthorized(server)) return true;
+    requestWebAuthentication(server);
+    return false;
+}
+
 
 constexpr uint8_t RAW_HISTORY_SIZE = 32;
 struct RawEntry {
@@ -34,19 +61,40 @@ struct RawEntry {
     uint8_t len{0};
     uint8_t sensorId{0};
     uint16_t sensorCode{0};
+    // Reconstruct display strings on demand from the protocol/type enums.
+    // This removes 44 bytes of duplicated text from EACH history entry.
     uint8_t source{0};
-    char protocol[12]{};
-    char sourceName[16]{};
+    uint8_t typeCode{0xFFU};  // 0xFF = no decoded reading ("rejected")
+    bool technoline{false};
     bool accepted{false};
     bool batteryKnown{false};
     bool batteryLow{false};
-    char type[16]{};
     char decoded[128]{};
     char hex[OREGON_MAX_PACKET_BYTES * 3]{};
 };
 RawEntry history[RAW_HISTORY_SIZE];
 uint8_t historyHead = 0;
 uint8_t historyCount = 0;
+
+// The three API fields retain their original spelling and values, but the
+// redundant copies are no longer held in the permanent 32-record RAM ring.
+const char *rawProtocolName(const RawEntry &entry) {
+    return entry.technoline ? "Technoline" : "Oregon";
+}
+
+const char *rawSourceName(const RawEntry &entry) {
+    if (!entry.technoline)
+        return oregonDecodeSourceName(static_cast<OregonDecodeSource>(entry.source));
+    return entry.source == 1U ? "pwm-leader" :
+           entry.source == 2U ? "pwm-burst" : "pwm-window";
+}
+
+const char *rawTypeName(const RawEntry &entry) {
+    if (entry.typeCode == 0xFFU) return "rejected";
+    return entry.technoline
+        ? laCrosseTypeName(static_cast<LaCrosseType>(entry.typeCode))
+        : sensorTypeName(static_cast<SensorType>(entry.typeCode));
+}
 
 
 // V6.3: sessione di acquisizione. In DUAL entrambi i protocolli restano attivi.
@@ -60,10 +108,16 @@ struct OregonSessionSensor {
     uint8_t rollingCode{0};
     uint8_t protocolVersion{0};
     uint8_t cadenceSamples{0};
+    int8_t uvIndex{-1}; // compact per-transmitter UV value; also fills existing alignment gap
+    uint8_t batteryState{0}; // compact session battery: 0=N/D, 1=OK, 2=LOW
     uint32_t firstMs{0};
     uint32_t lastMs{0};
-    uint32_t received{0};
-    uint32_t observedCadenceMs{0};
+    uint32_t received{0};          // tutti i frame validi, incluse copie ridondanti
+    uint32_t cycles{0};            // cicli RF unici per 1D20/EC70
+    uint32_t copies{0};            // copie valide ravvicinate dello stesso ciclo
+    uint32_t lastCycleMs{0};
+    uint32_t lastCycleIntervalMs{0};
+    uint32_t observedCadenceMs{0}; // minimo intervallo valido fra cicli reali
     float lastRssi{NAN};
 };
 
@@ -120,6 +174,21 @@ uint32_t effectiveOregonCadenceMs(const OregonSessionSensor &sensor) {
     return sensor.cadenceSamples >= 3U ? sensor.observedCadenceMs : 0UL;
 }
 
+// 1D20 e EC70 inviano copie ridondanti ravvicinate. Nei log reali 1D20 mostra
+// tipicamente la seconda copia dopo ~0,2 s, contro un ciclo reale ~39/41/43 s.
+// La finestra viene applicata SOLO a questi due codici V2.1.
+constexpr uint32_t V21_CYCLE_COPY_WINDOW_MS = 1500UL;
+constexpr uint32_t V21_CYCLE_MIN_INTERVAL_MS = 10000UL;
+constexpr uint32_t V21_CYCLE_MAX_INTERVAL_MS = 300000UL;
+
+bool v21CycleTrackedCode(uint16_t code) {
+    return code == 0x1D20U || code == 0xEC70U;
+}
+
+uint32_t qualityReceivedForSensor(const OregonSessionSensor &sensor) {
+    return v21CycleTrackedCode(sensor.code) ? sensor.cycles : sensor.received;
+}
+
 void noteOregonSessionSensor(const WeatherReading &reading, uint8_t decodeSource) {
     OregonSessionSensor *freeSlot = nullptr;
     OregonSessionSensor *sensor = nullptr;
@@ -140,6 +209,7 @@ void noteOregonSessionSensor(const WeatherReading &reading, uint8_t decodeSource
         if (rfSession.oregonOverflow < 255U) rfSession.oregonOverflow++;
         return;
     }
+    const bool cycleTracked = v21CycleTrackedCode(reading.sensorCode);
     if (sensor->received == 0) {
         sensor->type = reading.type;
         sensor->code = reading.sensorCode;
@@ -147,6 +217,26 @@ void noteOregonSessionSensor(const WeatherReading &reading, uint8_t decodeSource
         sensor->rollingCode = reading.rollingCode;
         sensor->protocolVersion = decodeSource == static_cast<uint8_t>(OregonDecodeSource::EdgeTimingV21) ? 2U : 3U;
         sensor->firstMs = reading.receivedAtMs;
+        if (cycleTracked) {
+            sensor->cycles = 1U;
+            sensor->lastCycleMs = reading.receivedAtMs;
+        }
+    } else if (cycleTracked) {
+        const uint32_t cycleInterval = static_cast<uint32_t>(reading.receivedAtMs - sensor->lastCycleMs);
+        if (cycleInterval <= V21_CYCLE_COPY_WINDOW_MS) {
+            if (sensor->copies < 0xFFFFFFFFUL) sensor->copies++;
+        } else {
+            if (sensor->cycles < 0xFFFFFFFFUL) sensor->cycles++;
+            sensor->lastCycleIntervalMs = cycleInterval;
+            if (cycleInterval >= V21_CYCLE_MIN_INTERVAL_MS && cycleInterval <= V21_CYCLE_MAX_INTERVAL_MS) {
+                // A missed transmission gives 2x/3x cadence. Keeping the minimum
+                // valid cycle interval therefore converges to the base cadence.
+                if (sensor->cadenceSamples == 0U || cycleInterval < sensor->observedCadenceMs)
+                    sensor->observedCadenceMs = cycleInterval;
+                if (sensor->cadenceSamples < 255U) sensor->cadenceSamples++;
+            }
+            sensor->lastCycleMs = reading.receivedAtMs;
+        }
     } else {
         const uint32_t interval = static_cast<uint32_t>(reading.receivedAtMs - sensor->lastMs);
         if (interval >= 5000UL && interval <= 180000UL &&
@@ -158,6 +248,9 @@ void noteOregonSessionSensor(const WeatherReading &reading, uint8_t decodeSource
     }
     sensor->lastMs = reading.receivedAtMs;
     sensor->lastRssi = reading.rssi;
+    if (reading.type == SensorType::UV && reading.uvValid)
+        sensor->uvIndex = static_cast<int8_t>(reading.uvIndex);
+    sensor->batteryState = reading.batteryStatusValid ? (reading.batteryLow ? 2U : 1U) : 0U;
     sensor->received++;
 }
 
@@ -267,21 +360,22 @@ void handleState() {
         if (sensor.received == 0) continue;
         const uint32_t cadence = effectiveOregonCadenceMs(sensor);
         const uint32_t expected = cadence ? expectedPacketsSinceFirst(now, sensor.firstMs, cadence) : 0;
+        const uint32_t qualityRx = qualityReceivedForSensor(sensor);
         switch (sensor.type) {
             case SensorType::ThermoHygro:
-                thermoSeenCount++; sessionThermo += sensor.received; expThermo += expected;
+                thermoSeenCount++; sessionThermo += qualityRx; expThermo += expected;
                 if (!cadence) thermoQualityAvailable = false;
                 break;
             case SensorType::Wind:
-                windSeen = true; sessionWind += sensor.received; expWind += expected;
+                windSeen = true; sessionWind += qualityRx; expWind += expected;
                 if (!cadence) windQualityAvailable = false;
                 break;
             case SensorType::Rain:
-                rainSeen = true; sessionRain += sensor.received; expRain += expected;
+                rainSeen = true; sessionRain += qualityRx; expRain += expected;
                 if (!cadence) rainQualityAvailable = false;
                 break;
             case SensorType::UV:
-                uvSeen = true; sessionUv += sensor.received; expUv += expected;
+                uvSeen = true; sessionUv += qualityRx; expUv += expected;
                 if (!cadence) uvQualityAvailable = false;
                 break;
             default: break;
@@ -391,7 +485,9 @@ void handleState() {
         const uint32_t nominal = nominalOregonCadenceMs(sensor.type, sensor.code, sensor.channel);
         const uint32_t cadence = effectiveOregonCadenceMs(sensor);
         const uint32_t expected = cadence ? expectedPacketsSinceFirst(now, sensor.firstMs, cadence) : 0;
-        const int quality = qualityPct(sensor.received, expected);
+        const uint32_t qualityRx = qualityReceivedForSensor(sensor);
+        const bool cycleTracked = v21CycleTrackedCode(sensor.code);
+        const int quality = qualityPct(qualityRx, expected);
         if (!firstOregonSensor) out += ',';
         firstOregonSensor = false;
         out += "{\"t\":\"" + String(sensorTypeName(sensor.type)) + "\"";
@@ -400,12 +496,21 @@ void handleState() {
         out += ",\"ch\":" + String(sensor.channel);
         out += ",\"id\":" + String(sensor.rollingCode);
         out += ",\"v\":" + String(sensor.protocolVersion);
-        out += ",\"rx\":" + String(sensor.received);
+        out += ",\"rx\":" + String(qualityRx);
+        out += ",\"fr\":" + String(sensor.received);
+        out += ",\"cy\":" + String(cycleTracked ? sensor.cycles : sensor.received);
+        out += ",\"dup\":" + String(cycleTracked ? sensor.copies : 0UL);
+        out += ",\"cycle\":"; out += cycleTracked ? "true" : "false";
         out += ",\"ex\":" + String(expected);
         out += ",\"q\":" + String(quality);
-        out += ",\"lost\":" + String(expected > sensor.received ? expected - sensor.received : 0UL);
+        out += ",\"lost\":" + String(expected > qualityRx ? expected - qualityRx : 0UL);
         out += ",\"cad\":" + String(cadence / 1000UL);
+        out += ",\"obs\":" + String(sensor.observedCadenceMs / 1000UL);
+        out += ",\"last_i\":" + String(sensor.lastCycleIntervalMs / 1000UL);
         out += ",\"rssi\":" + jsonFloat(sensor.lastRssi, 1);
+        out += ",\"uv\":" + String(sensor.uvIndex);
+        out += ",\"age\":" + String(ageSeconds(sensor.lastMs, now));
+        out += ",\"bat\":" + String(sensor.batteryState);
         out += ",\"src\":\"" + String(nominal ? "nom" : (cadence ? "auto" : "cal")) + "\"}";
     }
     out += ']';
@@ -461,8 +566,9 @@ void handleState() {
     out += ",\"pressure_trend_window_min\":" + String(station->pressureTrendWindowMin);
     out += ",\"pressure_trend\":\"" + String(barometerTrendName(*station)) + "\"";
     out += ",\"forecast\":\"" + String(barometerForecastName(*station)) + "\"";
+    out += ",\"forecast_code\":" + String(static_cast<uint8_t>(barometerForecastCode(*station)));
     out += ",\"barometer\":\"" + String(barometerName()) + "\"";
-    out += ",\"barometer_altitude_m\":" + String(BAROMETER_ALTITUDE_M, static_cast<unsigned int>(1));
+    out += ",\"barometer_altitude_m\":" + String(barometerAltitudeM(), static_cast<unsigned int>(1));
     out += "}";
 
     // V6.3: BME280 locale, separato dai protocolli radio.
@@ -477,7 +583,13 @@ void handleState() {
     out += ",\"trend_window_min\":" + String(station->pressureTrendWindowMin);
     out += ",\"trend\":\"" + String(barometerTrendName(*station)) + "\"";
     out += ",\"forecast\":\"" + String(barometerForecastName(*station)) + "\"";
-    out += ",\"altitude_m\":" + String(BAROMETER_ALTITUDE_M, static_cast<unsigned int>(1));
+    out += ",\"forecast_code\":" + String(static_cast<uint8_t>(barometerForecastCode(*station)));
+    out += ",\"altitude_m\":" + String(barometerAltitudeM(), static_cast<unsigned int>(1));
+    out += ",\"display_unit\":\"" + String(pressureUnitName(getBarometerConfig().displayUnit)) + "\"";
+    out += ",\"display_unit_id\":" + String(static_cast<uint8_t>(getBarometerConfig().displayUnit));
+    out += ",\"pressure_station_display\":" + jsonFloat(pressureDisplayValue(station->pressureAbsoluteHpa, getBarometerConfig().displayUnit), 3);
+    out += ",\"altimeter_display\":" + jsonFloat(pressureDisplayValue(station->pressureSeaLevelHpa, getBarometerConfig().displayUnit), 3);
+    out += ",\"trend_display\":" + jsonFloat(pressureDisplayValue(station->pressureTrendHpa3h, getBarometerConfig().displayUnit), 3);
     out += ",\"age_s\":" + String(ageSeconds(station->pressureUpdatedMs, now));
     out += "}";
 
@@ -492,6 +604,9 @@ void handleState() {
     out += ",\"humidity_pct\":" + jsonFloat(lc.humidityPct, 0);
     out += ",\"rain_total_mm\":" + jsonFloat(lc.rainTotalMm, 2);
     out += ",\"rain_increment_mm\":" + jsonFloat(lc.rainIncrementMm, 2);
+    out += ",\"rain_rate_5m_mmh\":" + jsonFloat(lc.rainRate5mValid ? lc.rainRate5mMmH : NAN, 2);
+    out += ",\"rain_last_hour_mm\":" + jsonFloat(lc.rainLastHourValid ? lc.rainLastHourMm : NAN, 2);
+    out += ",\"rain_last_24h_mm\":" + jsonFloat(lc.rainLast24hValid ? lc.rainLast24hMm : NAN, 2);
     out += ",\"wind_kmh\":" + jsonFloat(lc.windKmh, 1);
     out += ",\"gust_kmh\":" + jsonFloat(lc.gustKmh, 1);
     out += ",\"direction_deg\":" + jsonFloat(lc.windDirectionDeg, 1);
@@ -509,6 +624,7 @@ void handleState() {
     out += ",\"rain_age_s\":" + String(ageSeconds(lc.rainUpdatedMs, now));
     out += ",\"wind_age_s\":" + String(ageSeconds(lc.windUpdatedMs, now));
     out += ",\"gust_age_s\":" + String(ageSeconds(lc.gustUpdatedMs, now));
+    out += ",\"last_rssi\":" + jsonFloat(lc.lastRssi, 1);
     out += ",\"battery\":\"N/D\"";
     out += "}";
 
@@ -710,6 +826,8 @@ void handleState() {
     out += ",\"overflows\":" + String(rx.ringOverflows);
     out += "}";
 
+    out += ",\"sd\":" + sdLoggerStatusJson();
+
     const uint32_t heapSize = ESP.getHeapSize();
     const uint32_t heapFree = ESP.getFreeHeap();
     const uint32_t heapMin = ESP.getMinFreeHeap();
@@ -726,10 +844,14 @@ void handleState() {
     out += ",\"revision\":" + String(ESP.getChipRevision());
     out += ",\"cores\":" + String(ESP.getChipCores());
     out += ",\"cpu_mhz\":" + String(ESP.getCpuFreqMHz());
+    out += ",\"hardware_temperature_c\":" + jsonFloat(hardwareTemperatureC(), 1);
     out += ",\"heap_size\":" + String(heapSize);
     out += ",\"heap_free\":" + String(heapFree);
     out += ",\"heap_used\":" + String(heapSize > heapFree ? heapSize - heapFree : 0);
     out += ",\"heap_min_free\":" + String(heapMin);
+    // LILYGO_STABILITY_WEB_DIAG_V1: fragmentation + loop-task stack headroom.
+    out += ",\"heap_largest_block\":" + String(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    out += ",\"loop_stack_min_free_bytes\":" + String(uxTaskGetStackHighWaterMark(nullptr));
     out += ",\"sketch_size\":" + String(sketchSize);
     out += ",\"flash_size\":" + String(flashSize);
     out += ",\"free_sketch_space\":" + String(freeSketch);
@@ -746,6 +868,122 @@ void handleState() {
     server.send(200, "application/json", out);
 }
 
+
+void handleRainAccumulation() {
+    if (!requireWebAuth()) return;
+    sendNoCache();
+    server.send(200, "application/json", rainAccumulatorJson());
+}
+
+void handleSdConfigGet() {
+    if (!requireWebAuth()) return;
+    String out = "{\"config\":" + sdLoggerConfigJson() + ",\"status\":" + sdLoggerStatusJson() + "}";
+    sendNoCache();
+    server.send(200, "application/json", out);
+}
+
+bool sdBoolArg(const char *name, bool fallback) {
+    if (!server.hasArg(name)) return fallback;
+    const String v = server.arg(name);
+    return v == "1" || v == "true" || v == "on" || v == "yes";
+}
+
+void handleSdConfigPost() {
+    if (!requireWebAuth()) return;
+    SdLoggerConfig c = getSdLoggerConfig();
+    c.enabled = sdBoolArg("enabled", c.enabled);
+    c.logOregon = sdBoolArg("oregon", c.logOregon);
+    c.logTechnoline = sdBoolArg("technoline", c.logTechnoline);
+    c.logBme280 = sdBoolArg("bme280", c.logBme280);
+    c.logAs3935 = sdBoolArg("as3935", c.logAs3935);
+    c.rainOregon = sdBoolArg("rain_oregon", c.rainOregon);
+    c.rainTechnoline = sdBoolArg("rain_technoline", c.rainTechnoline);
+    c.rainPersist = sdBoolArg("rain_sd", c.rainPersist);
+    if (server.hasArg("snapshot_interval_s")) {
+        const long v = server.arg("snapshot_interval_s").toInt();
+        if (v < 30 || v > 3600) {
+            server.send(400, "application/json", "{\"ok\":false,\"error\":\"snapshot interval must be 30..3600 seconds\"}");
+            return;
+        }
+        c.snapshotIntervalSec = static_cast<uint16_t>(v);
+    }
+    bool changed = false;
+    if (!saveSdLoggerConfig(c, changed)) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"SD logger configuration rejected\"}");
+        return;
+    }
+    String out = "{\"ok\":true,\"changed\":";
+    out += changed ? "true" : "false";
+    out += ",\"config\":" + sdLoggerConfigJson() + ",\"status\":" + sdLoggerStatusJson() + "}";
+    sendNoCache();
+    server.send(200, "application/json", out);
+}
+
+void handleSdConfigReset() {
+    if (!requireWebAuth()) return;
+    bool changed = false;
+    if (!resetSdLoggerConfigToDefaults(changed)) {
+        server.send(500, "application/json", "{\"ok\":false}" );
+        return;
+    }
+    handleSdConfigGet();
+}
+
+void handleSdFormat() {
+    if (!requireWebAuth()) return;
+    if (!server.hasArg("confirm") || server.arg("confirm") != "FORMATTA") {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"confirmation required\"}");
+        return;
+    }
+    const bool ok = formatSdLogger();
+    String out = "{\"ok\":";
+    out += ok ? "true" : "false";
+    out += ",\"status\":" + sdLoggerStatusJson() + "}";
+    sendNoCache();
+    server.send(ok ? 200 : 500, "application/json", out);
+}
+
+void handleSdRemount() {
+    if (!requireWebAuth()) return;
+    const bool ok = remountSdLogger();
+    String out = "{\"ok\":";
+    out += ok ? "true" : "false";
+    out += ",\"status\":" + sdLoggerStatusJson() + "}";
+    sendNoCache();
+    server.send(200, "application/json", out);
+}
+
+
+// ADMIN_SENSOR_SD_BROWSER_V1
+void handleSdFiles() {
+    if (!requireWebAuth()) return;
+    sendNoCache();
+    server.send(200, "application/json", sdLoggerFilesJson());
+}
+
+void handleSdRead() {
+    if (!requireWebAuth()) return;
+    if (!server.hasArg("path")) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"path required\"}");
+        return;
+    }
+    const String path = server.arg("path");
+    const uint32_t offset = server.hasArg("offset")
+        ? static_cast<uint32_t>(strtoul(server.arg("offset").c_str(), nullptr, 10)) : 0U;
+    size_t limit = server.hasArg("limit")
+        ? static_cast<size_t>(strtoul(server.arg("limit").c_str(), nullptr, 10)) : 6144U;
+    if (limit == 0U || limit > 6144U) limit = 6144U;
+
+    String data;
+    uint32_t totalBytes = 0;
+    if (!sdLoggerReadFileChunk(path, offset, limit, data, totalBytes)) {
+        server.send(404, "application/json", "{\"ok\":false,\"error\":\"SD file unavailable\"}");
+        return;
+    }
+    sendNoCache();
+    server.sendHeader("X-SD-File-Size", String(totalBytes));
+    server.send(200, "text/csv; charset=utf-8", data);
+}
 
 void handleThermoConfigGet() {
     const ThermoChannelConfig c = getThermoChannelConfig();
@@ -902,9 +1140,9 @@ void handleRaw() {
         out += "\",\"sensor_code\":\"" + hex4(e.sensorCode) + "\"";
         out += ",\"model\":\"" + String(sensorModelName(e.sensorCode)) + "\"";
         out += ",\"battery\":\"" + String(!e.batteryKnown ? "N/D" : (e.batteryLow ? "LOW" : "OK")) + "\"";
-        out += ",\"type\":\"" + String(e.type) + "\"";
-        out += ",\"protocol\":\"" + String(e.protocol) + "\"";
-        out += ",\"source\":\"" + String(e.sourceName) + "\"";
+        out += ",\"type\":\"" + String(rawTypeName(e)) + "\"";
+        out += ",\"protocol\":\"" + String(rawProtocolName(e)) + "\"";
+        out += ",\"source\":\"" + String(rawSourceName(e)) + "\"";
         out += ",\"accepted\":";
         out += e.accepted ? "true" : "false";
         out += ",\"decoded\":\"" + String(e.decoded) + "\"";
@@ -924,9 +1162,9 @@ void handleRawText() {
         out += String(e.ms);
         out += " ms  ";
         out += e.accepted ? "OK   " : "DROP ";
-        out += e.type;
-        out += " proto="; out += e.protocol;
-        out += " src="; out += e.sourceName;
+        out += rawTypeName(e);
+        out += " proto="; out += rawProtocolName(e);
+        out += " src="; out += rawSourceName(e);
         out += " RSSI=";
         out += jsonFloat(e.rssi, 1);
         out += "  ";
@@ -1030,6 +1268,7 @@ String jsonEscapeString(const String &in) {
 String configBackupJson(bool includeSecrets) {
     const NetworkRuntimeConfig n = getNetworkConfig();
     const MqttRuntimeConfig m = getMqttConfig();
+    const MbCompatibleConfig mb = getMbCompatibleConfig();
     String out;
     out.reserve(6500);
     out += "{\n  \"schema\":1";
@@ -1053,6 +1292,13 @@ String configBackupJson(bool includeSecrets) {
     out += ",\n  \"mqtt_tls_mode\":" + String(static_cast<uint8_t>(m.tlsMode));
     out += ",\n  \"mqtt_ca_certificate\":\"" + jsonEscapeString(m.caCertificate) + "\"";
     out += ",\n  \"mqtt_fields_mask\":" + String(m.fieldsMask);
+    out += ",\n  \"mb_compatible_enabled\":"; out += mb.enabled ? "true" : "false";
+    out += ",\n  \"mb_compatible_url\":\"" + jsonEscapeString(mb.url) + "\"";
+    out += ",\n  \"mb_compatible_interval_sec\":" + String(mb.intervalSec);
+    out += ",\n  \"mb_compatible_timeout_ms\":" + String(mb.timeoutMs);
+    out += ",\n  \"mb_compatible_tls_mode\":" + String(static_cast<uint8_t>(mb.tlsMode));
+    out += ",\n  \"mb_compatible_ca_certificate\":\"" + jsonEscapeString(mb.caCertificate) + "\"";
+    out += ",\n  \"mb_compatible_source_priority\":" + String(mb.sourcePriority);
     out += ",\n  \"display_on\":"; out += displayEnabled() ? "true" : "false";
     const DisplayRuntimeConfig d = getDisplayConfig();
     out += ",\n  \"display_page_mask\":" + String(d.pageMask);
@@ -1218,6 +1464,7 @@ void handleConfigImport() {
 
     NetworkRuntimeConfig n = getNetworkConfig();
     MqttRuntimeConfig m = getMqttConfig();
+    MbCompatibleConfig mbImport = getMbCompatibleConfig();
     bool tmpBool = false;
     uint32_t tmpUInt = 0;
     String tmpString;
@@ -1247,6 +1494,15 @@ void handleConfigImport() {
     const bool replaceCa = jsonGetString(body, "mqtt_ca_certificate", tmpString);
     if (replaceCa) m.caCertificate = tmpString;
     if (jsonGetUInt(body, "mqtt_fields_mask", tmpUInt)) m.fieldsMask = tmpUInt & MQTT_FIELDS_ALL;
+
+    if (jsonGetBool(body, "mb_compatible_enabled", tmpBool)) mbImport.enabled = tmpBool;
+    if (jsonGetString(body, "mb_compatible_url", tmpString)) mbImport.url = tmpString;
+    if (jsonGetUInt(body, "mb_compatible_interval_sec", tmpUInt)) mbImport.intervalSec = static_cast<uint16_t>(tmpUInt);
+    if (jsonGetUInt(body, "mb_compatible_timeout_ms", tmpUInt)) mbImport.timeoutMs = static_cast<uint16_t>(tmpUInt);
+    if (jsonGetUInt(body, "mb_compatible_tls_mode", tmpUInt)) mbImport.tlsMode = static_cast<MbCompatibleTlsMode>(tmpUInt);
+    const bool replaceMbCa = jsonGetString(body, "mb_compatible_ca_certificate", tmpString);
+    if (replaceMbCa) mbImport.caCertificate = tmpString;
+    if (jsonGetUInt(body, "mb_compatible_source_priority", tmpUInt)) mbImport.sourcePriority = static_cast<uint8_t>(tmpUInt);
 
     bool displayOn = displayEnabled();
     jsonGetBool(body, "display_on", displayOn);
@@ -1320,13 +1576,13 @@ void handleConfigImport() {
     }
     if (profile == static_cast<uint8_t>(RfFrontendProfile::AutoScan)) profile = static_cast<uint8_t>(RfFrontendProfile::Stable);
 
-    if (!validateNetworkConfig(n) || !validateMqttConfig(m, replacePassword, replaceCa)) {
+    if (!validateNetworkConfig(n) || !validateMqttConfig(m, replacePassword, replaceCa) || !validateMbCompatibleConfig(mbImport, replaceMbCa)) {
         server.send(400, "application/json", "{\"ok\":false,\"error\":\"backup contains invalid network or MQTT values\"}");
         return;
     }
 
     bool netChanged = false;
-    if (!saveMqttConfig(m, replacePassword, replaceCa) || !saveNetworkConfig(n, netChanged)) {
+    if (!saveMqttConfig(m, replacePassword, replaceCa) || !saveMbCompatibleConfig(mbImport, replaceMbCa) || !saveNetworkConfig(n, netChanged)) {
         server.send(500, "application/json", "{\"ok\":false,\"error\":\"could not save imported configuration\"}");
         return;
     }
@@ -1534,7 +1790,7 @@ void handleDevicePowerOff() {
 void handleNetworkConfigGet() {
     const NetworkRuntimeConfig c = getNetworkConfig();
     String out;
-    out.reserve(520);
+    out.reserve(900);
     out = "{\"hostname\":\"" + jsonEscapeString(c.hostname) + "\"";
     out += ",\"mdns\":\"" + jsonEscapeString(networkMdnsName()) + "\"";
     out += ",\"mdns_active\":"; out += networkMdnsActive() ? "true" : "false";
@@ -1543,7 +1799,16 @@ void handleNetworkConfigGet() {
     out += ",\"gateway\":\"" + jsonEscapeString(c.gateway) + "\"";
     out += ",\"subnet\":\"" + jsonEscapeString(c.subnet) + "\"";
     out += ",\"dns\":\"" + jsonEscapeString(c.dns) + "\"";
-    out += ",\"actual_ip\":\"" + jsonEscapeString(wifiIpAddress()) + "\"}";
+    out += ",\"actual_ip\":\"" + jsonEscapeString(wifiIpAddress()) + "\"";
+    out += ",\"web_ip\":\"" + jsonEscapeString(networkWebIpAddress()) + "\"";
+    out += ",\"wifi_ssid\":\"" + jsonEscapeString(networkWifiSsid()) + "\"";
+    out += ",\"wifi_has_password\":"; out += networkWifiPasswordConfigured() ? "true" : "false";
+    out += ",\"wifi_trial_pending\":"; out += networkWifiCredentialTrialPending() ? "true" : "false";
+    out += ",\"recovery_ap_active\":"; out += networkRecoveryApActive() ? "true" : "false";
+    out += ",\"recovery_ap_ssid\":\"" + jsonEscapeString(networkRecoveryApSsid()) + "\"";
+    out += ",\"recovery_ap_password\":\"";
+    if (networkRecoveryApActive()) out += jsonEscapeString(networkRecoveryApPassword());
+    out += "\"}";
     sendNoCache();
     server.send(200, "application/json", out);
 }
@@ -1556,15 +1821,37 @@ void handleNetworkConfigPost() {
     if (server.hasArg("gateway")) c.gateway = server.arg("gateway");
     if (server.hasArg("subnet")) c.subnet = server.arg("subnet");
     if (server.hasArg("dns")) c.dns = server.arg("dns");
-    bool changed = false;
-    if (!saveNetworkConfig(c, changed)) {
+    if (!validateNetworkConfig(c)) {
         server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid network configuration\"}");
         return;
     }
-    const bool reboot = changed && server.hasArg("reboot") && (server.arg("reboot") == "1" || server.arg("reboot") == "true");
+
+    String wifiSsid = networkWifiSsid();
+    if (server.hasArg("wifi_ssid")) wifiSsid = server.arg("wifi_ssid");
+    const bool clearWifiPassword = server.hasArg("clear_wifi_password") &&
+        (server.arg("clear_wifi_password") == "1" || server.arg("clear_wifi_password") == "true" || server.arg("clear_wifi_password") == "on");
+    const bool replaceWifiPassword = clearWifiPassword || (server.hasArg("wifi_password") && server.arg("wifi_password").length() > 0U);
+    const String wifiPassword = clearWifiPassword ? String("") : (replaceWifiPassword ? server.arg("wifi_password") : String(""));
+
+    bool wifiChanged = false;
+    if (!saveWifiCredentials(wifiSsid, wifiPassword, replaceWifiPassword, wifiChanged)) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid Wi-Fi credentials or NVS verification failed\"}");
+        return;
+    }
+
+    bool netChanged = false;
+    if (!saveNetworkConfig(c, netChanged)) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"network NVS verification failed\"}");
+        return;
+    }
+
+    const bool rebootRequested = server.hasArg("reboot") && (server.arg("reboot") == "1" || server.arg("reboot") == "true");
+    const bool reboot = wifiChanged || (netChanged && rebootRequested);
     if (reboot) rebootAtMs = millis() + 1200UL;
     sendNoCache();
-    String out = "{\"ok\":true,\"changed\":"; out += changed ? "true" : "false";
+    String out = "{\"ok\":true,\"changed\":"; out += (wifiChanged || netChanged) ? "true" : "false";
+    out += ",\"network_changed\":"; out += netChanged ? "true" : "false";
+    out += ",\"wifi_changed\":"; out += wifiChanged ? "true" : "false";
     out += ",\"rebooting\":"; out += reboot ? "true" : "false";
     out += ",\"new_ip\":\"" + jsonEscapeString(c.ip) + "\"";
     out += ",\"hostname\":\"" + jsonEscapeString(c.hostname) + "\"";
@@ -1573,17 +1860,22 @@ void handleNetworkConfigPost() {
 }
 
 void handleNetworkConfigReset() {
-    bool changed = false;
-    if (!resetNetworkConfigToDefaults(changed)) {
-        server.send(500, "application/json", "{\"ok\":false}"); return;
+    if (!requireWebAuth()) return;
+    bool netChanged = false;
+    bool wifiChanged = false;
+    if (!resetNetworkConfigToDefaults(netChanged) || !resetWifiCredentialsToFirmwareDefaults(wifiChanged)) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"network reset failed\"}");
+        return;
     }
+    const bool changed = netChanged || wifiChanged;
     if (changed) rebootAtMs = millis() + 1200UL;
     sendNoCache();
     String out = "{\"ok\":true,\"changed\":"; out += changed ? "true" : "false";
+    out += ",\"network_changed\":"; out += netChanged ? "true" : "false";
+    out += ",\"wifi_changed\":"; out += wifiChanged ? "true" : "false";
     out += ",\"rebooting\":"; out += changed ? "true" : "false"; out += "}";
     server.send(200, "application/json", out);
 }
-
 
 // AS3935_UI_INTEGRATED: il rilevatore fulmini usa lo stesso WebServer della dashboard.
 bool lightningBoolArg(const char *name) {
@@ -1601,6 +1893,216 @@ bool lightningUIntArg(const char *name, uint32_t &value) {
     if (!end || *end != '\0') return false;
     value = static_cast<uint32_t>(parsed);
     return true;
+}
+
+
+
+// I2C_HARDWARE_DIAGNOSTICS_V1
+float hardwareTemperatureC() {
+#if defined(ARDUINO_ARCH_ESP32)
+    const float t = temperatureRead();
+    if (isfinite(t) && t > -40.0f && t < 150.0f) return t;
+#endif
+    return NAN;
+}
+
+String runHardwareI2cScanJson() {
+    constexpr uint32_t RUNTIME_I2C_HZ = 100000UL;
+    constexpr uint32_t STRESS_I2C_HZ = 400000UL;
+    const uint32_t startedMs = millis();
+
+    const int sdaInitial = digitalRead(I2C_SDA_PIN);
+    const int sclInitial = digitalRead(I2C_SCL_PIN);
+    const bool busStuckInitial = (sdaInitial == LOW || sclInitial == LOW);
+
+    String devices100;
+    String devices400;
+    devices100.reserve(640);
+    devices400.reserve(640);
+
+    auto scanBus = [](uint32_t hz, String &list) -> uint16_t {
+        Wire.setClock(hz);
+        list = "[";
+        bool first = true;
+        uint16_t count = 0;
+        // 0x00 is the I2C general-call address. Do not probe it in a generic
+        // scanner; AS3935 configured address is reported separately by /info.
+        for (uint8_t addr = 1; addr < 0x7FU; ++addr) {
+            Wire.beginTransmission(addr);
+            const uint8_t err = Wire.endTransmission(true);
+            if (err == 0U) {
+                if (!first) list += ',';
+                list += String(addr);
+                first = false;
+                count++;
+            }
+            delayMicroseconds(40);
+        }
+        list += "]";
+        return count;
+    };
+
+    auto readRegister = [](uint8_t addr, uint8_t reg, uint8_t &value) -> bool {
+        Wire.beginTransmission(addr);
+        Wire.write(reg);
+        if (Wire.endTransmission(false) != 0U) return false;
+        const uint8_t got = Wire.requestFrom(addr, static_cast<uint8_t>(1));
+        if (got != 1U || !Wire.available()) return false;
+        value = static_cast<uint8_t>(Wire.read());
+        return true;
+    };
+
+    uint16_t count100 = 0;
+    uint16_t count400 = 0;
+    uint8_t chip76 = 0;
+    uint8_t chip77 = 0;
+    bool chip76Ok = false;
+    bool chip77Ok = false;
+
+    if (!busStuckInitial) {
+        // Runtime speed first: this is the result that matters for normal use.
+        count100 = scanBus(RUNTIME_I2C_HZ, devices100);
+        Wire.setClock(RUNTIME_I2C_HZ);
+        chip76Ok = readRegister(0x76U, 0xD0U, chip76);
+        chip77Ok = readRegister(0x77U, 0xD0U, chip77);
+
+        // 400 kHz is intentionally a manual stress/margin test only.
+        count400 = scanBus(STRESS_I2C_HZ, devices400);
+    } else {
+        devices100 = "[]";
+        devices400 = "[]";
+    }
+
+    Wire.setClock(RUNTIME_I2C_HZ);
+    Wire.setTimeOut(80);
+
+    const int sdaFinal = digitalRead(I2C_SDA_PIN);
+    const int sclFinal = digitalRead(I2C_SCL_PIN);
+    const bool busStuckFinal = (sdaFinal == LOW || sclFinal == LOW);
+
+    String out;
+    out.reserve(1800);
+    out = "{\"ok\":true";
+    out += ",\"sda\":" + String(I2C_SDA_PIN);
+    out += ",\"scl\":" + String(I2C_SCL_PIN);
+    out += ",\"runtime_hz\":" + String(RUNTIME_I2C_HZ);
+    out += ",\"sda_initial\":" + String(sdaInitial);
+    out += ",\"scl_initial\":" + String(sclInitial);
+    out += ",\"sda_final\":" + String(sdaFinal);
+    out += ",\"scl_final\":" + String(sclFinal);
+    out += ",\"bus_stuck_initial\":"; out += busStuckInitial ? "true" : "false";
+    out += ",\"bus_stuck_final\":"; out += busStuckFinal ? "true" : "false";
+    out += ",\"devices_100khz\":" + devices100;
+    out += ",\"count_100khz\":" + String(count100);
+    out += ",\"devices_400khz\":" + devices400;
+    out += ",\"count_400khz\":" + String(count400);
+    out += ",\"chip_id_0x76\":";
+    if (chip76Ok) out += String(chip76); else out += "null";
+    out += ",\"chip_id_0x77\":";
+    if (chip77Ok) out += String(chip77); else out += "null";
+    out += ",\"bme280_0x76\":"; out += (chip76Ok && chip76 == 0x60U) ? "true" : "false";
+    out += ",\"bme280_0x77\":"; out += (chip77Ok && chip77 == 0x60U) ? "true" : "false";
+    out += ",\"duration_ms\":" + String(static_cast<uint32_t>(millis() - startedMs));
+    out += "}";
+    return out;
+}
+
+void handleHardwareInfoGet() {
+    const LightningState ls = getLightningState();
+    const LightningConfig lc = getLightningConfig();
+    const float hwTemp = hardwareTemperatureC();
+    String out;
+    out.reserve(520);
+    out = "{\"board\":\"" + jsonEscapeString(String(BOARD_NAME)) + "\"";
+    out += ",\"i2c_sda\":" + String(I2C_SDA_PIN);
+    out += ",\"i2c_scl\":" + String(I2C_SCL_PIN);
+    out += ",\"i2c_runtime_hz\":100000";
+    out += ",\"bme280_detected\":"; out += barometerDetected() ? "true" : "false";
+    out += ",\"bme280_address\":" + String(barometerAddress());
+    out += ",\"as3935_enabled\":"; out += ls.enabled ? "true" : "false";
+    out += ",\"as3935_detected\":"; out += ls.detected ? "true" : "false";
+    out += ",\"as3935_address\":" + String(lc.i2cAddress);
+    out += ",\"mcu_temperature_c\":" + jsonFloat(hwTemp, 1);
+    out += "}";
+    sendNoCache();
+    server.send(200, "application/json; charset=utf-8", out);
+}
+
+void handleHardwareI2cScan() {
+    sendNoCache();
+    server.send(200, "application/json; charset=utf-8", runHardwareI2cScanJson());
+}
+
+void handleBarometerConfigGet() {
+    const BarometerRuntimeConfig c = getBarometerConfig();
+    const BarometerDetectionDiagnostics d = getBarometerDetectionDiagnostics();
+    const uint32_t diagNow = millis();
+    const uint32_t retryInMs = (d.nextRetryMs != 0 && static_cast<int32_t>(d.nextRetryMs - diagNow) > 0)
+        ? static_cast<uint32_t>(d.nextRetryMs - diagNow) : 0UL;
+
+    String out;
+    out.reserve(520);
+    out = "{\"altitude_m\":" + String(c.altitudeM, 1);
+    out += ",\"pressure_unit\":" + String(static_cast<uint8_t>(c.displayUnit));
+    out += ",\"pressure_unit_name\":\"" + String(pressureUnitName(c.displayUnit)) + "\"";
+    out += ",\"detected\":"; out += barometerDetected() ? "true" : "false";
+    out += ",\"address\":" + String(barometerAddress());
+    out += ",\"detection_attempts\":" + String(d.attempts);
+    out += ",\"last_attempt_ms\":" + String(d.lastAttemptMs);
+    out += ",\"retry_in_ms\":" + String(retryInMs);
+    out += ",\"retry_delay_ms\":" + String(d.retryDelayMs);
+    out += ",\"i2c_sda\":" + String(I2C_SDA_PIN);
+    out += ",\"i2c_scl\":" + String(I2C_SCL_PIN);
+    out += ",\"i2c_ack_0x76\":"; out += d.i2cAck76 ? "true" : "false";
+    out += ",\"i2c_ack_0x77\":"; out += d.i2cAck77 ? "true" : "false";
+    out += ",\"read_failures_total\":" + String(d.readFailuresTotal);
+    out += ",\"consecutive_read_failures\":" + String(d.consecutiveReadFailures);
+    out += ",\"last_good_read_ms\":" + String(d.lastGoodReadMs);
+    out += "}";
+    sendNoCache();
+    server.send(200, "application/json; charset=utf-8", out);
+}
+
+void handleBarometerConfigPost() {
+    BarometerRuntimeConfig c = getBarometerConfig();
+    if (server.hasArg("altitude_m")) c.altitudeM = server.arg("altitude_m").toFloat();
+    if (server.hasArg("pressure_unit")) {
+        const long unit = server.arg("pressure_unit").toInt();
+        if (unit < 0 || unit > static_cast<long>(PressureDisplayUnit::Kpa)) {
+            server.send(400, "application/json", "{\"ok\":false,\"error\":\"pressure unit must be 0..4\"}");
+            return;
+        }
+        c.displayUnit = static_cast<PressureDisplayUnit>(unit);
+    }
+    if (!validateBarometerConfig(c)) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"altitude must be 0..9000 m\"}");
+        return;
+    }
+    bool changed = false;
+    if (!saveBarometerConfig(c, changed)) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"barometer NVS verification failed\"}");
+        return;
+    }
+    sendNoCache();
+    String out = "{\"ok\":true,\"changed\":";
+    out += changed ? "true" : "false";
+    out += ",\"altitude_m\":" + String(barometerAltitudeM(), 1);
+    out += ",\"pressure_unit\":" + String(static_cast<uint8_t>(getBarometerConfig().displayUnit));
+    out += "}";
+    server.send(200, "application/json; charset=utf-8", out);
+}
+
+void handleBarometerConfigReset() {
+    bool changed = false;
+    if (!resetBarometerConfigToDefaults(changed)) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"barometer reset failed\"}");
+        return;
+    }
+    sendNoCache();
+    String out = "{\"ok\":true,\"changed\":";
+    out += changed ? "true" : "false";
+    out += "}";
+    server.send(200, "application/json; charset=utf-8", out);
 }
 
 void handleLightningState() {
@@ -1716,6 +2218,191 @@ void handleBursts() {
     server.send(200, "application/json", out);
 }
 
+
+void handleSecurityConfigGet() {
+    sendNoCache();
+    server.send(200, "application/json; charset=utf-8", webSecurityConfigJson());
+}
+
+void handleSecurityConfigPost() {
+    const WebSecurityConfig current = getWebSecurityConfig();
+    bool enabled = current.enabled;
+    String username = current.username;
+    if (server.hasArg("enabled")) enabled = server.arg("enabled") == "1" || server.arg("enabled") == "true" || server.arg("enabled") == "on";
+    if (server.hasArg("username")) username = server.arg("username");
+    const bool replacePassword = server.hasArg("password") && server.arg("password").length() > 0U;
+    const String newPassword = replacePassword ? server.arg("password") : String("");
+    bool changed = false;
+    String error;
+    if (!saveWebSecurityConfig(enabled, username, newPassword, replacePassword, changed, error)) {
+        String out = "{\"ok\":false,\"error\":\"" + jsonEscapeString(error) + "\"}";
+        server.send(400, "application/json", out);
+        return;
+    }
+    sendNoCache();
+    String out = "{\"ok\":true,\"changed\":"; out += changed ? "true" : "false";
+    out += ",\"enabled\":"; out += webSecurityEnabled() ? "true" : "false"; out += "}";
+    server.send(200, "application/json", out);
+}
+
+void handleFirmwareInfo() {
+    String out;
+    out.reserve(420);
+    out = "{\"board\":\"" + jsonEscapeString(String(BOARD_NAME)) + "\"";
+    out += ",\"firmware\":\"" + jsonEscapeString(String(firmwareVersion())) + "\"";
+    out += ",\"git_commit\":\"" + jsonEscapeString(String(firmwareGitCommit())) + "\"";
+    out += ",\"free_ota_bytes\":" + String(ESP.getFreeSketchSpace());
+    out += ",\"auth_enabled\":"; out += webSecurityEnabled() ? "true" : "false";
+#if defined(BOARD_T3_S3_SX1278)
+    out += ",\"board_family\":\"T3-S3\"";
+#elif defined(BOARD_T3_V16_SX1278)
+    out += ",\"board_family\":\"T3-V1.6.1\"";
+#else
+    out += ",\"board_family\":\"UNKNOWN\"";
+#endif
+    out += "}";
+    sendNoCache();
+    server.send(200, "application/json", out);
+}
+
+bool otaFilenameCompatible(String name) {
+    name.toLowerCase();
+#if defined(BOARD_T3_S3_SX1278)
+    if (name.indexOf("t3-v161") >= 0 || name.indexOf("v1.6.1") >= 0 || name.indexOf("v16") >= 0) return false;
+#elif defined(BOARD_T3_V16_SX1278)
+    if (name.indexOf("t3-s3") >= 0 || name.indexOf("esp32s3") >= 0 || name.indexOf("esp32-s3") >= 0) return false;
+#endif
+    return true;
+}
+
+void otaFail(const String &reason) {
+    otaError = reason;
+    otaUploadOk = false;
+    if (otaUpdateBegun) {
+        Update.end(false);
+        otaUpdateBegun = false;
+    }
+    otaUploadActive = false;
+    if (otaGuardHeld) { firmwareLocalReleaseGuard(); otaGuardHeld = false; }
+    if (getSdLoggerConfig().enabled) remountSdLogger();
+    Serial.print(F("[OTA] ERRORE: ")); Serial.println(reason);
+}
+
+void handleFirmwareUpload() {
+    HTTPUpload &upload = server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+        otaUploadActive = false;
+        otaUpdateBegun = false;
+        otaUploadOk = false;
+        otaAuthorized = false;
+        otaFirstChunk = true;
+        otaBytes = 0;
+        otaMaxBytes = ESP.getFreeSketchSpace();
+        otaError = "";
+
+        // Deliberate safety gate: firmware upload is forbidden while the Web
+        // interface is configured without authentication, even on the LAN.
+        if (!webSecurityEnabled()) {
+            otaFail("OTA disabled while Web authentication is OFF");
+            return;
+        }
+        if (!webSecurityAuthorized(server)) {
+            otaFail("authentication required");
+            return;
+        }
+        otaAuthorized = true;
+        if (!otaFilenameCompatible(upload.filename)) {
+            otaFail("firmware filename targets a different board family");
+            return;
+        }
+        if (otaMaxBytes < 65536U) {
+            otaFail("OTA partition has insufficient free space");
+            return;
+        }
+
+        String otaGuardError;
+        if (!firmwareLocalBeginGuard(otaGuardError)) {
+            otaFail(otaGuardError.length() ? otaGuardError : String("firmware updater busy"));
+            return;
+        }
+        otaGuardHeld = true;
+
+        prepareSdLoggerForDeepSleep();
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+            otaFail(String("Update.begin failed, code ") + String(Update.getError()));
+            return;
+        }
+        otaUpdateBegun = true;
+        otaUploadActive = true;
+        Serial.print(F("[OTA] upload avviato: ")); Serial.println(upload.filename);
+        return;
+    }
+
+    if (!otaAuthorized || !otaUploadActive) return;
+
+    if (upload.status == UPLOAD_FILE_WRITE) {
+        if (upload.currentSize == 0U) return;
+        if (otaFirstChunk) {
+            otaFirstChunk = false;
+            if (upload.buf[0] != 0xE9U) {
+                otaFail("invalid ESP32 application image header");
+                return;
+            }
+        }
+        if (otaBytes + upload.currentSize > otaMaxBytes) {
+            otaFail("firmware image exceeds OTA partition space");
+            return;
+        }
+        const size_t written = Update.write(upload.buf, upload.currentSize);
+        if (written != upload.currentSize) {
+            otaFail(String("flash write failed, code ") + String(Update.getError()));
+            return;
+        }
+        otaBytes += written;
+        return;
+    }
+
+    if (upload.status == UPLOAD_FILE_END) {
+        if (!otaUpdateBegun || otaBytes == 0U) {
+            otaFail("empty firmware upload");
+            return;
+        }
+        if (!Update.end(true) || Update.hasError()) {
+            otaUpdateBegun = false;
+            otaFail(String("firmware validation failed, code ") + String(Update.getError()));
+            return;
+        }
+        otaUpdateBegun = false;
+        otaUploadActive = false;
+        if (otaGuardHeld) { firmwareLocalReleaseGuard(); otaGuardHeld = false; }
+        otaUploadOk = true;
+        Serial.print(F("[OTA] firmware scritto: ")); Serial.print(static_cast<unsigned long>(otaBytes)); Serial.println(F(" byte"));
+        return;
+    }
+
+    if (upload.status == UPLOAD_FILE_ABORTED) {
+        otaFail("upload aborted by client");
+    }
+}
+
+void handleFirmwareUploadDone() {
+    if (!webSecurityEnabled()) {
+        server.send(403, "application/json", "{\"ok\":false,\"error\":\"OTA requires Web authentication\"}");
+        return;
+    }
+    if (!requireWebAuth()) return;
+    sendNoCache();
+    if (!otaUploadOk) {
+        String error = otaError.length() ? otaError : String("firmware upload failed");
+        String out = "{\"ok\":false,\"error\":\"" + jsonEscapeString(error) + "\"}";
+        server.send(400, "application/json", out);
+        return;
+    }
+    String out = "{\"ok\":true,\"bytes\":" + String(static_cast<unsigned long>(otaBytes)) + ",\"rebooting\":true}";
+    server.send(200, "application/json", out);
+    rebootAtMs = millis() + 1200UL;
+}
+
 void handleRoot() {
     sendNoCache();
     server.sendHeader("Content-Encoding", "gzip");
@@ -1756,49 +2443,184 @@ void fillDecoded(char *dst, size_t size, const OregonPacket &packet, const Weath
     snprintf(dst, size, "%s | %s %04X ch%u id%u BAT=%s", value, sensorModelName(r->sensorCode),
              r->sensorCode, r->channel, r->rollingCode, batteryStatusName(*r));
 }
+void handleNetworkWifiScanStart() {
+    if (!networkWifiScanStart()) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"scan start failed\"}");
+        return;
+    }
+    sendNoCache();
+    server.send(202, "application/json", "{\"ok\":true,\"status\":\"running\"}");
+}
+
+void handleNetworkWifiScanGet() {
+    sendNoCache();
+    server.send(200, "application/json; charset=utf-8", networkWifiScanJson());
+}
+
+void handleMbCompatibleGet() {
+    sendNoCache();
+    server.send(200, "application/json; charset=utf-8", mbCompatibleConfigStatusJson());
+}
+
+void handleMbCompatiblePost() {
+    MbCompatibleConfig cfg = getMbCompatibleConfig();
+    if (server.hasArg("enabled")) cfg.enabled = server.arg("enabled") == "1" || server.arg("enabled") == "true" || server.arg("enabled") == "on";
+    if (server.hasArg("url")) cfg.url = server.arg("url");
+    if (server.hasArg("interval_sec")) cfg.intervalSec = static_cast<uint16_t>(server.arg("interval_sec").toInt());
+    if (server.hasArg("timeout_ms")) cfg.timeoutMs = static_cast<uint16_t>(server.arg("timeout_ms").toInt());
+    if (server.hasArg("tls_mode")) cfg.tlsMode = static_cast<MbCompatibleTlsMode>(server.arg("tls_mode").toInt());
+    if (server.hasArg("source_priority")) cfg.sourcePriority = static_cast<uint8_t>(server.arg("source_priority").toInt());
+
+    const bool clearCa = server.hasArg("clear_ca") && (server.arg("clear_ca") == "1" || server.arg("clear_ca") == "true" || server.arg("clear_ca") == "on");
+    const bool replaceCa = clearCa || (server.hasArg("ca_certificate") && server.arg("ca_certificate").length() > 0U);
+    if (clearCa) cfg.caCertificate = "";
+    else if (replaceCa) cfg.caCertificate = server.arg("ca_certificate");
+
+    if (!validateMbCompatibleConfig(cfg, replaceCa)) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid MB-compatible configuration\"}");
+        return;
+    }
+    if (!saveMbCompatibleConfig(cfg, replaceCa)) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"MB-compatible NVS verification failed\"}");
+        return;
+    }
+    sendNoCache();
+    server.send(200, "application/json; charset=utf-8", mbCompatibleConfigStatusJson());
+}
+
+void handleMbCompatibleTest() {
+    const MbCompatibleConfig cfg = getMbCompatibleConfig();
+    if (cfg.url.length() == 0U) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"endpoint URL missing\"}");
+        return;
+    }
+    requestMbCompatibleTest();
+    sendNoCache();
+    server.send(202, "application/json", "{\"ok\":true,\"queued\":true}");
+}
+
+void handleMbCompatibleReset() {
+    if (!resetMbCompatibleConfig()) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"MB-compatible reset failed\"}");
+        return;
+    }
+    sendNoCache();
+    server.send(200, "application/json; charset=utf-8", mbCompatibleConfigStatusJson());
+}
+
 } // namespace
 
 void initWeb(StationState &stateRef) {
 #if WEB_ENABLE
     station = &stateRef;
+    initWebSecurity();
+    const String bootstrapPassword = webSecurityBootstrapPassword();
+    if (bootstrapPassword.length()) {
+        const WebSecurityConfig sec = getWebSecurityConfig();
+        showWebSecurityBootstrap(sec.username, bootstrapPassword, 60000UL);
+    }
     // La modalita' RF persistente viene inizializzata poco dopo initWeb().
     // ensureRfSession() al primo /api/state riallinea automaticamente la
     // sessione alla modalita' effettiva letta dalla NVS.
     rfSession = RfSessionState{};
-    server.on("/", HTTP_GET, handleRoot);
-    server.on("/api/state", HTTP_GET, handleState);
-    server.on("/api/raw", HTTP_GET, handleRaw);
-    server.on("/api/raw.txt", HTTP_GET, handleRawText);
-    server.on("/api/bursts", HTTP_GET, handleBursts);
-    server.on("/api/rfmode", HTTP_POST, handleRfMode);
-    server.on("/api/rfgain", HTTP_POST, handleRfGain);
-    server.on("/api/rfprofile", HTTP_POST, handleRfProfile);
-    server.on("/api/burstextra", HTTP_POST, handleBurstExtra);
-    server.on("/api/wgrprobe", HTTP_POST, handleWgrProbe);
-    server.on("/api/wgrprobe/history", HTTP_GET, handleWgrProbeHistory);
-    server.on("/api/mqtt", HTTP_GET, handleMqttConfigGet);
-    server.on("/api/mqtt", HTTP_POST, handleMqttConfigPost);
-    server.on("/api/mqtt/reset", HTTP_POST, handleMqttConfigReset);
-    server.on("/api/network", HTTP_GET, handleNetworkConfigGet);
-    server.on("/api/network", HTTP_POST, handleNetworkConfigPost);
+    server.on("/", HTTP_GET, [](){ if (!requireWebAuth()) return; handleRoot(); });
+    server.on("/api/state", HTTP_GET, [](){ if (!requireWebAuth()) return; handleState(); });
+    server.on("/api/raw", HTTP_GET, [](){ if (!requireWebAuth()) return; handleRaw(); });
+    server.on("/api/raw.txt", HTTP_GET, [](){ if (!requireWebAuth()) return; handleRawText(); });
+    server.on("/api/bursts", HTTP_GET, [](){ if (!requireWebAuth()) return; handleBursts(); });
+    server.on("/api/rfmode", HTTP_POST, [](){ if (!requireWebAuth()) return; handleRfMode(); });
+    server.on("/api/rfgain", HTTP_POST, [](){ if (!requireWebAuth()) return; handleRfGain(); });
+    server.on("/api/rfprofile", HTTP_POST, [](){ if (!requireWebAuth()) return; handleRfProfile(); });
+    server.on("/api/burstextra", HTTP_POST, [](){ if (!requireWebAuth()) return; handleBurstExtra(); });
+    server.on("/api/wgrprobe", HTTP_POST, [](){ if (!requireWebAuth()) return; handleWgrProbe(); });
+    server.on("/api/wgrprobe/history", HTTP_GET, [](){ if (!requireWebAuth()) return; handleWgrProbeHistory(); });
+    server.on("/api/mqtt", HTTP_GET, [](){ if (!requireWebAuth()) return; handleMqttConfigGet(); });
+    server.on("/api/mqtt", HTTP_POST, [](){ if (!requireWebAuth()) return; handleMqttConfigPost(); });
+    server.on("/api/mqtt/reset", HTTP_POST, [](){ if (!requireWebAuth()) return; handleMqttConfigReset(); });
+    server.on("/api/network", HTTP_GET, [](){ if (!requireWebAuth()) return; handleNetworkConfigGet(); });
+    server.on("/api/network", HTTP_POST, [](){ if (!requireWebAuth()) return; handleNetworkConfigPost(); });
     server.on("/api/network/reset", HTTP_POST, handleNetworkConfigReset);
-    server.on("/api/config/export", HTTP_GET, handleConfigExport);
-    server.on("/api/config/import", HTTP_POST, handleConfigImport);
-    server.on("/api/thermo/config", HTTP_GET, handleThermoConfigGet);
-    server.on("/api/thermo/config", HTTP_POST, handleThermoConfigPost);
-    server.on("/api/thermo/reset", HTTP_POST, handleThermoConfigReset);
-    server.on("/api/display", HTTP_POST, handleDisplayPower);
-    server.on("/api/display/config", HTTP_GET, handleDisplayConfigGet);
-    server.on("/api/display/config", HTTP_POST, handleDisplayConfigPost);
-    server.on("/api/display/reset", HTTP_POST, handleDisplayConfigReset);
-    server.on("/api/as3935/state", HTTP_GET, handleLightningState);
-    server.on("/api/as3935/config", HTTP_GET, handleLightningConfigGet);
-    server.on("/api/as3935/config", HTTP_POST, handleLightningConfigPost);
-    server.on("/api/as3935/reset", HTTP_POST, handleLightningReset);
-    server.on("/api/as3935/reinit", HTTP_POST, handleLightningReinit);
-    server.on("/api/poweroff", HTTP_POST, handleDevicePowerOff);
-    server.on("/api/restart", HTTP_POST, handleDeviceRestart);
-    server.onNotFound([](){ server.send(404, "text/plain", "Not found"); });
+    server.on("/api/rain/accumulation", HTTP_GET, [](){ if (!requireWebAuth()) return; handleRainAccumulation(); });
+    server.on("/api/sd", HTTP_GET, handleSdConfigGet);
+    server.on("/api/sd", HTTP_POST, handleSdConfigPost);
+    server.on("/api/sd/reset", HTTP_POST, handleSdConfigReset);
+    server.on("/api/sd/remount", HTTP_POST, handleSdRemount);
+    server.on("/api/config/export", HTTP_GET, [](){ if (!requireWebAuth()) return; handleConfigExport(); });
+    server.on("/api/config/import", HTTP_POST, [](){ if (!requireWebAuth()) return; handleConfigImport(); });
+    server.on("/api/thermo/config", HTTP_GET, [](){ if (!requireWebAuth()) return; handleThermoConfigGet(); });
+    server.on("/api/thermo/config", HTTP_POST, [](){ if (!requireWebAuth()) return; handleThermoConfigPost(); });
+    server.on("/api/thermo/reset", HTTP_POST, [](){ if (!requireWebAuth()) return; handleThermoConfigReset(); });
+    server.on("/api/display", HTTP_POST, [](){ if (!requireWebAuth()) return; handleDisplayPower(); });
+    server.on("/api/display/config", HTTP_GET, [](){ if (!requireWebAuth()) return; handleDisplayConfigGet(); });
+    server.on("/api/display/config", HTTP_POST, [](){ if (!requireWebAuth()) return; handleDisplayConfigPost(); });
+    server.on("/api/display/reset", HTTP_POST, [](){ if (!requireWebAuth()) return; handleDisplayConfigReset(); });
+    server.on("/api/barometer/config", HTTP_GET, [](){ if (!requireWebAuth()) return; handleBarometerConfigGet(); });
+    server.on("/api/hardware/info", HTTP_GET, [](){ if (!requireWebAuth()) return; handleHardwareInfoGet(); });
+    server.on("/api/hardware/i2c-scan", HTTP_POST, [](){ if (!requireWebAuth()) return; handleHardwareI2cScan(); });
+    server.on("/api/barometer/config", HTTP_POST, [](){ if (!requireWebAuth()) return; handleBarometerConfigPost(); });
+    server.on("/api/barometer/reset", HTTP_POST, [](){ if (!requireWebAuth()) return; handleBarometerConfigReset(); });
+    server.on("/api/as3935/state", HTTP_GET, [](){ if (!requireWebAuth()) return; handleLightningState(); });
+    server.on("/api/as3935/config", HTTP_GET, [](){ if (!requireWebAuth()) return; handleLightningConfigGet(); });
+    server.on("/api/as3935/config", HTTP_POST, [](){ if (!requireWebAuth()) return; handleLightningConfigPost(); });
+    server.on("/api/as3935/reset", HTTP_POST, [](){ if (!requireWebAuth()) return; handleLightningReset(); });
+    server.on("/api/as3935/reinit", HTTP_POST, [](){ if (!requireWebAuth()) return; handleLightningReinit(); });
+    server.on("/api/poweroff", HTTP_POST, [](){ if (!requireWebAuth()) return; handleDevicePowerOff(); });
+    server.on("/api/restart", HTTP_POST, [](){ if (!requireWebAuth()) return; handleDeviceRestart(); });
+    server.on("/api/sd/format", HTTP_POST, handleSdFormat);
+    server.on("/api/security", HTTP_GET, [](){ if (!requireWebAuth()) return; handleSecurityConfigGet(); });
+    server.on("/api/security", HTTP_POST, [](){ if (!requireWebAuth()) return; handleSecurityConfigPost(); });
+    server.on("/api/firmware", HTTP_GET, [](){ if (!requireWebAuth()) return; handleFirmwareInfo(); });
+    server.on("/api/firmware", HTTP_POST, handleFirmwareUploadDone, handleFirmwareUpload);
+    server.on("/api/network/scan", HTTP_POST, [](){ if (!requireWebAuth()) return; handleNetworkWifiScanStart(); });
+    server.on("/api/network/scan", HTTP_GET, [](){ if (!requireWebAuth()) return; handleNetworkWifiScanGet(); });
+    server.on("/api/mbcompatible", HTTP_GET, [](){ if (!requireWebAuth()) return; handleMbCompatibleGet(); });
+    server.on("/api/mbcompatible", HTTP_POST, [](){ if (!requireWebAuth()) return; handleMbCompatiblePost(); });
+    server.on("/api/mbcompatible/test", HTTP_POST, [](){ if (!requireWebAuth()) return; handleMbCompatibleTest(); });
+    server.on("/api/mbcompatible/reset", HTTP_POST, [](){ if (!requireWebAuth()) return; handleMbCompatibleReset(); });
+    // ADMIN_SENSOR_REMOTE_INTEGRATED
+    server.on("/api/remote/config", HTTP_GET, [](){
+        if (!requireWebAuth()) return;
+        sendNoCache();
+        server.send(200, "application/json; charset=utf-8", remoteAccessConfigJson());
+    });
+    server.on("/api/remote/config", HTTP_POST, [](){
+        if (!requireWebAuth()) return;
+        const String portal = server.hasArg("portal_url") ? server.arg("portal_url") : String("");
+        if (!saveRemoteAccessPortalUrl(portal)) {
+            server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid HTTPS portal URL or NVS write failed\"}");
+            return;
+        }
+        sendNoCache();
+        server.send(200, "application/json", "{\"ok\":true}");
+    });
+    server.on("/api/remote/status", HTTP_GET, [](){
+        if (!requireWebAuth()) return;
+        sendNoCache();
+        server.send(200, "application/json; charset=utf-8", remoteAccessStatusJson());
+    });
+    server.on("/api/remote/retry", HTTP_POST, [](){
+        if (!requireWebAuth()) return;
+        retryRemoteAccessNow();
+        sendNoCache();
+        server.send(200, "application/json", "{\"ok\":true}");
+    });
+    server.on("/api/remote/reset", HTTP_POST, [](){
+        if (!requireWebAuth()) return;
+        if (!resetRemoteAccessConfig()) {
+            server.send(500, "application/json", "{\"ok\":false,\"error\":\"NVS reset failed\"}");
+            return;
+        }
+        sendNoCache();
+        server.send(200, "application/json", "{\"ok\":true}");
+    });
+    server.on("/api/firmware/remote-status", HTTP_GET, [](){
+        if (!requireWebAuth()) return;
+        sendNoCache();
+        server.send(200, "application/json; charset=utf-8", firmwareUpdateStatusJson());
+    });
+    server.on("/api/sd/files", HTTP_GET, [](){ if (!requireWebAuth()) return; handleSdFiles(); });
+    server.on("/api/sd/read", HTTP_GET, [](){ if (!requireWebAuth()) return; handleSdRead(); });
+    server.onNotFound([](){ if (!requireWebAuth()) return; server.send(404, "text/plain", "Not found"); });
     Serial.println(F("[WEB] configurato; partira' appena il WiFi sara' connesso"));
 #else
     (void)stateRef;
@@ -1807,12 +2629,12 @@ void initWeb(StationState &stateRef) {
 
 void serviceWeb() {
 #if WEB_ENABLE
-    if (wifiConnected()) {
-        if (!webStarted) {
+    if (networkWebAvailable()) {
+        if (!webStartedFlag) {
             server.begin();
-            webStarted = true;
+            webStartedFlag = true;
             Serial.print(F("[WEB] HTTP ATTIVO: http://"));
-            Serial.print(wifiIpAddress());
+            Serial.print(networkWebIpAddress());
             Serial.println('/');
         }
         server.handleClient();
@@ -1824,12 +2646,16 @@ void serviceWeb() {
         enterControllerDeepSleep();
     }
     if (rebootAtMs && static_cast<int32_t>(millis() - rebootAtMs) >= 0) {
-        Serial.println(F("[WEB] riavvio richiesto dalla configurazione"));
+        Serial.println(F("[WEB] riavvio richiesto dalla configurazione/OTA"));
         delay(80);
         ESP.restart();
     }
 #endif
 }
+
+bool webStarted() { return webStartedFlag; }
+const uint8_t *webUiGzipData() { return WEB_UI_GZ; }
+size_t webUiGzipSize() { return WEB_UI_GZ_LEN; }
 
 void recordWebPacket(const OregonPacket &packet, const WeatherReading *reading, bool accepted) {
 #if WEB_ENABLE
@@ -1845,12 +2671,11 @@ void recordWebPacket(const OregonPacket &packet, const WeatherReading *reading, 
     e.sensorId = packet.length ? packet.bytes[0] : 0;
     e.sensorCode = reading ? reading->sensorCode : 0;
     e.source = packet.decodeSource;
-    snprintf(e.protocol, sizeof(e.protocol), "Oregon");
-    snprintf(e.sourceName, sizeof(e.sourceName), "%s", oregonDecodeSourceName(static_cast<OregonDecodeSource>(packet.decodeSource)));
+    e.typeCode = reading ? static_cast<uint8_t>(reading->type) : 0xFFU;
+    e.technoline = false;
     e.accepted = accepted;
     e.batteryKnown = reading ? reading->batteryStatusValid : false;
     e.batteryLow = reading ? reading->batteryLow : false;
-    snprintf(e.type, sizeof(e.type), "%s", reading ? sensorTypeName(reading->type) : "rejected");
     fillDecoded(e.decoded, sizeof(e.decoded), packet, reading);
 
     size_t pos = 0;
@@ -1876,12 +2701,10 @@ void recordWebLaCrossePacket(const LaCrossePacket &packet, const LaCrosseReading
     e.len = LACROSSE_WS23XX_NIBBLES;
     e.sensorId = reading ? reading->sensorId : 0;
     e.sensorCode = 0;
-    e.source = 0;
-    snprintf(e.protocol, sizeof(e.protocol), "Technoline");
-    const char *lcSource = packet.decoder == 1U ? "pwm-leader" : (packet.decoder == 2U ? "pwm-burst" : "pwm-window");
-    snprintf(e.sourceName, sizeof(e.sourceName), "%s", lcSource);
+    e.source = packet.decoder;
+    e.typeCode = reading ? static_cast<uint8_t>(reading->type) : 0xFFU;
+    e.technoline = true;
     e.accepted = accepted;
-    snprintf(e.type, sizeof(e.type), "%s", reading ? laCrosseTypeName(reading->type) : "rejected");
     if (!reading) snprintf(e.decoded, sizeof(e.decoded), "validation/parser KO");
     else {
         switch (reading->type) {

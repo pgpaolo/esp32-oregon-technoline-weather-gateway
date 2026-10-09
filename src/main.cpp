@@ -3,17 +3,23 @@
 #include <PubSubClient.h>
 #include "board_config.h"
 #include "config.h"
+#include "firmware_info.h"
 #include "oregon_receiver.h"
 #include "weather_parser.h"
 #include "station_state.h"
 #include "network_manager.h"
 #include "mqtt_publisher.h"
+#include "mb_compatible_publisher.h"
 #include "display_manager.h"
 #include "barometer_manager.h"
 #include "web_manager.h"
+#include "remote_access.h"
+#include "remote_firmware_update.h"
 #include "lacrosse_ws23xx.h"
 #include "lightning_manager.h"
 #include "thermo_channel_manager.h"
+#include "sd_logger.h"
+#include "rain_accumulator.h"
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -177,6 +183,10 @@ void setup() {
     Serial.println(F("========================================"));
     Serial.print(F(" Oregon + Technoline 433 Gateway ")); Serial.println(FIRMWARE_VERSION);
     Serial.print(F(" Board: ")); Serial.println(BOARD_NAME);
+    // LILYGO_STABILITY_BOOT_DIAG_V1
+    Serial.print(F("[BOOT] last_reset="));Serial.println(firmwareResetReason());
+    Serial.print(F("[BOOT] heap_free="));Serial.print(ESP.getFreeHeap());
+    Serial.print(F(" heap_min="));Serial.println(ESP.getMinFreeHeap());
     Serial.println(F(" RF: SX1278 OOK direct RAW EDGE"));
     Serial.println(F(" Oregon: OSV2.1 + OSV3 multi-decoder"));
     Serial.println(F(" Technoline: WS230x / WS-2310 rtl_433-compatible OOK/PWM 52-bit"));
@@ -195,7 +205,9 @@ void setup() {
     initLightning();
     initNetwork();
     initMQTT(mqttClient, wifiClient);
+    initMbCompatiblePublisher(station);
     initWeb(station);
+    initRemoteAccess();
     initLaCrosseWs23xx();
 
     if (!initOregonReceiver()) {
@@ -208,6 +220,8 @@ void setup() {
     // Optional routing/configuration layer, after RF is already alive.
     initThermoChannels();
     Serial.println(F("[BOOT] thermo multichannel initialized"));
+    initSdLogger();
+    initRainAccumulator();
 }
 
 void loop() {
@@ -224,10 +238,13 @@ void loop() {
                 noteThermoChannelReading(reading);
                 applyThermoPrimary = thermoChannelIsPrimary(reading.channel);
             }
+            noteDisplayOregonReading(reading);
             applyWeatherReading(station, reading, applyThermoPrimary);
+            observeOregonRain(reading);
             printPacket(packet, &reading, true);
             recordWebPacket(packet, &reading, true);
             publishWeatherReading(mqttClient, reading, packet);
+            enqueueSdOregon(reading, packet);
             digitalWrite(BOARD_LED_PIN, BOARD_LED_ON);
         } else {
             station.rejectedPacketCount++;
@@ -244,9 +261,11 @@ void loop() {
         if (parseLaCrossePacket(lcPacket, lcReading)) {
             lcReading.rssi = lcPacket.rssi;
             applyLaCrosseReading(station, lcReading);
+            observeTechnolineRain(lcReading);
             printLaCrosseReading(lcPacket, lcReading);
             recordWebLaCrossePacket(lcPacket, &lcReading, true);
             publishLaCrosseReading(mqttClient, lcReading, lcPacket);
+            enqueueSdTechnoline(lcReading, lcPacket);
             digitalWrite(BOARD_LED_PIN, BOARD_LED_ON);
         } else {
             station.lacrosse.rejectedPacketCount++;
@@ -257,6 +276,7 @@ void loop() {
     serviceDisplayButton();
     serviceWiFi();
     serviceWeb();
+    serviceRemoteFirmwareUpdate();
 
     // V6.3: seconda passata RF subito dopo il Web. Non cambia il decoder,
     // ma riduce la latenza con richieste HTTP frequenti e mantiene il ring
@@ -268,6 +288,11 @@ void loop() {
     serviceLightning(mqttClient);
     serviceMQTT(mqttClient);
     serviceBarometer(station);
+    serviceMbCompatiblePublisher();
+    serviceSdLogger(station);
+    serviceRainAccumulator();
+    // Una scrittura SD puo richiedere alcuni ms: svuota subito il ring RF.
+    serviceOregonReceiver();
 
     static uint32_t ledOnMs = 0;
     static bool ledActive = false;

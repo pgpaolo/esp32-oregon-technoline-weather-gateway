@@ -68,6 +68,9 @@ jobs:
       - name: Validate Oregon V2.1 protocol vectors
         run: python scripts/test_oregon_v21.py
 
+      - name: Validate SRAM optimizations (host RF ring + RAW metadata)
+        run: python scripts/test_memory_optimizations.py
+
       - name: Validate MB-compatible realtime mapping
         run: python scripts/test_mb_compatible_mapping.py
 
@@ -76,6 +79,9 @@ jobs:
 
       - name: Validate MB public TLS integration
         run: python scripts/test_mb_public_tls.py
+
+      - name: Validate LILYGO reboot containment and worker startup guards
+        run: python scripts/test_gateway_stability.py
 
       - name: Validate final MicroSD Web UI and CSV browser
         run: python scripts/test_sd_webui_browser.py
@@ -86,6 +92,10 @@ jobs:
       - name: Rebuild same workspace (SD/Web idempotence)
         if: matrix.environment == 't3-v161-433'
         run: pio run -e "${{ matrix.environment }}"
+
+      - name: Recheck LILYGO stability after repeated source generation
+        if: matrix.environment == 't3-v161-433'
+        run: python scripts/test_gateway_stability.py
 
       - name: Validate generated I2C/HW integration
         run: python scripts/test_generated_i2c_hardware_diagnostics.py

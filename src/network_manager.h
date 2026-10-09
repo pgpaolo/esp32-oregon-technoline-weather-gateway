@@ -34,6 +34,8 @@ String networkRecoveryApPassword();
 String networkWifiSsid();
 bool networkWifiPasswordConfigured();
 bool networkWifiCredentialTrialPending();
+bool networkWifiScanStart();
+String networkWifiScanJson();
 bool validateWifiCredentials(const String &ssid, const String &password);
 bool saveWifiCredentials(const String &ssid, const String &password,
                          bool replacePassword, bool &changed);

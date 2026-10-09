@@ -30,9 +30,15 @@ struct LaCrosseStationState {
 
     float rainTotalMm{NAN};
     float rainIncrementMm{NAN};
+    float rainRate5mMmH{NAN};
+    float rainLastHourMm{NAN};
+    float rainLast24hMm{NAN};
     uint32_t rainUpdatedMs{0};
     bool rainValid{false};
     bool rainIncrementValid{false};
+    bool rainRate5mValid{false};
+    bool rainLastHourValid{false};
+    bool rainLast24hValid{false};
 
     float windKmh{NAN};
     float gustKmh{NAN};

@@ -12,7 +12,8 @@ static constexpr uint8_t DISPLAY_PAGE_TECHNOLINE  = 1U << 2;
 static constexpr uint8_t DISPLAY_PAGE_PRESSURE    = 1U << 3;
 static constexpr uint8_t DISPLAY_PAGE_STATUS      = 1U << 4;
 static constexpr uint8_t DISPLAY_PAGE_LIGHTNING   = 1U << 5;
-static constexpr uint8_t DISPLAY_PAGE_ALL         = 0x3FU;
+static constexpr uint8_t DISPLAY_PAGE_SENSORS     = 1U << 6;
+static constexpr uint8_t DISPLAY_PAGE_ALL         = 0x7FU;
 
 static constexpr uint8_t DISPLAY_ENV_TEMP_HUM = 1U << 0;
 static constexpr uint8_t DISPLAY_ENV_DEW      = 1U << 1;
@@ -74,6 +75,7 @@ struct DisplayRuntimeConfig {
 void initDisplay();
 void serviceDisplayButton();
 void prepareDisplayForDeepSleep();
+void showWebSecurityBootstrap(const String &username, const String &password, uint32_t durationMs = 60000UL);
 bool displayButtonEnabled();
 int displayButtonPin();
 bool displayEnabled();
@@ -86,4 +88,5 @@ bool saveDisplayConfig(const DisplayRuntimeConfig &cfg, bool &changed);
 bool resetDisplayConfigToDefaults(bool &changed);
 uint8_t displayCurrentPage();
 
+void noteDisplayOregonReading(const WeatherReading &reading);
 void updateDisplay(const StationState &state, const OregonRxStats &rxStats, const LaCrosseRxStats &lcStats, bool wifiOk, bool mqttOk);

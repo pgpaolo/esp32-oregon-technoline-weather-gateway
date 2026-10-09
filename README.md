@@ -5,22 +5,21 @@
 ![RF](https://img.shields.io/badge/RF-433.92%20MHz-blue)
 ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-green)
 
+> **LILYGO stability source overlay 6.4.0-rc6-stab1:** includes `mem1` SRAM savings, 2 KiB segmented AdminSensor state transport, TLS arbitration and direct reconnection, on-demand task creation, and reboot diagnostics. **Source-only, not a board-validated firmware image.** See [LILYGO stability notes](docs/STABILITY_LILYGO_T3.md) before flashing.
+
 Standalone **433.92 MHz weather-sensor gateway** for ESP32/LILYGO T3 boards with SX1278. It receives **Oregon Scientific OSV2.1/OSV3** and **Technoline / La Crosse WS23xx**, exposes a responsive authenticated Web UI, publishes selected data through MQTT/TLS, and supports optional local BME280 and AS3935 sensors.
 
 Project author and maintainer: **Gianpaolo P.** (`pgpaolo`) · Copyright © 2026 Gianpaolo P.
 
 [Italiano / README_IT](README_IT.md)
 
-## Current release candidate
+## Current source release
 
-```text
-main                 stable / production + selective BME280/I2C reliability backport (PR #23)
-release/6.4.0-rc3    frozen historical RC validation line
-release/6.4.0-rc4    current complete release candidate (firmware 6.4.0-rc4)
-develop               next-development line (6.4.0-dev2)
-```
+**`6.4.0-rc6-stab1-rain1` (9 October 2026)** is the current source candidate for LILYGO T3 V1.6.1 / SX1278 433 MHz. It incorporates the RC6 RF/Web features, RAM and TLS stability work, COMPATIBLE MB diagnostics and separate Oregon/Technoline rainfall accumulation with optional microSD checkpoints.
 
-`release/6.4.0-rc4` has been fully refreshed from the reviewed `develop` solution at commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`. RC3 remains frozen. `main` now contains the selective BME280/I2C reliability backport merged through PR #23, while the complete RC4 feature set remains isolated in this release branch until an explicit promotion decision.
+The existing `release/6.4.0-rc6` is the historical RC6 baseline; older RC3/RC4 notes remain available for traceability. The `main` branch may lag until CI and board verification are complete. **Source availability does not imply physical-hardware validation.**
+
+See [release notes](docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md), [rain accumulation (English)](docs/RAIN_ACCUMULATION_EN.md), [rain accumulation (Italiano)](docs/RAIN_ACCUMULATION.md), [LILYGO stability](docs/STABILITY_LILYGO_T3.md), and [publishing checklist](PUBLISHING_RAIN1.md).
 
 ## Main features
 
@@ -39,6 +38,7 @@ develop               next-development line (6.4.0-dev2)
 - Hardware monitor for CPU, heap, flash, uptime, reset/build information and ESP32 internal MCU temperature when available.
 - Dedicated **CONFIGURAZIONE > I2C / HW** diagnostics page with manual bus scan and BME280 chip-ID check.
 - SdFat microSD logger with mount retry, FAT formatting tools and live status.
+- Oregon and Technoline **independent rain accumulators** (UTC day/month/year/lifetime), optional alternating CRC-checked microSD checkpoints every ~60 seconds.
 - Web Wi-Fi provisioning, asynchronous SSID scan, credential trial/rollback and recovery AP.
 - Web Basic Authentication, configuration backup/restore and authenticated OTA.
 - Restart and controlled deep-sleep power-off.
@@ -142,7 +142,7 @@ HTTP/HTTPS publishing runs in a separate FreeRTOS worker so the RF loop does not
 
 The onboard microSD uses SdFat on the board HSPI wiring. Valid frames and configured local-sensor snapshots are queued in RAM and written outside the RF-critical path. A failed mount retries after approximately 5 s, 15 s, 60 s and then every 5 minutes. Formatting is always explicit/manual.
 
-Reference: [docs/SD_DATALOGGER.md](docs/SD_DATALOGGER.md).
+Reference: [docs/SD_DATALOGGER.md](docs/SD_DATALOGGER.md) and [rain accumulation](docs/RAIN_ACCUMULATION_EN.md).
 
 ## Web provisioning, authentication and OTA
 
@@ -161,12 +161,12 @@ Authenticated OTA accepts the correct PlatformIO/GitHub `firmware.bin`, checks E
 
 Reference: [docs/WEB_PROVISIONING_OTA_AUTH.md](docs/WEB_PROVISIONING_OTA_AUTH.md).
 
-## Quick start from RC4
+## Build from the rain1 source branch
 
 ```bash
 git clone https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway.git
 cd esp32-oregon-technoline-weather-gateway
-git checkout release/6.4.0-rc4
+git checkout release/6.4.0-rc6-stab1-rain1
 cp src/config_private.example.h src/config_private.h
 pio run -e t3-v161-433
 pio run -e t3-v161-433 -t upload
@@ -200,7 +200,7 @@ The build matrix checks:
 - project attribution + installed-version UI guard;
 - real `firmware.bin` size against the `0x1E0000` OTA application slot.
 
-The exact source promoted from `develop` passed Validate #192 and PlatformIO Build #268. The RC4 branch must also remain green after its release-identity and attribution/documentation commits before any merge to `main`.
+Older Validate #192 / Build #268 runs refer to the historical RC4 candidate, **not this release**. Check the latest GitHub Actions results for the rain1 branch/PR before flashing or promotion.
 
 Because the firmware embeds its Git commit ID, use the latest successful workflow for exact current binary sizes.
 

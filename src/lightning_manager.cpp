@@ -79,7 +79,8 @@ bool pinReserved(int8_t pin) {
 }
 
 void normalize(LightningConfig &c) {
-    if (c.i2cAddress < 0x01 || c.i2cAddress > 0x03) c.i2cAddress = 0x03;
+    // I2C_SHARED_BUS_COMPAT_V2: valid AS3935 A1/A0 range is 0x00..0x03.
+    if (c.i2cAddress > 0x03) c.i2cAddress = 0x03;
     if (c.noiseFloor > 7U) c.noiseFloor = 7U;
     if (c.watchdogThreshold > 15U) c.watchdogThreshold = 15U;
     if (c.spikeRejection > 15U) c.spikeRejection = 15U;
@@ -240,6 +241,7 @@ bool configureSensor() {
         return false;
     }
 
+    Wire.setClock(100000);
     state.detected = true;
     state.irqOk = sensor->checkIRQ();
 

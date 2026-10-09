@@ -177,3 +177,13 @@ GitHub Actions verifies:
 - HTTP remains on a worker task;
 - both ESP32 targets compile;
 - the T3 V1.6.1 firmware compiles twice in the same workspace to catch pre-build patch duplication.
+
+## 422 / Insufficient measurements — LILYGO diagnostic overlay
+
+The 192 packet fields are *positions*, not 192 actual sensor readings. Most positions are `--` by design. A ~623-byte payload is consistent with a packet carrying almost no current weather measurements, just date/time/units/firmware/uptime. HTTP 422 is returned by the receiver application and does not indicate a TLS or network handshake problem.
+
+The latest overlay uses `LACROSSE_SENSOR_STALE_MS` (300 seconds) for the selected Technoline/WS23xx values instead of the generic Oregon 180-second interval. It keeps the source selector exclusive. When absolutely no real measurements exist (including the local BME280), it does not contact the endpoint, throttles the next attempt to the configured publication interval and exposes a descriptive error instead.
+
+Authenticated `GET /api/mbcompatible` includes `weather_measurements`, counting current numeric meteorological values, **excluding** device uptime, protocol metadata and timestamp. `payload_fields` is still 192 when a real packet is queued. A nonzero count **does not guarantee** acceptance by a remote receiver: that receiver applies its own minimum-measurement policy. Verify the chosen source (`source_station`) against `/api/state` (`lacrosse`, `fresh`, `bme280`). This overlay does not fabricate readings or relax server validation.
+
+The COMPATIBLE MB Web status now shows `sorgente` and `misure meteo reali` separately from the fixed 192 packet positions. The value count includes available outdoor and local BME readings but not date, time, uptime or firmware.

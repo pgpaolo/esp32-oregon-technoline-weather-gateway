@@ -145,3 +145,25 @@ if MARKER not in r:
     print("AdminSensor Remote transport metrics: root/state local+WSS timings exposed")
 else:
     print("AdminSensor Remote transport metrics: already enabled")
+
+# The base AdminSensor pass regenerates the JSON status on a repeat build.
+# Even if the global transport marker survives, reinsert the status field if lost.
+_r = path.read_text(encoding="utf-8")
+_a, _b = function_bounds(_r, "String remoteAccessStatusJson()")
+_seg = _r[_a:_b]
+if r'\"transport_diag\"' not in _seg:
+    _anchor = '    j+=",\\\"firmware_update\\\":"+firmwareUpdateStatusJson()+"}";'
+    if _anchor not in _seg:
+        raise RuntimeError("Remote transport metrics: cannot restore status JSON field")
+    _transport_json = (
+        '    j+=",\\\"transport_diag\\\":{\\\"root_send_ms\\\":"+String(transportRootSendMs)'
+        '+",\\\"root_bytes\\\":"+String(transportRootBytes)'
+        '+",\\\"root_chunks\\\":"+String(transportRootChunks)'
+        '+",\\\"state_local_ms\\\":"+String(transportStateLocalMs)'
+        '+",\\\"state_send_ms\\\":"+String(transportStateSendMs)'
+        '+",\\\"state_bytes\\\":"+String(transportStateBytes)'
+        '+",\\\"state_chunks\\\":"+String(transportStateChunks)+"}";\n'
+    )
+    _seg = _seg.replace(_anchor, _transport_json + _anchor, 1)
+    path.write_text(_r[:_a] + _seg + _r[_b:], encoding="utf-8")
+    print("AdminSensor Remote transport metrics: restored after AdminSensor status rewrite")

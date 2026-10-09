@@ -96,7 +96,7 @@ cpp = cpp[:start] + strict_select + cpp[end:]
 # Add a human-readable source name to the status JSON while preserving the
 # historical source_priority numeric field for config/backup compatibility.
 status_anchor = '    out += ",\\\"source_priority\\\":" + String(cfg.sourcePriority);\n'
-if '"source_station"' not in cpp:
+if r'\"source_station\"' not in cpp:
     if status_anchor not in cpp:
         raise RuntimeError("MB single-source: status source anchor missing")
     cpp = cpp.replace(
