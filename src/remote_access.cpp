@@ -557,9 +557,9 @@ bool remoteAccessPauseForExternalTls(uint32_t timeoutMs){
     // Never sacrifice an authenticated firmware update for a weather upload.
     if(firmwareUpdateInProgress())return false;
 
-    bool active=false;
-    if(take()){active=st.transportActive;give();}
-    if(!active)return false;
+    // MBFIX2_TLS_WDT_GUARD_V2: no WSS task -> no competing TLS transport.
+    // If it exists, coordinate even when disconnected: it may be connecting.
+    if(!taskHandle)return true;
 
     const uint32_t started=millis();
     // If a proxied Web request is completing, allow its response to reach the

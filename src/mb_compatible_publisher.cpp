@@ -433,6 +433,11 @@ bool persistConfig(const MbCompatibleConfig &cfg) {
 void setStatusError(const String &error) {
     if (gMutex && xSemaphoreTake(gMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         gLastError = error;
+        // Deferred HTTPS is not the stale HTTP 200 from a previous attempt.
+        if (error.startsWith("HTTPS deferred:")) {
+            gLastHttpCode = 0;
+            gLastResponse = "";
+        }
         xSemaphoreGive(gMutex);
     } else {
         gLastError = error;
@@ -463,12 +468,26 @@ void performHttp(const String &url, const String &payload, const MbCompatibleCon
         // MB_TLS_MEMORY_ARBITRATION_V1
         constexpr uint32_t MB_TLS_HEAP_PAUSE_THRESHOLD = 32768U;
         const uint32_t blockInitial = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-        const bool remotePaused = blockInitial < MB_TLS_HEAP_PAUSE_THRESHOLD &&
-                                  remoteAccessPauseForExternalTls(2000U);
-        // LILYGO_STABILITY_TLS_GUARD_V1: prefer an omitted report to MCU reset.
-        if(blockInitial < MB_TLS_HEAP_PAUSE_THRESHOLD && !remotePaused){
-            setStatusError("HTTPS deferred: insufficient contiguous heap for a second TLS session");
-            gBusy=false;
+        // MBFIX2_TLS_WDT_GUARD_V2: serialize WSS and MB HTTPS handshakes.
+        // A false pause return used to mean "remote not connected"; the Remote
+        // API now returns true in that case, but still blocks during OTA.
+        const bool remotePaused = remoteAccessPauseForExternalTls(2000U);
+        // LILYGO_STABILITY_TLS_GUARD_V1: never force TLS into a fragmented heap.
+        if (!remotePaused) {
+            setStatusError("HTTPS deferred: remote TLS arbitration unavailable");
+            gBusy = false;
+            return;
+        }
+        const uint32_t heapAfterPause = ESP.getFreeHeap();
+        const uint32_t blockAfterPause = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+        // Heap figures are a preflight, not a guarantee that mbedTLS will fit.
+        // Do not lower the proven 32 KiB contiguous threshold after a TASK_WDT.
+        constexpr uint32_t MB_TLS_MIN_FREE_HEAP = 49152U;
+        if (blockAfterPause < MB_TLS_HEAP_PAUSE_THRESHOLD ||
+            heapAfterPause < MB_TLS_MIN_FREE_HEAP) {
+            setStatusError("HTTPS deferred: insufficient heap after TLS arbitration");
+            remoteAccessResumeAfterExternalTls();
+            gBusy = false;
             return;
         }
         const uint32_t heapBefore = ESP.getFreeHeap();
@@ -702,6 +721,8 @@ void serviceMbCompatiblePublisher() {
     if (!force && gLastScheduleMs != 0U && static_cast<uint32_t>(now - gLastScheduleMs) < static_cast<uint32_t>(cfg.intervalSec) * 1000UL) return;
     if (!validUrl(cfg.url)) {
         setStatusError("endpoint URL missing or invalid");
+        // MBFIX2_TLS_WDT_GUARD_V2: prevent a config error retrying each loop.
+        gLastScheduleMs = now;
         gForceTest = false;
         return;
     }
@@ -710,6 +731,11 @@ void serviceMbCompatiblePublisher() {
     String payload, error;
     if (!buildPayload(snapshot, cfg, payload, error)) {
         setStatusError(error);
+        // MBFIX2_TLS_WDT_GUARD_V2: bounded retry for NTP/UTC failures.
+        if (!error.startsWith("no fresh meteorological measurements")) {
+            gLastScheduleMs = now;
+            gForceTest = false;
+        }
         if (error.startsWith("no fresh meteorological measurements")) {
             // No network attempt occurred: throttle until the next interval.
             gLastScheduleMs = now;

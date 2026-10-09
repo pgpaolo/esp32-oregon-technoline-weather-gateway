@@ -30,6 +30,7 @@ jobs:
         run: |
           python scripts/test_mb_compatible_mapping.py
           python scripts/test_mb_stablebase.py
+          python scripts/test_mb_tls_watchdog_guard.py
       - name: Install PlatformIO
         run: python -m pip install --upgrade platformio
       - name: Build matching LILYGO target
@@ -38,6 +39,7 @@ jobs:
         run: |
           python scripts/test_mb_compatible_mapping.py
           python scripts/test_mb_stablebase.py
+          python scripts/test_mb_tls_watchdog_guard.py
           python scripts/test_gateway_stability.py
           python scripts/test_mb_public_tls.py
       - name: Repeat T3 build in identical workspace (idempotence)
@@ -45,6 +47,7 @@ jobs:
         run: |
           pio run -e t3-v161-433
           python scripts/test_mb_stablebase.py
+          python scripts/test_mb_tls_watchdog_guard.py
       - name: Bound firmware size to app slot
         shell: bash
         run: |
