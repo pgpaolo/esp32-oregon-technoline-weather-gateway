@@ -5,7 +5,7 @@
 ![RF](https://img.shields.io/badge/RF-433.92%20MHz-blue)
 ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-green)
 
-> **LILYGO stability source overlay 6.4.0-rc6-stab1:** includes `mem1` SRAM savings, 2 KiB segmented AdminSensor state transport, TLS arbitration and direct reconnection, on-demand task creation, and reboot diagnostics. **Source-only, not a board-validated firmware image.** See [LILYGO stability notes](docs/STABILITY_LILYGO_T3.md) before flashing.
+> **Historical LILYGO rain1 stability overlay:** includes `mem1` SRAM savings, 2 KiB segmented AdminSensor state transport, TLS arbitration and direct reconnection, on-demand task creation, and reboot diagnostics. **Source-only, not a board-validated firmware image.** See [LILYGO stability notes](docs/STABILITY_LILYGO_T3.md) before flashing.
 
 Standalone **433.92 MHz weather-sensor gateway** for ESP32/LILYGO T3 boards with SX1278. It receives **Oregon Scientific OSV2.1/OSV3** and **Technoline / La Crosse WS23xx**, exposes a responsive authenticated Web UI, publishes selected data through MQTT/TLS, and supports optional local BME280 and AS3935 sensors.
 
@@ -15,14 +15,14 @@ Project author and maintainer: **Gianpaolo P.** (`pgpaolo`) · Copyright © 2026
 
 ## Current source release
 
-**Security maintenance candidate:** `6.4.0-rc6-stab2` is under review on `release/6.4.0-rc6-stab2-hardening`. It replaces predictable bootstrap/recovery AP credentials, preserves custom administrator passwords across NVS schema migrations, and consolidates the main BME280/I2C lineage. It is not yet a stable hardware-tested release; the immutable rain1 tag remains available.
+**Current development source candidate (not a published hardware-tested release):** `6.4.0-rc6-stab2` is under review on `release/6.4.0-rc6-stab2-hardening`. It replaces predictable bootstrap/recovery AP credentials, preserves custom administrator passwords across NVS schema migrations, and consolidates the main BME280/I2C lineage. It is not yet a stable hardware-tested release; the immutable rain1 tag remains available.
 
 
-**`6.4.0-rc6-stab1-rain1` (9 October 2026)** is the current source candidate for LILYGO T3 V1.6.1 / SX1278 433 MHz. It incorporates the RC6 RF/Web features, RAM and TLS stability work, COMPATIBLE MB diagnostics and separate Oregon/Technoline rainfall accumulation with optional microSD checkpoints.
+**`6.4.0-rc6-stab1-rain1` (9 October 2026)** is the published, preserved source prerelease for LILYGO T3 V1.6.1 / SX1278 433 MHz. It incorporates the RC6 RF/Web features, RAM and TLS stability work, COMPATIBLE MB diagnostics and separate Oregon/Technoline rainfall accumulation with optional microSD checkpoints.
 
-The existing `release/6.4.0-rc6` is the historical RC6 baseline; older RC3/RC4 notes remain available for traceability. The `main` branch may lag until CI and board verification are complete. **Source availability does not imply physical-hardware validation.**
+The current development branch is `develop`, aligned with independent `release/6.4.0-rc6-stab2-hardening`. The `release/6.4.0-rc6` branch is the preserved RC6 baseline; RC3/RC4/RC5 survive as archive tags. See [repository layout](REPOSITORY_INFO.md) and [documentation index](docs/README.md). The `main` branch may lag until CI and board verification are complete. **Source availability does not imply physical-hardware validation.**
 
-See [release notes](docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md), [rain accumulation (English)](docs/RAIN_ACCUMULATION_EN.md), [rain accumulation (Italiano)](docs/RAIN_ACCUMULATION.md), [LILYGO stability](docs/STABILITY_LILYGO_T3.md), and [publishing checklist](PUBLISHING_RAIN1.md).
+See [RC6-stab2 release notes](docs/RELEASE_6.4.0_RC6_STAB2.md), [hardware acceptance](docs/VALIDATION_RC6_STAB2.md), [historical rain1 notes](docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md), [rain accumulation (English)](docs/RAIN_ACCUMULATION_EN.md), [rain accumulation (Italiano)](docs/RAIN_ACCUMULATION.md), [LILYGO stability](docs/STABILITY_LILYGO_T3.md), and [publishing checklist](PUBLISHING_RAIN1.md).
 
 ## Main features
 
@@ -164,19 +164,19 @@ Authenticated OTA accepts the correct PlatformIO/GitHub `firmware.bin`, checks E
 
 Reference: [docs/WEB_PROVISIONING_OTA_AUTH.md](docs/WEB_PROVISIONING_OTA_AUTH.md).
 
-## Build from the rain1 source branch
+## Build the current RC6-stab2 candidate
 
 ```bash
 git clone https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway.git
 cd esp32-oregon-technoline-weather-gateway
-git checkout release/6.4.0-rc6-stab1-rain1
+git checkout release/6.4.0-rc6-stab2-hardening
 cp src/config_private.example.h src/config_private.h
 pio run -e t3-v161-433
 pio run -e t3-v161-433 -t upload
 pio device monitor -b 115200
 ```
 
-`src/config_private.h` is ignored by Git. Never commit Wi-Fi/MQTT credentials or private CA material.
+`src/config_private.h` is ignored by Git. Never commit Wi-Fi/MQTT credentials or private CA material. **Arrange physical OLED or 115200-baud Serial access before upgrading stab2:** legacy `admin/admin` is automatically rotated to a random 24-character Web password, while recovery AP uses a separate random 20-character secret; valid custom passwords are preserved. On Windows PowerShell, use `Copy-Item src/config_private.example.h src/config_private.h`. To build rain1 instead, explicitly check out `release/6.4.0-rc6-stab1-rain1`. See [release notes](docs/RELEASE_6.4.0_RC6_STAB2.md).
 
 ## Recommended RF baseline
 
@@ -203,20 +203,26 @@ The build matrix checks:
 - project attribution + installed-version UI guard;
 - real `firmware.bin` size against the `0x1E0000` OTA application slot.
 
-Older Validate #192 / Build #268 runs refer to the historical RC4 candidate, **not this release**. Check the latest GitHub Actions results for the rain1 branch/PR before flashing or promotion.
+Older Validate #192 / Build #268 runs refer to the historical RC4 candidate, **not this release**. Check the latest GitHub Actions for `develop` / RC6-stab2; software CI does not replace physical hardware validation.
 
 Because the firmware embeds its Git commit ID, use the latest successful workflow for exact current binary sizes.
+
+## Technical documentation
+
+- [Documentation index / Indice](docs/README.md)
+- [Current RC6-stab2 release notes](docs/RELEASE_6.4.0_RC6_STAB2.md)
+- [Hardware acceptance plan](docs/VALIDATION_RC6_STAB2.md)
 
 ## API and backup
 
 HTTP API: [docs/API.md](docs/API.md)  
 Configuration backup: [docs/CONFIG_BACKUP.md](docs/CONFIG_BACKUP.md)  
-RC4 release notes: [docs/RELEASE_6.4.0_RC4.md](docs/RELEASE_6.4.0_RC4.md)
+Historical RC4 release notes: [docs/RELEASE_6.4.0_RC4.md](docs/RELEASE_6.4.0_RC4.md)
 
 ## Security
 
 - Never publish `src/config_private.h`.
-- Change `admin / admin` after first access.
+- For stab2, use the individually generated initial Web password shown on physical OLED/Serial; `admin/admin` is not the expected default after migration.
 - Do not expose the ESP32 HTTP service directly to the Internet.
 - Prefer CA-verified MQTT TLS outside a trusted LAN.
 - Treat TLS-insecure mode as diagnostic only.

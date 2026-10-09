@@ -1,59 +1,52 @@
-# Suggested GitHub repository metadata
+# Repository information / Informazioni sul repository
 
-**Repository name**
+## Project and governance
 
-`esp32-oregon-technoline-weather-gateway`
+- **Repository:** [esp32-oregon-technoline-weather-gateway](https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway).
+- **Hardware:** ESP32 LILYGO T3 V1.6.1 / T3-S3, SX1278 433.92 MHz, Oregon OSV2.1/OSV3, Technoline WS23xx, optional microSD, BME280, AS3935, OLED.
+- **Features:** Web UI, MQTT/TLS, COMPATIBLE MB publishing, SdFat datalogging, rainfall accumulation and optional AdminSensor Remote/WSS.
+- **Maintainer:** Gianpaolo P. (`pgpaolo`); copyright © 2026 Gianpaolo P.
+- **License:** [GPL-3.0-or-later](LICENSE). See [AUTHORS](AUTHORS.md), [NOTICE](NOTICE), [CITATION.cff](CITATION.cff).
+- **Documentation:** [docs/README.md](docs/README.md).
 
-**Description**
+## Active branches (verified 2026-10-09)
 
-`ESP32/SX1278 433.92 MHz gateway for Oregon OSV2.1/OSV3 and Technoline WS23xx sensors with Web UI, MQTT/TLS, COMPATIBLE MB realtime publishing, SdFat microSD logging, BME280/AS3935 and OLED.`
+| Branch | Role / Ruolo |
+|---|---|
+| `main` | Protected previous stable/production branch; **no stab2 promotion** |
+| `develop` | Current development source, aligned with the stab2 Hardening candidate |
+| `release/6.4.0-rc6` | Preserved historical RC6 baseline |
+| `release/6.4.0-rc6-stab1-rain1` | Preserved historical rain accumulation/stability candidate |
+| `release/6.4.0-rc6-stab2-hardening` | Independent RC6-stab2 source candidate, [Draft PR #26](https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway/pull/26) |
 
-**Suggested topics**
+The baseline code commit for `develop` and stab2 was `b7f4415caa671169f60dd75d37b8947f79cdf6e6`. Documentation-only commits can advance both branch pointers **without changing the firmware**. No claim of real-board validation follows from the existence of these branches.
 
-`esp32`, `lilygo`, `sx1278`, `433mhz`, `oregon-scientific`, `technoline`, `lacrosse`, `weather-station`, `mqtt`, `platformio`, `sdfat`, `microsd`, `iot`, `bme280`, `as3935`, `rtl-433`
+## Historical archival tags / Tag di archivio
 
-## Project authorship
+These old branch tips were preserved as Git tags before the branches were removed:
 
-- Project author and maintainer: **Gianpaolo P.** (`pgpaolo`).
-- Copyright © 2026 Gianpaolo P.
-- License: **GNU GPL v3 or later (`GPL-3.0-or-later`)**.
-- Citation metadata: [`CITATION.cff`](CITATION.cff).
-- Detailed attribution: [`AUTHORS.md`](AUTHORS.md) and [`NOTICE`](NOTICE).
+| Archive tag | Former branch | Original commit |
+|---|---|---|
+| `archive/2026-10-09/rc3` | `release/6.4.0-rc3` | `e812809ed95861bf73efa7ce6aaea0101b2f9597` |
+| `archive/2026-10-09/rc4` | `release/6.4.0-rc4` | `f31a1147bac53a4abffb831b30dba562e6f6eee6` |
+| `archive/2026-10-09/rc5` | `release/6.4.0-rc5` | `77031040c8b7ce8cc42c1173da7e87c41ac78a15` |
+| `archive/2026-10-09/ram-stability` | `develop-ram-stability` | `54d7c0c42ba5921a617f48145cdca554188cb629` |
+| `archive/2026-10-09/bme280-hotfix` | `hotfix/bme280-i2c-main` | `9654752cd62932eecfd2619e8b64b87225f775a8` |
 
-## Active branches
+A historical tag preserves an old commit, but does **not** indicate its entire experimental delta is merged into stab2.
 
-- `main` — stable/production line; now includes the selective BME280/I2C reliability backport merged through PR #23.
-- `release/6.4.0-rc3` — frozen historical RC/hardware-validation line.
-- `release/6.4.0-rc6-stab2-hardening` — security/integration review of rain1, pending main PR and hardware validation.
-- `release/6.4.0-rc6-stab1-rain1` — source prerelease with SD rainfall accumulation and LILYGO stability changes.
-- `release/6.4.0-rc4` — historical complete release candidate, firmware identity `6.4.0-rc4`, fully refreshed from validated `develop` commit `68c1adc7df3e4e7a56b24b13bc6bdfc80bd247f3`.
-- `develop` — historical next-development line (not the current stab2 review branch).
+## GitHub releases / Release pubblicate
 
-## RC4 feature set
+- `v6.3.0`: published stable release.
+- `v6.4.0-rc1`: published prerelease.
+- `v6.4.0-rc6-stab1-rain1`: published **source-only** prerelease.
+- `6.4.0-rc6-stab2`: **not** currently a published/certified release; source candidate undergoing physical validation.
 
-- COMPATIBLE MB with dedicated HTTP/HTTPS worker and strict Oregon/Technoline single-source behavior.
-- Runtime BME280 altitude calibration and selectable pressure units.
-- WMR200-style forecast presentation and larger title forecast tile.
-- Collapsed BME280/AS3935 Dashboard panels.
-- Non-blocking BME280 detection/recovery.
-- Shared I2C runtime fixed at 100 kHz / 80 ms after hardware validation showed excessive cable length/capacitance was responsible for lost BME280 ACKs.
-- Dedicated **CONFIGURAZIONE > I2C / HW** scanner/diagnostics page.
-- ESP32 internal MCU/die temperature in Hardware monitoring when available.
-- Generated-output CI guard for I2C/HW integration and same-workspace build idempotence.
-- Low-profile Web attribution showing `© 2026 Gianpaolo P.`, GPL identifier and the installed firmware version from `/api/state` without extra polling.
+## Documentation and promotion
 
-## Documentation
+- [Central documentation index](docs/README.md)
+- [Current RC6-stab2 release notes](docs/RELEASE_6.4.0_RC6_STAB2.md)
+- [Physical acceptance and rollback plan](docs/VALIDATION_RC6_STAB2.md)
+- [Security migration](docs/SECURITY_MIGRATION_STAB2.md)
 
-- [`docs/MB_COMPATIBLE.md`](docs/MB_COMPATIBLE.md) — COMPATIBLE MB publisher.
-- [`docs/BAROMETER_BME280.md`](docs/BAROMETER_BME280.md) — BME280, altitude, units, trend and forecast.
-- [`docs/I2C_HARDWARE_DIAGNOSTICS.md`](docs/I2C_HARDWARE_DIAGNOSTICS.md) — shared-bus scanner, cable-margin diagnosis and MCU temperature.
-- [`docs/API.md`](docs/API.md) — embedded HTTP API.
-- [`docs/RELEASE_6.4.0_RC4.md`](docs/RELEASE_6.4.0_RC4.md) — historical RC4 release scope and validation reference.
-- [`docs/SECURITY_MIGRATION_STAB2.md`](docs/SECURITY_MIGRATION_STAB2.md) — secure bootstrap and AP migration.
-- [`docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md`](docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md) — published rain1 source prerelease.
-- [`docs/DEVELOP_6.4.0_RC4_NOTES.md`](docs/DEVELOP_6.4.0_RC4_NOTES.md) — reviewed develop delta now applied to RC4.
-- [`AUTHORS.md`](AUTHORS.md) / [`CITATION.cff`](CITATION.cff) / [`NOTICE`](NOTICE) — authorship, citation and upstream acknowledgements.
-
-## Promotion policy
-
-The full rain1 feature line and stab2 security fixes are proposed to `main` through PR #26; the production branch remains unchanged until CI review and physical T3 validation. The existing main-only BME280/I2C backport lineage is preserved; historical RC3/RC4/RC6 branches and the rain1 release tag are not rewritten.
+The [PR #26](https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway/pull/26) remains Draft until physical T3 validation and review. Passing GitHub Actions shows compilation and automated guards; it does not certify RF endurance, SD/rain recovery, OTA or secure access on a real device. Neither historical branches nor `main` are rewritten during document maintenance.

@@ -1,6 +1,6 @@
 # Gateway meteo ESP32 Oregon Scientific + Technoline 433 MHz
 
-> **Overlay di stabilità LILYGO 6.4.0-rc6-stab1 (codice sorgente):** questa distribuzione integra il risparmio SRAM `mem1`, il trasporto AdminSensor a segmenti da 2 KiB, il coordinamento TLS, l'avvio dei servizi su richiesta e i diagnostici per i riavvii. Non è un binario testato sulla scheda. Leggere [STABILITY_LILYGO_T3.md](docs/STABILITY_LILYGO_T3.md) prima del caricamento.
+> **Overlay storico di stabilità LILYGO rain1 (codice sorgente):** questa distribuzione integra il risparmio SRAM `mem1`, il trasporto AdminSensor a segmenti da 2 KiB, il coordinamento TLS, l'avvio dei servizi su richiesta e i diagnostici per i riavvii. Non è un binario testato sulla scheda. Leggere [STABILITY_LILYGO_T3.md](docs/STABILITY_LILYGO_T3.md) prima del caricamento.
 
 Firmware standalone per **ESP32 / LILYGO T3 + SX1278 433.92 MHz** capace di ricevere sensori **Oregon Scientific OSV2.1/OSV3** e **Technoline / La Crosse WS23xx**, mostrare i dati tramite interfaccia Web autenticata, pubblicarli via MQTT/TLS e integrare sensori locali BME280 e AS3935.
 
@@ -8,14 +8,14 @@ Autore e maintainer del progetto: **Gianpaolo P.** (`pgpaolo`) · Copyright © 2
 
 ## Release sorgente attuale
 
-**Revisione di sicurezza in valutazione:** `6.4.0-rc6-stab2`, sul ramo `release/6.4.0-rc6-stab2-hardening`, introduce credenziali Web iniziali casuali, password AP di recupero casuale memorizzata in NVS e migrazione che conserva le password personali. La release rain1 rimane immutata. La revisione non è ancora un firmware stabile collaudato fisicamente.
+**Versione corrente dello sviluppo (non ancora release collaudata):** `6.4.0-rc6-stab2`, sul ramo `release/6.4.0-rc6-stab2-hardening`, introduce credenziali Web iniziali casuali, password AP di recupero casuale memorizzata in NVS e migrazione che conserva le password personali. La release rain1 rimane immutata. La revisione non è ancora un firmware stabile collaudato fisicamente.
 
 
-**`6.4.0-rc6-stab1-rain1` (9 ottobre 2026)** è la versione sorgente più recente per LILYGO T3 V1.6.1 / SX1278 433 MHz. Integra la base RC6, gli interventi per heap/TLS e stabilità dei task, i diagnostici COMPATIBLE MB e gli accumulatori pioggia separati Oregon/Technoline con checkpoint microSD opzionali.
+**`6.4.0-rc6-stab1-rain1` (9 ottobre 2026)** è la prerelease sorgente storica pubblicata per LILYGO T3 V1.6.1 / SX1278 433 MHz. Integra la base RC6, gli interventi per heap/TLS e stabilità dei task, i diagnostici COMPATIBLE MB e gli accumulatori pioggia separati Oregon/Technoline con checkpoint microSD opzionali.
 
-Il ramo `release/6.4.0-rc6` rimane il riferimento storico RC6; RC3 e RC4 restano consultabili. `main` può essere meno aggiornato fino alla verifica CI e hardware. **Il codice sorgente non equivale a firmware validato fisicamente.**
+Il ramo `develop` è allineato alla RC6-stab2 Hardening, conservata anche nel proprio ramo indipendente. La RC6 originale resta consultabile; RC3/RC4/RC5 sono recuperabili tramite tag di archivio. Vedere [organizzazione repository](REPOSITORY_INFO.md) e [indice documentale](docs/README.md). `main` può essere meno aggiornato fino alla verifica CI e hardware. **Il codice sorgente non equivale a firmware validato fisicamente.**
 
-Consultare [note di rilascio](docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md), [guida accumuli](docs/RAIN_ACCUMULATION.md), [stabilità LILYGO](docs/STABILITY_LILYGO_T3.md) e [checklist pubblicazione](PUBLISHING_RAIN1.md).
+Consultare [note RC6-stab2](docs/RELEASE_6.4.0_RC6_STAB2.md), [piano di collaudo](docs/VALIDATION_RC6_STAB2.md), [note storiche rain1](docs/RELEASE_6.4.0_RC6_STAB1_RAIN1.md), [guida accumuli](docs/RAIN_ACCUMULATION.md), [stabilità LILYGO](docs/STABILITY_LILYGO_T3.md) e [checklist pubblicazione](PUBLISHING_RAIN1.md).
 
 ## Funzioni principali
 
@@ -172,19 +172,19 @@ OTA Web richiede autenticazione e controlla immagine ESP, spazio OTA e mismatch 
 
 Documentazione: [docs/WEB_PROVISIONING_OTA_AUTH.md](docs/WEB_PROVISIONING_OTA_AUTH.md).
 
-## Compilazione versione rain1
+## Compilazione della RC6-stab2 candidata
 
 ```bash
 git clone https://github.com/pgpaolo/esp32-oregon-technoline-weather-gateway.git
 cd esp32-oregon-technoline-weather-gateway
-git checkout release/6.4.0-rc6-stab1-rain1
+git checkout release/6.4.0-rc6-stab2-hardening
 cp src/config_private.example.h src/config_private.h
 pio run -e t3-v161-433
 pio run -e t3-v161-433 -t upload
 pio device monitor -b 115200
 ```
 
-`src/config_private.h` è ignorato da Git. Non pubblicare credenziali Wi-Fi/MQTT o CA private.
+`src/config_private.h` è ignorato da Git. Non pubblicare credenziali Wi-Fi/MQTT o CA private. **Prima del flash stab2 occorre poter leggere OLED o Seriale a 115200 baud:** la vecchia password `admin/admin` viene sostituita automaticamente da una password Web casuale di 24 caratteri; l'AP di recupero ha una password distinta di 20 caratteri. Le password personali valide restano inalterate. In PowerShell: `Copy-Item src/config_private.example.h src/config_private.h`. Per compilare rain1, selezionare esplicitamente `release/6.4.0-rc6-stab1-rain1`. Vedere [note stab2](docs/RELEASE_6.4.0_RC6_STAB2.md).
 
 ## Profilo RF consigliato
 
@@ -211,15 +211,21 @@ La matrice verifica:
 - guard dell'attribuzione progetto e della versione firmware installata;
 - dimensione reale `firmware.bin` rispetto allo slot OTA `0x1E0000`.
 
-Validate #192 e PlatformIO Build #268 si riferiscono alla vecchia RC4, **non** a questa versione. Verificare i workflow GitHub Actions del branch/PR rain1 prima del caricamento o della promozione.
+Validate #192 e PlatformIO Build #268 si riferiscono alla vecchia RC4, **non** a questa versione. Verificare i workflow GitHub Actions di `develop` / RC6-stab2; CI verde non sostituisce il collaudo fisico.
 
 Per le dimensioni esatte del firmware usare sempre l'ultima workflow riuscita, perché l'ID Git è incorporato nel binario.
+
+## Documentazione tecnica
+
+- [Indice documentale](docs/README.md)
+- [Note RC6-stab2](docs/RELEASE_6.4.0_RC6_STAB2.md)
+- [Piano di collaudo su hardware](docs/VALIDATION_RC6_STAB2.md)
 
 ## API, backup e sicurezza
 
 API HTTP: [docs/API.md](docs/API.md)  
 Backup configurazione: [docs/CONFIG_BACKUP.md](docs/CONFIG_BACKUP.md)  
-Note RC4: [docs/RELEASE_6.4.0_RC4.md](docs/RELEASE_6.4.0_RC4.md)  
+Note storiche RC4: [docs/RELEASE_6.4.0_RC4.md](docs/RELEASE_6.4.0_RC4.md)  
 Sicurezza: [SECURITY.md](SECURITY.md)
 
 Non esporre direttamente il servizio HTTP dell'ESP32 su Internet e preferire MQTT TLS verificato con CA fuori da una LAN affidabile.

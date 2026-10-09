@@ -30,7 +30,7 @@ user: admin
 password: admin
 ```
 
-Change the password immediately after first access from **Configuration > SISTEMA**. Normal replacement passwords must be at least 8 characters.
+For historical firmware through rain1, change the factory default immediately. For stab2, the initial password is randomly generated; store it securely and optionally replace it from **Configuration > SISTEMA**. Normal user-selected passwords must be at least 8 characters.
 
 After 10 failed authentication attempts the firmware applies a temporary 30-second lockout.
 
